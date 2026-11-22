@@ -12,7 +12,7 @@ import { MAINTAIN_PERMISSION, SAVE_ACTION_ID, STATUS_ACTION_ID } from "./capabil
 import { AUTHORING_MESSAGES, registerAuthoringRoutes } from "./routes.js";
 import type { AuthoringPrincipal } from "./routes.js";
 import { MAX_PUBLISHED_PER_TENANT } from "./store.js";
-import type { SaveOutcome, StatusOutcome, StoredSummary, StoredWalkthrough, UsageEvent, WalkthroughStore } from "./store.js";
+import type { PublishCheck, SaveOutcome, StatusOutcome, StoredSummary, StoredWalkthrough, UsageEvent, WalkthroughStore } from "./store.js";
 import { isAuthoredId } from "./ids.js";
 import { TRUSTED_REGISTRY } from "./trusted-registry.js";
 import type { TrustedRegistryData } from "./trusted-registry.js";
@@ -68,13 +68,13 @@ class FakeStore implements WalkthroughStore {
     row.applicationId = applicationId;
     return "updated";
   }
-  async setStatus(scope: { tenantId: string; actor: string }, id: string, status: "draft" | "published", isValid: (d: unknown, applicationId: string | null) => boolean): Promise<StatusOutcome> {
+  async setStatus(scope: { tenantId: string; actor: string }, id: string, status: "draft" | "published", isValid: PublishCheck): Promise<StatusOutcome> {
     this.check();
     const row = this.rows.find((r) => r.tenantId === scope.tenantId && r.id === id);
     if (row === undefined) return "not_found";
     if (row.status === status) return "unchanged";
     if (status === "published") {
-      if (!isValid(row.definition, row.applicationId ?? null)) return "invalid_definition";
+      if (!(await isValid(row.definition, row.applicationId ?? null, undefined as never, null))) return "invalid_definition";
       if (this.rows.filter((r) => r.tenantId === scope.tenantId && r.status === "published").length >= MAX_PUBLISHED_PER_TENANT) return "limit_reached";
     }
     row.status = status;
@@ -263,7 +263,7 @@ describe("authentication and the maintainer gate", () => {
     await t.call("POST", "/api/admin/walkthroughs", { who: "maintainer", body: { applicationId: APP_A, definition: defOf() } });
     const res = await t.call("GET", "/api/walkthroughs/published", { who: "user" });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ walkthroughs: [] });
+    expect(res.body).toEqual({ walkthroughs: [], external: [] });
   });
 });
 
@@ -467,7 +467,7 @@ describe("POST /api/admin/walkthroughs/:id/status (publish, unpublish)", () => {
     const draft = await t.call("POST", `/api/admin/walkthroughs/${ID1}/status`, { who: "maintainer", body: { status: "draft" } });
     expect(draft.status).toBe(200);
     expect(draft.body).toMatchObject({ status: "draft" });
-    expect((await t.call("GET", "/api/walkthroughs/published", { who: "user" })).body).toEqual({ walkthroughs: [] });
+    expect((await t.call("GET", "/api/walkthroughs/published", { who: "user" })).body).toEqual({ walkthroughs: [], external: [] });
     expect(t.submitted.filter((s) => s.action === "setWalkthroughStatus").map((s) => s.params)).toEqual([{ walkthroughId: ID1, status: "published" }, { walkthroughId: ID1, status: "draft" }]);
   });
   it("publish pre-validates the STORED definition against the CURRENT registry: a stale draft is 422 and the Gateway is not asked", async () => {
@@ -521,7 +521,7 @@ describe("GET /api/walkthroughs/published", () => {
     await t.call("POST", `/api/admin/walkthroughs/${ID2}/status`, { who: "maintainer", body: { status: "published" } });
     const res = await t.call("GET", "/api/walkthroughs/published", { who: "user" });
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body)).toEqual(["walkthroughs"]);
+    expect(Object.keys(res.body)).toEqual(["walkthroughs", "external"]);
     const guides = res.body.walkthroughs as { id: string; title: string }[];
     expect(guides.map((g) => g.title).sort()).toEqual(["One", "Two"]);
     expect(res.raw).not.toContain("Three");
@@ -545,7 +545,7 @@ describe("GET /api/walkthroughs/published", () => {
     const drifted: TrustedRegistryData = { ...TRUSTED_REGISTRY, elements: TRUSTED_REGISTRY.elements.filter((e) => e.id !== "profile.saveButton") };
     const second = build({ registryData: drifted });
     second.store.rows.push(...t.store.rows);
-    expect((await second.call("GET", "/api/walkthroughs/published", { who: "user" })).body).toEqual({ walkthroughs: [] });
+    expect((await second.call("GET", "/api/walkthroughs/published", { who: "user" })).body).toEqual({ walkthroughs: [], external: [] });
   });
 });
 

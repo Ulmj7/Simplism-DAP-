@@ -24,6 +24,13 @@ import { z } from "zod";
 
 export const ENVIRONMENTS = ["development", "test"] as const;
 export type ApplicationEnvironment = (typeof ENVIRONMENTS)[number];
+/** The reserved registry key of Studio-managed registries (Studio V1B, D1): routes and targets live in PostgreSQL. The built-in catalog refuses this id. */
+export const STUDIO_MANAGED_REGISTRY_ID = "studio-managed";
+export type RegistrySource = "built-in" | "studio-managed";
+export const registrySourceOf = (registryId: string): RegistrySource => (registryId === STUDIO_MANAGED_REGISTRY_ID ? "studio-managed" : "built-in");
+/** The registry keys an application may name: the built-in catalog's and the reserved Studio-managed key. */
+export const registryIdsOf = (catalog: { ids(): readonly string[] }): readonly string[] => Object.freeze([...catalog.ids(), STUDIO_MANAGED_REGISTRY_ID]);
+export const REGISTRY_SWITCH_PHRASE = "registryId: cannot switch between built-in and Studio-managed registries";
 export const MAX_APPLICATIONS_PER_TENANT = 20;
 export const MAX_ALLOWED_ORIGINS = 5;
 export const MAX_NAME_CHARS = 80;
@@ -67,13 +74,15 @@ export interface ApplicationView {
   readonly allowedOrigins: readonly string[];
   readonly environment: ApplicationEnvironment;
   readonly registryId: string;
+  /** Where the registry lives: a host-code catalog entry (`built-in`) or PostgreSQL targets registered from Studio (`studio-managed`). Derived from `registryId`. */
+  readonly source: RegistrySource;
   readonly enabled: boolean;
   readonly updatedAt: string;
 }
 export function toApplicationView(record: ApplicationRecord): ApplicationView {
   return Object.freeze({
     id: record.id, name: record.name, origin: record.origin, allowedOrigins: Object.freeze([...record.allowedOrigins]), environment: record.environment,
-    registryId: record.registryId, enabled: record.enabled, updatedAt: record.updatedAt,
+    registryId: record.registryId, source: registrySourceOf(record.registryId), enabled: record.enabled, updatedAt: record.updatedAt,
   });
 }
 

@@ -222,7 +222,7 @@ describe("ids and views", () => {
   });
   it("the view exposes the contract fields only", () => {
     const record: ApplicationRecord = { id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "reference", enabled: false, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z" };
-    expect(toApplicationView(record)).toEqual({ id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "reference", enabled: false, updatedAt: "2026-01-02T00:00:00.000Z" });
+    expect(toApplicationView(record)).toEqual({ id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "reference", source: "built-in", enabled: false, updatedAt: "2026-01-02T00:00:00.000Z" });
   });
 });
 

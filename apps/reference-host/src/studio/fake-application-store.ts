@@ -3,7 +3,7 @@
  * by a save, no delete) so route and executor tests can run without a database. The proof that PostgreSQL really behaves this way is the DB-backed tests under tests/integration.
  */
 import type { ApplicationConfig, ApplicationRecord } from "./applications.js";
-import { MAX_APPLICATIONS_PER_TENANT, isApplicationId } from "./applications.js";
+import { MAX_APPLICATIONS_PER_TENANT, isApplicationId, registrySourceOf } from "./applications.js";
 import type { ApplicationEnabledOutcome, ApplicationSaveOutcome, ApplicationScope, ApplicationStore } from "./application-store.js";
 
 const publicRecord = (row: ApplicationRecord & { readonly tenantId: string }): ApplicationRecord => ({
@@ -41,6 +41,7 @@ export class FakeApplicationStore implements ApplicationStore {
       return "created";
     }
     const current = this.rows[index]!;
+    if (registrySourceOf(current.registryId) !== registrySourceOf(config.registryId)) return "registry_switch";
     this.rows[index] = { ...current, ...config, allowedOrigins: [...config.allowedOrigins], updatedAt: this.stamp() };
     return "updated";
   }

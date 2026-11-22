@@ -4,7 +4,7 @@
  */
 import { withTenant } from "../authoring/tenant-tx.js";
 import type { TenantClient, TenantPool } from "../authoring/tenant-tx.js";
-import { MAX_APPLICATIONS_PER_TENANT, isApplicationId } from "./applications.js";
+import { MAX_APPLICATIONS_PER_TENANT, isApplicationId, registrySourceOf } from "./applications.js";
 import type { ApplicationEnvironment, ApplicationRecord } from "./applications.js";
 import type { ApplicationEnabledOutcome, ApplicationSaveOutcome, ApplicationStore } from "./application-store.js";
 
@@ -48,7 +48,7 @@ export function createPostgresApplicationStore(pool: TenantPool): ApplicationSto
       return withTenant(pool, scope.tenantId, async (client) => {
         // One lock per tenant serialises enrollments, so the cap cannot be exceeded by two concurrent transactions.
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`studio-application:${scope.tenantId}`]);
-        const existing = await client.query("SELECT 1 FROM public.studio_applications WHERE tenant_id = $1::uuid AND application_id = $2 FOR UPDATE", [scope.tenantId, id]);
+        const existing = await client.query("SELECT registry_id FROM public.studio_applications WHERE tenant_id = $1::uuid AND application_id = $2 FOR UPDATE", [scope.tenantId, id]);
         if (existing.rows.length === 0) {
           const count = await client.query("SELECT count(*)::int AS n FROM public.studio_applications WHERE tenant_id = $1::uuid", [scope.tenantId]);
           if (Number(count.rows[0]?.n) >= MAX_APPLICATIONS_PER_TENANT) return "limit_reached";
@@ -58,6 +58,7 @@ export function createPostgresApplicationStore(pool: TenantPool): ApplicationSto
             [scope.tenantId, id, config.name, config.origin, [...config.allowedOrigins], config.environment, config.registryId, scope.actor]);
           return "created";
         }
+        if (registrySourceOf(String(existing.rows[0]?.registry_id)) !== registrySourceOf(config.registryId)) return "registry_switch";
         await client.query(
           `UPDATE public.studio_applications SET name = $3, origin = $4, allowed_origins = $5::text[], environment = $6, registry_id = $7, updated_by = $8, updated_at = now()
             WHERE tenant_id = $1::uuid AND application_id = $2`,

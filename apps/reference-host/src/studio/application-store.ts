@@ -13,7 +13,8 @@ export interface ApplicationScope {
   /** The safe actor id from the trusted context (`call.security.userId`). */
   readonly actor: string;
 }
-export type ApplicationSaveOutcome = "created" | "updated" | "limit_reached" | "id_refused";
+/** `registry_switch`: the update would move an application between a built-in and a Studio-managed registry (never allowed; the database also refuses it while routes or targets exist). */
+export type ApplicationSaveOutcome = "created" | "updated" | "limit_reached" | "id_refused" | "registry_switch";
 export type ApplicationEnabledOutcome = "changed" | "unchanged" | "not_found" | "id_refused";
 
 export interface ApplicationStore {

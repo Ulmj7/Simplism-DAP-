@@ -8,6 +8,8 @@
  */
 import type { WalkthroughDef } from "@dap/walkthrough/authoring";
 import type { WalkthroughStatus } from "./schema.js";
+import type { TenantClient } from "./tenant-tx.js";
+import type { LockedApplication } from "../studio/application-lock.js";
 
 export const MAX_PUBLISHED_PER_TENANT = 50;
 export const MAX_LISTED = 200;
@@ -39,8 +41,15 @@ export interface StoredWalkthrough {
   readonly updatedAt: string;
 }
 
-export type SaveOutcome = "created" | "updated" | "not_a_draft" | "id_refused" | "too_large" | "application_mismatch";
-export type StatusOutcome = "changed" | "unchanged" | "not_found" | "invalid_definition" | "limit_reached" | "id_refused";
+export type SaveOutcome = "created" | "updated" | "not_a_draft" | "id_refused" | "too_large" | "application_mismatch" | "application_not_found" | "application_disabled" | "invalid_definition";
+/**
+ * Runs INSIDE the write transaction, after the application row is locked (Studio V1B, D14): the executor re-validates the definition against the registry as that transaction sees it
+ * (a Studio-managed registry is read with the same connection), so the answer cannot go stale between the check and the write. `locked` is the application row as locked.
+ */
+export type SaveGuard = (tx: TenantClient, locked: LockedApplication) => Promise<"ok" | "invalid_definition">;
+/** Publish-time check, run inside the transaction on the locked row: `true` when the stored definition is still valid for the application it belongs to. */
+export type PublishCheck = (storedDefinition: unknown, applicationId: string | null, tx: TenantClient, locked: LockedApplication | null) => boolean | Promise<boolean>;
+export type StatusOutcome = "changed" | "unchanged" | "not_found" | "invalid_definition" | "limit_reached" | "id_refused" | "application_not_found" | "application_disabled";
 
 export const USAGE_EVENTS = ["started", "completed", "cancelled"] as const;
 export interface UsageEvent {
@@ -68,12 +77,12 @@ export interface WalkthroughStore {
    * assigned ONCE: a legacy row without one takes it on its first save, a row that already has one keeps it, and a save naming a different application changes nothing
    * and answers `application_mismatch`.
    */
-  saveDraft(scope: Scope, id: string, definition: WalkthroughDef, applicationId: string): Promise<SaveOutcome>;
+  saveDraft(scope: Scope, id: string, definition: WalkthroughDef, applicationId: string, guard?: SaveGuard): Promise<SaveOutcome>;
   /**
    * Publish: locks the row, runs `isValid` on the STORED definition and the row's application id as read UNDER THE LOCK (re-validation against the application's current
    * registry data), enforces the cap of 50 published per tenant, then sets the status. Unpublish (`draft`) restores editability and never calls `isValid`. Never creates a row.
    */
-  setStatus(scope: Scope, id: string, status: WalkthroughStatus, isValid: (storedDefinition: unknown, applicationId: string | null) => boolean): Promise<StatusOutcome>;
+  setStatus(scope: Scope, id: string, status: WalkthroughStatus, isValid: PublishCheck): Promise<StatusOutcome>;
   /** The tenant's published guides, oldest first, at most 50. The definitions are untrusted JSON: re-validate each. */
   listPublished(tenantId: string): Promise<readonly StoredWalkthrough[]>;
 }

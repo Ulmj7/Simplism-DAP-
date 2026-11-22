@@ -6,6 +6,8 @@ import { withTenant } from "./tenant-tx.js";
 import type { TenantPool } from "./tenant-tx.js";
 import { isAuthoredId } from "./ids.js";
 import { isApplicationId } from "../studio/applications.js";
+import { lockApplicationShared } from "../studio/application-lock.js";
+import type { LockedApplication } from "../studio/application-lock.js";
 import { MAX_DEFINITION_BYTES, MAX_LISTED, MAX_PUBLISHED_PER_TENANT } from "./store.js";
 import type { SaveOutcome, StatusOutcome, StoredSummary, StoredWalkthrough, WalkthroughStore } from "./store.js";
 import type { WalkthroughStatus } from "./schema.js";
@@ -79,11 +81,16 @@ export function createPostgresWalkthroughStore(pool: TenantPool): WalkthroughSto
       });
     },
 
-    async saveDraft(scope, id, definition, applicationId): Promise<SaveOutcome> {
+    async saveDraft(scope, id, definition, applicationId, guard): Promise<SaveOutcome> {
       if (!isAuthoredId(id) || !isApplicationId(applicationId) || !ACTOR(scope.actor) || definition.id !== id) return "id_refused";
       const json = JSON.stringify(definition);
       if (Buffer.byteLength(json) > MAX_DEFINITION_BYTES) return "too_large";
       return withTenant(pool, scope.tenantId, async (client) => {
+        // The application row is locked FOR SHARE in THIS transaction (D14): a concurrent disable waits for the write, and a write after a committed disable sees `enabled = false`.
+        const locked = await lockApplicationShared(client, scope.tenantId, applicationId);
+        if (locked === null) return "application_not_found";
+        if (!locked.enabled) return "application_disabled";
+        if (guard !== undefined && (await guard(client, locked)) !== "ok") return "invalid_definition";
         // Insert, or update ONLY a draft whose application is unset (a legacy row: assigned now) or the same one: the WHERE on the conflict branch is what makes a published
         // guide impossible to overwrite and an application impossible to change. No row back = it exists and is either published or bound to another application.
         const { rows } = await client.query(
@@ -113,7 +120,15 @@ export function createPostgresWalkthroughStore(pool: TenantPool): WalkthroughSto
         if (row.status === status) return "unchanged";
         if (status === "published") {
           let valid = false;
-          try { valid = isValid(row.definition, appOf(row.application_id)) === true; } catch { valid = false; }
+          const boundTo = appOf(row.application_id);
+          // The application row is locked FOR SHARE in this transaction (D14) before the check: a disabled application cannot publish, and a concurrent disable waits for this publish.
+          let locked: LockedApplication | null = null;
+          if (boundTo !== null) {
+            locked = await lockApplicationShared(client, scope.tenantId, boundTo);
+            if (locked === null) return "application_not_found";
+            if (!locked.enabled) return "application_disabled";
+          }
+          try { valid = (await isValid(row.definition, boundTo, client, locked)) === true; } catch { valid = false; }
           if (!valid) return "invalid_definition";
           const count = await client.query("SELECT count(*)::int AS n FROM public.walkthrough_definitions WHERE tenant_id = $1::uuid AND status = 'published'", [scope.tenantId]);
           if (Number(count.rows[0]?.n) >= MAX_PUBLISHED_PER_TENANT) return "limit_reached";
