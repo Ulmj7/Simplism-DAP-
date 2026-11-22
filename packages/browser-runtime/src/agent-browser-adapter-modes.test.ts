@@ -68,7 +68,7 @@ describe('labels: "all"', () => {
     const items: Item[] = [
       { key: "e1", role: "heading", name: "Orders" }, { key: "e2", role: "option", name: "Choice" }, { key: "e3", role: "img", name: "Logo" },
       { key: "e4", role: "button" }, { key: "e5", role: "button", name: "   " }, { key: "e6", role: "button", name: "n".repeat(121) },
-      { key: "e7", role: "button", name: "line\nbreak" }, { key: "e8", role: "button", name: "bidi‮override" }, { key: "e9", role: "button", name: "nul\u0000" },
+      { key: "e7", role: "button", name: "line\nbreak" }, { key: "e8", role: "button", name: "bidi\u202eoverride" }, { key: "e9", role: "button", name: "nul\u0000" },
       { key: "e10", role: "button", name: "Disabled", flags: "disabled" }, { key: "e11", role: "textbox", name: "Read only", flags: "readonly" },
       { key: "e12", role: "button", name: longest }, { key: "e13", role: "checkbox", name: "Gift wrap", flags: "checked=false" }, { key: "e14", role: "combobox", name: "Shipping" },
       { key: "e15", role: "searchbox", name: "Find" }, { key: "e16", role: "r".repeat(41), name: "Odd role" },
