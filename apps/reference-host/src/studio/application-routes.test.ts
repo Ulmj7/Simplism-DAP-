@@ -20,7 +20,7 @@ const TENANT_A = "1111aaaa-2222-4333-8444-5555bbbb5555";
 const TENANT_B = "2222bbbb-3333-4444-8555-6666cccc6666";
 const SECRET = "SECRET-SQL-select-from-studio_applications";
 const config = (over: Record<string, unknown> = {}) => ({ name: "Reference application", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "development", registryId: "reference", ...over });
-const VIEW_KEYS = ["allowedOrigins", "enabled", "environment", "id", "name", "origin", "registryId", "updatedAt"];
+const VIEW_KEYS = ["allowedOrigins", "enabled", "environment", "id", "name", "origin", "registryId", "source", "updatedAt"];
 
 type Who = "maintainer" | "user" | "maintainerB" | "none" | "throws";
 interface Submitted { who: Who; action: string; params: Record<string, unknown> }
@@ -223,7 +223,8 @@ describe("reads", () => {
     expect(Object.keys(res.body).sort()).toEqual(["applications", "registries"]);
     expect((res.body.applications as { id: string; name: string }[]).map((a) => [a.id, a.name])).toEqual([[A1, "One"]]);
     expect(Object.keys((res.body.applications as object[])[0]!).sort()).toEqual(VIEW_KEYS);
-    expect(res.body.registries).toEqual([{ id: "reference", label: "Reference application" }, { id: "fixture", label: "Second application" }]);
+    expect(res.body.registries).toEqual([{ id: "reference", label: "Reference application", source: "built-in" }, { id: "fixture", label: "Second application", source: "built-in" },
+      { id: "studio-managed", label: "Studio-managed (register targets from the browser)", source: "studio-managed" }]);
     expect(((await t.call("GET", "/api/admin/applications", { who: "maintainerB" })).body.applications as { name: string }[]).map((a) => a.name)).toEqual(["Two"]);
     expectNoLeak(res.raw);
   });
@@ -258,7 +259,7 @@ describe("reads", () => {
     await t.call("POST", "/api/admin/applications", { who: "maintainer", body: config({ registryId: "fixture", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185"], environment: "test" }) });
     const reference = await t.call("GET", `/api/admin/applications/${A1}/registry`, { who: "maintainer" });
     expect(reference.status).toBe(200);
-    expect(Object.keys(reference.body).sort()).toEqual(["elements", "postconditionNames", "previewable", "routes"]);
+    expect(Object.keys(reference.body).sort()).toEqual(["elements", "pages", "postconditionNames", "previewMode", "previewable", "routes", "source"]);
     expect(reference.body.previewable).toBe(true);
     expect(reference.body.routes).toEqual(["dashboard", "profile", "settings"]);
     expect((reference.body.elements as { id: string; privacy: string }[]).map((e) => e.id)).not.toContain("profile.emailInput");

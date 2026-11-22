@@ -94,7 +94,7 @@ describe("the full authoring flow over the real Gateway and PostgreSQL", () => {
     expect((list.body.builtIn as { id: string }[]).map((g) => g.id)).toEqual(["profileUpdate", "findSecuritySettings", "findTwoFactorSettings"]);
     expect((await t.call("GET", `/api/admin/walkthroughs/${id}`, "maintainer")).body).toMatchObject({ id, status: "draft" });
 
-    expect((await t.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [] }); // a draft is never published
+    expect((await t.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [], external: [] }); // a draft is never published
 
     const published = await t.call("POST", `/api/admin/walkthroughs/${id}/status`, "maintainer", { status: "published" });
     expect(published.status).toBe(200);
@@ -109,7 +109,7 @@ describe("the full authoring flow over the real Gateway and PostgreSQL", () => {
 
     const unpublished = await t.call("POST", `/api/admin/walkthroughs/${id}/status`, "maintainer", { status: "draft" });
     expect(unpublished.status).toBe(200);
-    expect((await t.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [] });
+    expect((await t.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [], external: [] });
     const edited = await t.call("PUT", `/api/admin/walkthroughs/${id}`, "maintainer", { applicationId: t.appId, definition: defOf({ title: "Edited" }) });
     expect(edited.status).toBe(200);
     expect(edited.body).toMatchObject({ id, status: "draft", definition: { id, title: "Edited" } });
@@ -184,7 +184,7 @@ describe("the full authoring flow over the real Gateway and PostgreSQL", () => {
     expect((await b.call("GET", `/api/admin/walkthroughs/${id}`, "maintainer")).status).toBe(404);
     expect((await b.call("PUT", `/api/admin/walkthroughs/${id}`, "maintainer", { applicationId: b.appId, definition: defOf() })).status).toBe(404);
     expect((await b.call("POST", `/api/admin/walkthroughs/${id}/status`, "maintainer", { status: "draft" })).status).toBe(404);
-    expect((await b.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [] });
+    expect((await b.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [], external: [] });
     expect((await a.call("GET", "/api/walkthroughs/published", "user")).body).toMatchObject({ walkthroughs: [expect.objectContaining({ id })] });
   });
 

@@ -57,7 +57,7 @@ describe("migration 072: studio_applications", () => {
     ]);
     expect((await app.query("SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='public.studio_applications'::regclass AND contype='p'")).rows).toEqual([{ definition: "PRIMARY KEY (tenant_id, application_id)" }]);
     expect((await app.query("SELECT indexname FROM pg_indexes WHERE schemaname='public' AND tablename='studio_applications' ORDER BY indexname")).rows).toEqual([
-      { indexname: "studio_applications_pkey" }, { indexname: "studio_applications_tenant_updated_idx" },
+      { indexname: "studio_applications_pkey" }, { indexname: "studio_applications_registry_key" }, { indexname: "studio_applications_tenant_updated_idx" },
     ]);
     expect((await app.query("SELECT column_default FROM information_schema.columns WHERE table_name='studio_applications' AND column_name='enabled'")).rows).toEqual([{ column_default: "true" }]);
   });

@@ -19,7 +19,7 @@ import { defineAction, defineExecutor } from "@dap/contracts";
 import type { ActionDefinition, ActionExecutor, ActionId, ExecutorId, PermissionId, ResourceRef } from "@dap/contracts";
 import type { HostExtension } from "../compose.js";
 import { MAINTAIN_PERMISSION, MEDIUM_JUSTIFICATION } from "../authoring/capabilities.js";
-import { enabledInputSchema, isApplicationId, saveApplicationInputSchema, validateApplicationConfig } from "./applications.js";
+import { enabledInputSchema, isApplicationId, registryIdsOf, saveApplicationInputSchema, validateApplicationConfig } from "./applications.js";
 import type { EnabledInput, SaveApplicationInput } from "./applications.js";
 import type { ApplicationStore } from "./application-store.js";
 import type { RegistryCatalog } from "./registries.js";
@@ -103,13 +103,14 @@ export function createApplicationExecutors(deps: ApplicationCapabilityDeps): { r
       const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
       const { applicationId, ...candidate } = call.params;
       if (!isApplicationId(applicationId)) return failure("id_refused");
-      const checked = validateApplicationConfig(candidate, catalog.ids());
+      const checked = validateApplicationConfig(candidate, registryIdsOf(catalog));
       if (!checked.ok) return failure("invalid_application");
       try {
         const outcome = await store.save(scope, applicationId, checked.config);
         switch (outcome) {
           case "created": case "updated": return { status: "success", affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
           case "limit_reached": return failure("limit_reached");
+          case "registry_switch": return failure("invalid_application");
           default: return failure("id_refused");
         }
       } catch { return failure("store_unavailable"); }
