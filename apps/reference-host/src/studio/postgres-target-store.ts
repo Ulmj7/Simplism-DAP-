@@ -9,7 +9,7 @@ import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import { STUDIO_MANAGED_REGISTRY_ID, isApplicationId } from "./applications.js";
 import { lockApplicationShared } from "./application-lock.js";
 import { isTargetId } from "./registry-targets.js";
-import type { RegistryRouteRecord, TargetOperation, TargetRecord, TargetRegistration, TargetStatus, TargetView, RegistrableRole } from "./registry-targets.js";
+import type { RegistryRouteRecord, TargetOperation, TargetRecord, TargetView, RegistrableRole } from "./registry-targets.js";
 import type { ManagedRegistry, RegisterOutcome, TargetListing, TargetStatusOutcome, TargetStore } from "./target-store.js";
 
 const iso = (value: unknown): string => (value instanceof Date ? value.toISOString() : String(value));
