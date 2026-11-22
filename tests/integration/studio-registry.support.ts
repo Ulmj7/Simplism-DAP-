@@ -46,7 +46,11 @@ export const managedDef = (target = "orders.submitButton", route = "orders", ove
   ...over,
 });
 
-export interface StartOptions { enabled?: string; tenant?: string; wrapStore?: (real: WalkthroughStore) => WalkthroughStore; pool?: Pool; targetPool?: unknown }
+export interface StartOptions {
+  enabled?: string; tenant?: string; wrapStore?: (real: WalkthroughStore) => WalkthroughStore;
+  /** Wraps the application store the AUTHORING executors read (to interleave a concurrent change between their read and their write). */
+  wrapApplications?: (real: ReturnType<typeof createPostgresApplicationStore>) => ReturnType<typeof createPostgresApplicationStore>;
+}
 
 export async function startHost(closers: (() => Promise<unknown>)[], hosts: ReferenceHost[], owner: Pool, options: StartOptions = {}) {
   const tenant = options.tenant ?? randomUUID();
@@ -66,7 +70,7 @@ export async function startHost(closers: (() => Promise<unknown>)[], hosts: Refe
   const targets = createPostgresTargetStore(pool);
   const catalog = createRegistryCatalog([FIXTURE_ENTRY]);
   const resolver = createRegistryResolver({ catalog, targets });
-  const authoring = createAuthoringExtension({ store, applications, catalog, targets, resolver });
+  const authoring = createAuthoringExtension({ store, applications: options.wrapApplications ? options.wrapApplications(applications) : applications, catalog, targets, resolver });
   const studio = createApplicationExtension({ store: applications, catalog });
   const targetExt = createTargetExtension({ targets });
   const { host } = await composeReferenceHost(
