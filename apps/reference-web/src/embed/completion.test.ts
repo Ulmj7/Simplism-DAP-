@@ -135,6 +135,25 @@ describe("marker-based run on a history-routed page, with checks and diagnostics
     if (result.ok) result.destroy();
   });
 
+  it("the pathname poll alone notices a route change that raises no popstate (a navigate step the user performs)", async () => {
+    vi.useFakeTimers();
+    app();
+    const bundle = make();
+    const navigate = { ...bundle, definition: { id: "wt-go", title: "Go to settings", description: "Go to settings", start: "go", steps: [
+      { id: "go", kind: "navigate" as const, route: "settings", text: "Go to settings.", next: "done" }, { id: "done", kind: "complete" as const, text: "Arrived." }] } };
+    // A navigate step WITH text asks the USER to navigate; the application's own router then pushes the path without raising any event.
+    const statuses: string[] = [];
+    const result = mountManagedRuntime({ window, bundle: navigate, onStatus: status => statuses.push(status.status) });
+    expect(result.ok).toBe(true);
+    expect(window.location.pathname).toBe("/");
+    expect(statuses).not.toContain("COMPLETED");
+    window.history.pushState(null, "", "/settings");                               // the user's own navigation: no popstate, no hashchange
+    expect(statuses).not.toContain("COMPLETED");
+    await vi.advanceTimersByTimeAsync(POLL_MS + 10);
+    expect(statuses).toContain("COMPLETED");
+    if (result.ok) result.destroy();
+  });
+
   it("reports a target failure with the DAP id (not the marker), never the page", async () => {
     vi.useFakeTimers();
     const { nav } = app();
@@ -300,6 +319,7 @@ describe("closed-shape parsing of the additive bundle fields", () => {
     ["an attribute outside the allow-list", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, checks: [...checks, { name: name("b2"), kind: "element.attribute.equals", targetId: "profile.save", attribute: "onclick", expected: "x" }], postconditionNames: [...b.registry.postconditionNames, name("b2")] } })],
     ["an attribute expected value of 41 characters", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, checks: [...checks, { name: name("b3"), kind: "element.attribute.equals", targetId: "profile.save", attribute: "aria-expanded", expected: "x".repeat(41) }], postconditionNames: [...b.registry.postconditionNames, name("b3")] } })],
     ["a value check on a button", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, checks: [...checks, { name: name("b4"), kind: "element.value.equals", targetId: "profile.save", expected: "x" }], postconditionNames: [...b.registry.postconditionNames, name("b4")] } })],
+    ["a duplicated postcondition name", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, postconditionNames: [...b.registry.postconditionNames, "route.home"] } })],
     ["a postcondition name without a check", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, postconditionNames: [...b.registry.postconditionNames, name("c1")] } })],
     ["a check without its postcondition name", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, postconditionNames: b.registry.postconditionNames.slice(0, 4) } })],
     ["101 checks", (b: ManagedBundle) => { const many = Array.from({ length: 101 }, (_, i) => ({ name: name(i.toString(16)), kind: "route.equals", route: "home" })); return { ...b, registry: { ...b.registry, checks: many, postconditionNames: [...b.registry.routes.map(r => `route.${r}`), ...many.map(c => c.name)] } }; }],
