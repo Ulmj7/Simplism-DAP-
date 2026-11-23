@@ -8,8 +8,15 @@ import type { TenantClient } from "../authoring/tenant-tx.js";
 
 export interface LockedApplication { readonly enabled: boolean; readonly registryId: string; readonly routing: "hash" | "history" }
 
-export async function lockApplicationShared(client: TenantClient, tenantId: string, applicationId: string): Promise<LockedApplication | null> {
-  const { rows } = await client.query("SELECT enabled, registry_id, routing FROM public.studio_applications WHERE tenant_id = $1::uuid AND application_id = $2 FOR SHARE", [tenantId, applicationId]);
+export const lockApplicationShared = (client: TenantClient, tenantId: string, applicationId: string) =>
+  lockApplication(client, tenantId, applicationId, "FOR SHARE");
+
+/** A repair changes the registry validators see. Hold off workflow writes until the compatibility check commits. */
+export const lockApplicationForRepair = (client: TenantClient, tenantId: string, applicationId: string) =>
+  lockApplication(client, tenantId, applicationId, "FOR NO KEY UPDATE");
+
+async function lockApplication(client: TenantClient, tenantId: string, applicationId: string, lock: "FOR SHARE" | "FOR NO KEY UPDATE"): Promise<LockedApplication | null> {
+  const { rows } = await client.query(`SELECT enabled, registry_id, routing FROM public.studio_applications WHERE tenant_id = $1::uuid AND application_id = $2 ${lock}`, [tenantId, applicationId]);
   const row = rows[0];
   return row === undefined ? null : { enabled: row.enabled === true, registryId: String(row.registry_id), routing: row.routing === "history" ? "history" : "hash" };
 }

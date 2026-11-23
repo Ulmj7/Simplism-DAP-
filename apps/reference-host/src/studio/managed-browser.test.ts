@@ -818,10 +818,10 @@ describe("check: the health of the registered targets of the current page", () =
   });
   it("facts that cannot be read leave the target unverified and write nothing; so does a marker missing from a page with more controls than are inspected", async () => {
     const h = await checked([control("Export", "button", "orders.exportButton", null), control("Order note", "textbox", "orders.note")]);
-    expect((await h.command(check())).body.results).toEqual([{ targetId: "orders.exportButton", state: "unverified" }, { targetId: "orders.note", state: "healthy" }]);
+    expect((await h.command(check())).body.results).toEqual([{ targetId: "orders.note", state: "healthy" }]);
     expect(healthCalls(h)).toEqual([["orders.note", "healthy"]]);
     const crowded = await checked([...Array.from({ length: 64 }, (_, i) => control(`Filler ${i}`, "button", `orders.filler${i}`)), control("Export", "button", "orders.exportButton"), control("Order note", "textbox", "orders.note")]);
-    expect((await crowded.command(check())).body.results).toEqual([{ targetId: "orders.exportButton", state: "unverified" }, { targetId: "orders.note", state: "unverified" }]);
+    expect((await crowded.command(check())).body.results).toEqual([]);
     expect(healthCalls(crowded)).toEqual([]);
   });
   it("checks the targets of the CURRENT route only, never a disabled target, and an unregistered page has no results", async () => {

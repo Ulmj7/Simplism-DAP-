@@ -304,7 +304,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       if (written === "refused") return deny(403, "FORBIDDEN");
       if (written !== "ok") return deny(503, "BROWSER_UNAVAILABLE");
     }
-    return { page: report.page, route: report.route, results: report.results };
+    return { page: report.page, route: report.route, results: report.results.filter((result) => result.state !== "unverified") };
   }
 
   type Principal = NonNullable<Awaited<ReturnType<AuthoringRouteDeps["resolvePrincipal"]>>>;
@@ -349,7 +349,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     // The impact: every workflow that names the target (drafts and published content), validated against the registry as it would be AFTER the repair.
     const definitions = await targets.definitionsUsing(principal.tenantId, session.applicationId, target.id);
     const after = registryAfterRepair(await targets.registry(principal.tenantId, session.applicationId), target.id, proposed);
-    const problems = verifyRepair(definitions, after, target);
+    const problems = verifyRepair(definitions, after, { ...target, ...value });
     const impact = { ...impactOf(definitions), compatible: problems.length === 0, problems };
     if (!command.confirm) return { target, current, proposed, impact };
     if (JSON.stringify(current) === JSON.stringify(proposed)) return deny(409, "REPAIR_UNCHANGED");
