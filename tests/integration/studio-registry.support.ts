@@ -112,5 +112,5 @@ export async function startHost(closers: (() => Promise<unknown>)[], hosts: Refe
     return { res, id: res.body.id as string };
   };
   const sql = <T>(fn: (client: { query(sql: string, params?: readonly unknown[]): Promise<{ rows: readonly Record<string, unknown>[]; rowCount: number | null }> }) => Promise<T>) => withTenant(pool, tenant, fn);
-  return { tenant, call, submit, rows, store, realStore, saveDraft, applications, targets, resolver, catalog, pool, createApplication, registerTarget, registerOk, createWorkflow, sql, maintToken, userToken, trustedTargets: targetExt.trusted, trusted: authoring.trusted };
+  return { app, resolvePrincipal, tenant, call, submit, rows, store, realStore, saveDraft, applications, targets, resolver, catalog, pool, createApplication, registerTarget, registerOk, createWorkflow, sql, maintToken, userToken, trustedTargets: targetExt.trusted, trusted: authoring.trusted };
 }
