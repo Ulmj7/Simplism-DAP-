@@ -11,7 +11,7 @@
  *
  * Feature 004 (authoring): this server also registers the authoring routes (`registerAuthoringRoutes`, on the SAME transport instance) and the two authoring
  * capabilities. Studio V1A adds the Application Manager routes (`registerApplicationRoutes`) and two more capabilities; every draft belongs to an enrolled application.
- * To use them, add `saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus` to DAP_ENABLED_ACTIONS (default deny: they are off otherwise), give a DEV_SESSIONS entry
+ * To use them, add `saveWalkthroughDraft,setWalkthroughStatus,reviseWalkthrough,restoreWalkthroughVersion,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus` to DAP_ENABLED_ACTIONS (default deny: they are off otherwise), give a DEV_SESSIONS entry
  * the permission `perm.walkthrough.maintain`, and set the optional DAP_DEMO_MAINTAINER_TOKEN to that session's token. The browser's `X-Demo-Role: user|maintainer`
  * header only chooses between the two server-held demo sessions for the demo (unknown or absent = user; `maintainer` without a configured maintainer token = user);
  * it is a DEV convenience and NOT the authority: permissions come from the host's own session table and every write goes through the Gateway. The authoring store has

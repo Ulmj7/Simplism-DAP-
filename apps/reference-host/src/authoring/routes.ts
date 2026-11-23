@@ -9,9 +9,12 @@
  *   GET  /api/admin/walkthroughs/:id        Maintainer          { id, status, applicationId, definition }  (a built-in or unknown id is 404; `applicationId` is null for a legacy guide)
  *   POST /api/admin/walkthroughs            Maintainer          body EXACTLY { applicationId, definition }: application (404/409), validate against ITS registry (422), generate the id,
  *                                                                Gateway save, read back (201)
- *   PUT  /api/admin/walkthroughs/:id        Maintainer          body EXACTLY { applicationId, definition }: drafts only (409 for a published guide); the application is assigned once
+ *   PUT  /api/admin/walkthroughs/:id        Maintainer          body EXACTLY { applicationId, definition, expectedRevision }: drafts only (409 for a published guide); the application is assigned once
  *                                                                (409 APPLICATION_MISMATCH for another one, 409 APPLICATION_DISABLED)
- *   POST /api/admin/walkthroughs/:id/status Maintainer          body EXACTLY { status }: publish pre-validates against the current registry (422)
+ *   POST /api/admin/walkthroughs/:id/status Maintainer          { status, expectedRevision? }: publish pre-validates against the current registry (422)
+ *   GET  /api/admin/walkthroughs/:id/versions and /versions/:n: immutable publication history
+ *   POST /api/admin/walkthroughs/:id/revise and /restore: edit a snapshot while preserving the live version
+ *   POST /api/admin/walkthroughs/:id/review: current-registry report for a specific working revision
  *
  * It inherits everything the transport already enforces (loopback Host guard, Sec-Fetch-Site guard, JSON-only content type, 64 KiB limit, no-store/nosniff and the
  * fixed error handler) because it adds routes to that instance and nothing else: no second server. There is no audit route or DELETE.
@@ -31,7 +34,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AiSession } from "../compose.js";
 import { exactBody } from "../http/transport.js";
 import { DEMO_WALKTHROUGH_SUMMARIES } from "../guidance/walkthrough-summaries.js";
-import { MAINTAIN_PERMISSION, SAVE_ACTION_ID, STATUS_ACTION_ID } from "./capabilities.js";
+import { MAINTAIN_PERMISSION, RESTORE_ACTION_ID, REVISE_ACTION_ID, SAVE_ACTION_ID, STATUS_ACTION_ID } from "./capabilities.js";
 import type { ApplicationRecord } from "../studio/applications.js";
 import type { WalkthroughDef } from "@dap/walkthrough/authoring";
 import { isApplicationId } from "../studio/applications.js";
@@ -43,13 +46,15 @@ import type { TargetStore } from "../studio/target-store.js";
 import { buildGuideBundle } from "../studio/guide-bundle.js";
 import { emptyTargetStore } from "../studio/empty-target-store.js";
 import { generateWalkthroughId, isAuthoredId } from "./ids.js";
-import { STATUSES } from "./schema.js";
+import { isRevision, STATUSES } from "./schema.js";
 import type { WalkthroughStatus } from "./schema.js";
 import { MAX_PUBLISHED_PER_TENANT } from "./store.js";
 import { USAGE_EVENTS } from "./store.js";
 import { usageReport } from "./analytics.js";
-import type { UsageEvent, WalkthroughStore } from "./store.js";
+import type { RevisionState, StoredWalkthrough, UsageEvent, WalkthroughStore } from "./store.js";
 import type { TrustedRegistryData } from "./trusted-registry.js";
+import { publishReview } from "./publish-review.js";
+import { withAuthoringReceipt } from "./write-receipt.js";
 import { capIssues, validateAuthoredDefinition } from "./validate.js";
 
 /** The host-resolved identity of one request. `submit` is the Gateway (a FRESH Gateway session per call, so each write is its own turn). */
@@ -120,7 +125,8 @@ export async function submitGatewayWrite(principal: AuthoringPrincipal, action: 
 
 export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRouteDeps): void {
   const { store, resolvePrincipal, applications } = deps;
-  const resolver = deps.resolver ?? createRegistryResolver({ catalog: deps.catalog, targets: deps.targets ?? emptyTargetStore, ...(deps.registryData === undefined ? {} : { referenceOverride: deps.registryData }) });
+  const targets = deps.targets ?? emptyTargetStore;
+  const resolver = deps.resolver ?? createRegistryResolver({ catalog: deps.catalog, targets, ...(deps.registryData === undefined ? {} : { referenceOverride: deps.registryData }) });
   const builtIn = Object.freeze((deps.builtIn ?? DEMO_WALKTHROUGH_SUMMARIES).map((summary) => Object.freeze({ id: summary.id, title: summary.title, description: summary.description })));
   const newId = deps.newId ?? (() => generateWalkthroughId());
 
@@ -141,9 +147,16 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
     const id = (request.params as { id?: unknown } | undefined)?.id;
     return isAuthoredId(id) ? id : null; // a built-in id, the preview id and any junk are simply "not found"
   };
-  const record = (row: { readonly id: string; readonly status: WalkthroughStatus; readonly applicationId: string | null; readonly definition: unknown }) =>
-    ({ id: row.id, status: row.status, applicationId: row.applicationId, definition: row.definition });
+  const revisionState = (row: Partial<RevisionState>) => ({
+    ...(row.revision === undefined ? {} : { revision: row.revision, liveVersion: row.liveVersion ?? null, latestVersion: row.latestVersion ?? 0 }),
+  });
+  const record = (row: StoredWalkthrough) =>
+    ({ id: row.id, status: row.status, applicationId: row.applicationId, definition: row.definition, ...revisionState(row) });
   const submitWrite = submitGatewayWrite;
+  const submitTracked = (principal: AuthoringPrincipal, id: string, action: string, params: unknown) =>
+    withAuthoringReceipt(principal.tenantId, id, action, () => submitWrite(principal, action, params));
+  const revisionConflict = (reply: FastifyReply, currentRevision: number) =>
+    send(reply, 409, { kind: "conflict", code: "REVISION_CONFLICT", currentRevision });
   const appNotFound = (reply: FastifyReply) => send(reply, 404, failure("not_found", AUTHORING_MESSAGES.applicationNotFound, "APPLICATION_NOT_FOUND"));
   const appDisabled = (reply: FastifyReply) => send(reply, 409, failure("conflict", AUTHORING_MESSAGES.applicationDisabled, "APPLICATION_DISABLED"));
   const appMismatch = (reply: FastifyReply) => send(reply, 409, failure("conflict", AUTHORING_MESSAGES.applicationMismatch, "APPLICATION_MISMATCH"));
@@ -152,9 +165,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
 
   const isDefinition = (definition: unknown): definition is Record<string, unknown> =>
     definition !== null && typeof definition === "object" && !Array.isArray(definition);
-  const tooLarge = (id: string, applicationId: string, definition: unknown): boolean => Buffer.byteLength(JSON.stringify({ action: SAVE_ACTION_ID, params: { walkthroughId: id, applicationId, definition } })) > MAX_PROPOSAL_BYTES;
+  const tooLarge = (id: string, applicationId: string, definition: unknown): boolean => Buffer.byteLength(JSON.stringify({ action: SAVE_ACTION_ID, params: { walkthroughId: id, applicationId, definition, expectedRevision: 1_000_000 } })) > MAX_PROPOSAL_BYTES;
 
-  interface PublishedGuide { readonly definition: WalkthroughDef; readonly source: "built-in" | "studio-managed"; readonly application: ApplicationRecord | null; readonly resolved: ResolvedRegistry }
+  interface PublishedGuide { readonly version: number; readonly definition: WalkthroughDef; readonly source: "built-in" | "studio-managed"; readonly application: ApplicationRecord | null; readonly resolved: ResolvedRegistry }
   /**
    * The tenant's published guides, each re-validated against ITS application's CURRENT registry (a guide without an application is the built-in `reference` one; for a Studio-managed
    * application that is the active targets only, so a disabled target drops the guide). One that no longer validates, or whose application or registry is unknown, is left out (the others
@@ -173,7 +186,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
       const registry = await resolved.get(key);
       if (registry === undefined) continue;
       const checked = validateAuthoredDefinition(row.id, row.definition, registry.registry);
-      if (checked.ok) guides.push({ definition: checked.definition, source: registry.source, application, resolved: registry });
+      if (checked.ok) guides.push({ definition: checked.definition, source: registry.source, application, resolved: registry, version: row.liveVersion ?? 1 });
     }
     return guides;
   }
@@ -202,14 +215,14 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
       const guide = (await publishedGuides(principal.tenantId)).find((candidate) => candidate.definition.id === id);
       if (guide === undefined || guide.source !== "studio-managed" || guide.application === null) return notFound(reply);
       // The bundle the application's embed runs (D11): the definition, the application and the CURRENT active public registry. One builder shared with the runtime route; nothing else of the host leaves.
-      return send(reply, 200, buildGuideBundle({ definition: guide.definition, application: guide.application, resolved: guide.resolved }));
+      return send(reply, 200, buildGuideBundle({ definition: guide.definition, application: guide.application, resolved: guide.resolved, version: guide.version }));
     } catch { return unavailable(reply); }
   });
   app.get("/api/admin/walkthroughs", async (request, reply) => {
     const principal = await gate(request, reply, true);
     if (principal === null) return;
     try {
-      const authored = (await store.list(principal.tenantId)).map((row) => ({ id: row.id, title: row.title, description: row.description, status: row.status, applicationId: row.applicationId, stepCount: row.stepCount, updatedAt: row.updatedAt }));
+      const authored = (await store.list(principal.tenantId)).map((row) => ({ id: row.id, title: row.title, description: row.description, status: row.status, applicationId: row.applicationId, stepCount: row.stepCount, updatedAt: row.updatedAt, ...revisionState(row) }));
       return send(reply, 200, { authored, builtIn });
     } catch { return unavailable(reply); }
   });
@@ -280,11 +293,11 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
     const checked = validateAuthoredDefinition(id, candidate, resolved.registryData);
     if (!checked.ok) return invalid(reply, checked.issues);
     if (tooLarge(id, resolved.application.id, candidate)) return invalid(reply, ["definition: too large to save"]);
-    const result = await submitWrite(principal, SAVE_ACTION_ID, { walkthroughId: id, applicationId: resolved.application.id, definition: candidate });
+    const { result, row: written } = await submitTracked(principal, id, SAVE_ACTION_ID, { walkthroughId: id, applicationId: resolved.application.id, definition: candidate, expectedRevision: 0 });
     if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
     if (result !== "ok") return unavailable(reply);
     try {
-      const row = await store.get(principal.tenantId, id);
+      const row = written ?? await store.get(principal.tenantId, id);
       return row === null ? unavailable(reply) : send(reply, 201, record(row));
     } catch { return unavailable(reply); }
   });
@@ -294,9 +307,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
     if (principal === null) return;
     const id = idParam(request);
     if (id === null) return notFound(reply);
-    const body = exactBody(request.body, ["applicationId", "definition"]);
+    const body = exactBody(request.body, ["applicationId", "definition", "expectedRevision"]);
     if (body === null) return send(reply, 400, failure("malformed", AUTHORING_MESSAGES.malformed));
-    if (typeof body.applicationId !== "string" || !isDefinition(body.definition)) return send(reply, 400, failure("malformed", AUTHORING_MESSAGES.malformed));
+    if (typeof body.applicationId !== "string" || !isDefinition(body.definition) || !isRevision(body.expectedRevision)) return send(reply, 400, failure("malformed", AUTHORING_MESSAGES.malformed));
     if (Object.hasOwn(body.definition, "id") && body.definition.id !== id) return invalid(reply, ["definition.id: must match the requested draft"]);
     const candidate = { ...body.definition, id };
     let existing;
@@ -305,12 +318,14 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
     if (existing.status !== "draft") return send(reply, 409, failure("conflict", AUTHORING_MESSAGES.published));
     // The application is assigned once: a bound draft accepts only its own application, a legacy draft takes the one named here.
     if (existing.applicationId !== null && existing.applicationId !== body.applicationId) return appMismatch(reply);
+    if (existing.revision !== undefined && existing.revision !== body.expectedRevision) return revisionConflict(reply, existing.revision);
     const resolved = await resolveApplication(principal, reply, body.applicationId);
     if (resolved === null) return;
     const checked = validateAuthoredDefinition(id, candidate, resolved.registryData);
     if (!checked.ok) return invalid(reply, checked.issues);
     if (tooLarge(id, resolved.application.id, candidate)) return invalid(reply, ["definition: too large to save"]);
-    const result = await submitWrite(principal, SAVE_ACTION_ID, { walkthroughId: id, applicationId: resolved.application.id, definition: candidate });
+    const { result, row: written, currentRevision } = await submitTracked(principal, id, SAVE_ACTION_ID, { walkthroughId: id, applicationId: resolved.application.id, definition: candidate, expectedRevision: body.expectedRevision });
+    if (currentRevision !== undefined) return revisionConflict(reply, currentRevision);
     if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
     try {
       if (result === "failed") { // the executor refused: most likely the guide was published (or bound to another application) in the meantime
@@ -319,7 +334,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
         if (now !== null && now.applicationId !== null && now.applicationId !== resolved.application.id) return appMismatch(reply);
       }
       if (result !== "ok") return unavailable(reply);
-      const row = await store.get(principal.tenantId, id);
+      const row = written ?? await store.get(principal.tenantId, id);
       return row === null ? unavailable(reply) : send(reply, 200, record(row));
     } catch { return unavailable(reply); }
   });
@@ -329,13 +344,14 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
     if (principal === null) return;
     const id = idParam(request);
     if (id === null) return notFound(reply);
-    const body = exactBody(request.body, ["status"]);
+    const body = exactBody(request.body, ["status", "expectedRevision"]) ?? exactBody(request.body, ["status"]);
     const status = body?.status;
-    if (body === null || typeof status !== "string" || !(STATUSES as readonly string[]).includes(status)) return send(reply, 400, failure("malformed", AUTHORING_MESSAGES.malformed));
+    if (body === null || typeof status !== "string" || !(STATUSES as readonly string[]).includes(status) || (Object.hasOwn(body, "expectedRevision") && !isRevision(body.expectedRevision))) return send(reply, 400, failure("malformed", AUTHORING_MESSAGES.malformed));
     const wanted = status as WalkthroughStatus;
     let existing;
     try { existing = await store.get(principal.tenantId, id); } catch { return unavailable(reply); }
     if (existing === null) return notFound(reply);
+    if (isRevision(body.expectedRevision) && existing.revision !== undefined && existing.revision !== body.expectedRevision) return revisionConflict(reply, existing.revision);
     if (wanted === "published" && existing.status !== "published") {
       // The guide's application: it must be enabled to publish (a guide written before Studio belongs to the built-in reference application and has no record to disable).
       let application: ApplicationRecord | null = null;
@@ -353,15 +369,90 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
       if (!checked.ok) return invalid(reply, checked.issues);
       try {
         const published = await store.listPublished(principal.tenantId);
-        if (published.length >= MAX_PUBLISHED_PER_TENANT) return send(reply, 409, failure("conflict", AUTHORING_MESSAGES.limit));
+        if (existing.liveVersion == null && published.length >= MAX_PUBLISHED_PER_TENANT) return send(reply, 409, failure("conflict", AUTHORING_MESSAGES.limit));
       } catch { return unavailable(reply); }
     }
-    const result = await submitWrite(principal, STATUS_ACTION_ID, { walkthroughId: id, status: wanted });
+    const expectedRevision = body.expectedRevision ?? existing.revision;
+    const { result, row: written, currentRevision, failure: storeFailure } = await submitTracked(principal, id, STATUS_ACTION_ID, {
+      walkthroughId: id, status: wanted, ...(expectedRevision === undefined ? {} : { expectedRevision }),
+    });
+    if (currentRevision !== undefined) return revisionConflict(reply, currentRevision);
+    if (storeFailure === "application_disabled") return appDisabled(reply);
+    if (storeFailure === "application_not_found") return appNotFound(reply);
+    if (storeFailure === "invalid_definition") return invalid(reply, ["definition: incompatible with the current registry"]);
+    if (storeFailure === "limit_reached") return send(reply, 409, failure("conflict", AUTHORING_MESSAGES.limit));
     if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
     if (result !== "ok") return unavailable(reply);
     try {
-      const row = await store.get(principal.tenantId, id);
-      return row === null ? unavailable(reply) : send(reply, 200, record(row));
+      const row = written ?? await store.get(principal.tenantId, id);
+      return row === null ? unavailable(reply) : send(reply, 200, { ...record(row), ...(wanted === "published" && row.liveVersion != null ? { version: row.liveVersion } : {}) });
+    } catch { return unavailable(reply); }
+  });
+
+  const optionalEmpty = (body: unknown): boolean => body === undefined || exactBody(body, []) !== null;
+  const parseVersion = (request: FastifyRequest): number | null => {
+    const raw = (request.params as { version?: string }).version;
+    if (raw === undefined || !/^[1-9][0-9]{0,6}$/u.test(raw)) return null;
+    const value = Number(raw);
+    return isRevision(value) ? value : null;
+  };
+  app.get("/api/admin/walkthroughs/:id/versions", async (request, reply) => {
+    const principal = await gate(request, reply, true);
+    if (principal === null) return;
+    const id = idParam(request);
+    if (id === null) return notFound(reply);
+    try {
+      const versions = await store.listVersions?.(principal.tenantId, id);
+      return versions == null ? notFound(reply) : send(reply, 200, { versions });
+    } catch { return unavailable(reply); }
+  });
+  app.get("/api/admin/walkthroughs/:id/versions/:version", async (request, reply) => {
+    const principal = await gate(request, reply, true);
+    if (principal === null) return;
+    const id = idParam(request);
+    const version = parseVersion(request);
+    if (id === null || version === null) return notFound(reply);
+    try {
+      const row = await store.getVersion?.(principal.tenantId, id, version);
+      return row == null ? notFound(reply) : send(reply, 200, row);
+    } catch { return unavailable(reply); }
+  });
+
+  for (const [path, action] of [["revise", REVISE_ACTION_ID], ["restore", RESTORE_ACTION_ID]] as const) {
+    app.post(`/api/admin/walkthroughs/:id/${path}`, async (request, reply) => {
+      const principal = await gate(request, reply, true);
+      if (principal === null) return;
+      const id = idParam(request);
+      if (id === null) return notFound(reply);
+      const version = path === "restore" ? exactBody(request.body, ["version"])?.version : undefined;
+      if (path === "restore" ? !isRevision(version) : !optionalEmpty(request.body)) return send(reply, 400, failure("malformed", AUTHORING_MESSAGES.malformed));
+      const { result, row, failure: storeFailure } = await submitTracked(principal, id, action, {
+        walkthroughId: id, ...(version === undefined ? {} : { version }),
+      });
+      if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
+      if (storeFailure === "not_found") return notFound(reply);
+      if (storeFailure === "not_published") return send(reply, 409, failure("conflict", "This walkthrough already has a draft."));
+      return result === "ok" && row !== undefined ? send(reply, 200, record(row)) : unavailable(reply);
+    });
+  }
+
+  app.post("/api/admin/walkthroughs/:id/review", async (request, reply) => {
+    const principal = await gate(request, reply, true);
+    if (principal === null) return;
+    const id = idParam(request);
+    if (id === null) return notFound(reply);
+    if (!optionalEmpty(request.body)) return send(reply, 400, failure("malformed", AUTHORING_MESSAGES.malformed));
+    try {
+      const tenant = principal.tenantId;
+      const row = await store.get(tenant, id);
+      if (row === null) return notFound(reply);
+      const application = row.applicationId === null ? null : await applications.get(tenant, row.applicationId);
+      const resolved = row.applicationId === null || application !== null ? await registryOf(tenant, application) : undefined;
+      const managed = application !== null && resolved?.source === "studio-managed";
+      const [listing, checks] = managed
+        ? await Promise.all([targets.list(tenant, application.id), targets.checks(tenant, application.id)])
+        : [{ targets: [] }, []] as const;
+      return send(reply, 200, publishReview(row, application, resolved, listing.targets, checks));
     } catch { return unavailable(reply); }
   });
 }

@@ -155,7 +155,7 @@ async function startHost() {
   const rawSessions = JSON.stringify([primary, foreign, user, peer]);
   ({ host } = await composeReferenceHost({
     NODE_ENV: "test", DAP_ALLOW_DEV_AUTH: "1", DAP_DATABASE_URL: databaseUrl, DEV_SESSIONS: rawSessions,
-    DAP_ENABLED_ACTIONS: "demoLookup,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus,rotateStudioRuntimeKey,setStudioTargetHealth,repairStudioTarget,registerStudioCheck,setStudioCheckStatus",
+    DAP_ENABLED_ACTIONS: "demoLookup,saveWalkthroughDraft,setWalkthroughStatus,reviseWalkthrough,restoreWalkthroughVersion,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus,rotateStudioRuntimeKey,setStudioTargetHealth,repairStudioTarget,registerStudioCheck,setStudioCheckStatus",
   }, { extensions: [authoring.extension, application.extension, targetExtension.extension] }));
   const resolverFor = session => createDemoPrincipalResolver({
     sessions: parseDevSessions(rawSessions), userToken: user.token, maintainerToken: session.token,

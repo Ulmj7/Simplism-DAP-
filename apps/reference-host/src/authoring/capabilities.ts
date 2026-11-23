@@ -1,14 +1,14 @@
 /**
- * The two authoring capabilities (Feature 004, T405; application-bound since Studio V1A): the ONLY way a definition is written. They are ordinary Feature 001 capabilities,
+ * The authoring capabilities (Feature 004, T405; application-bound since Studio V1A): the ONLY way a definition is written. They are ordinary Feature 001 capabilities,
  * modelled on `guidance/capability.ts`: a request goes through the Gateway (strict schema, permission, risk, rate/replay, durable audit) and only then does a trusted executor run.
  *
- *   saveWalkthroughDraft   { walkthroughId, applicationId, definition }   insert a draft bound to an enabled application, or update one ONLY while it is a draft
+ *   saveWalkthroughDraft   { walkthroughId, applicationId, definition, expectedRevision }   insert a draft bound to an enabled application, or update one ONLY while it is a draft
  *   setWalkthroughStatus   { walkthroughId, status: draft|published }   publish (re-validates the STORED definition against its application) or unpublish
  *
  * The registry a definition is validated against is the APPLICATION's (`applicationId` -> its `registryId` -> the host-trusted catalog), never a global one; a guide stored
  * before Studio has no application and resolves to the built-in `reference` registry. Saving and publishing need the application ENABLED; unpublishing never does.
  *
- * Both are MEDIUM, `changesState`, permission EXACTLY `perm.walkthrough.maintain`, `allowedPages: "any"`, a `walkthrough` resource (rule R9) and a written justification
+ * All are MEDIUM, `changesState`, permission EXACTLY `perm.walkthrough.maintain`, `allowedPages: "any"`, a `walkthrough` resource (rule R9) and a written justification
  * in place of a confirmation (HIGH is impossible until the confirmation service exists). Audit records `/walkthroughId` (and `/status` on the status capability, a
  * closed enum) as plain values and NOTHING else: never the definition, a title, step text or registry data.
  *
@@ -20,8 +20,9 @@ import { defineAction, defineExecutor } from "@dap/contracts";
 import type { ActionDefinition, ActionExecutor, ActionId, ExecutorId, PermissionId, ResourceRef } from "@dap/contracts";
 import type { HostExtension } from "../compose.js";
 import { isAuthoredId } from "./ids.js";
-import { saveInputSchema, statusInputSchema } from "./schema.js";
-import type { SaveInput, StatusInput } from "./schema.js";
+import { restoreInputSchema, reviseInputSchema, saveInputSchema, statusInputSchema } from "./schema.js";
+import type { RestoreInput, ReviseInput, SaveInput, StatusInput } from "./schema.js";
+import { authoringReceipt } from "./write-receipt.js";
 import type { StatusOutcome, WalkthroughStore } from "./store.js";
 import type { TrustedRegistryData } from "./trusted-registry.js";
 import type { ApplicationRecord } from "../studio/applications.js";
@@ -38,7 +39,9 @@ export const SAVE_ACTION_ID = "saveWalkthroughDraft";
 export const STATUS_ACTION_ID = "setWalkthroughStatus";
 export const SAVE_EXECUTOR_ID = "ex.authoring-save-walkthrough-draft";
 export const STATUS_EXECUTOR_ID = "ex.authoring-set-walkthrough-status";
-export const AUTHORING_ACTION_IDS: readonly string[] = Object.freeze([SAVE_ACTION_ID, STATUS_ACTION_ID]);
+export const REVISE_ACTION_ID = "reviseWalkthrough";
+export const RESTORE_ACTION_ID = "restoreWalkthroughVersion";
+export const AUTHORING_ACTION_IDS: readonly string[] = Object.freeze([SAVE_ACTION_ID, STATUS_ACTION_ID, REVISE_ACTION_ID, RESTORE_ACTION_ID]);
 
 /** Why MEDIUM may skip a user confirmation (registry rule R5). */
 export const MEDIUM_JUSTIFICATION =
@@ -77,9 +80,23 @@ export const setWalkthroughStatus: ActionDefinition<StatusInput> = defineAction(
   executorId: STATUS_EXECUTOR_ID as ExecutorId,
 });
 
+const versionAction = {
+  version: 1, risk: "MEDIUM", requiredPermission: MAINTAIN_PERMISSION as PermissionId,
+  allowedPages: "any", confirmation: { kind: "not-required", justification: MEDIUM_JUSTIFICATION },
+  changesState: true, audit: { params: [{ path: "/walkthroughId", mode: "plain" }] }, resource,
+} as const;
+export const reviseWalkthrough = defineAction({
+  ...versionAction, id: REVISE_ACTION_ID as ActionId, executorId: "ex.authoring-revise-walkthrough" as ExecutorId,
+  description: "Opens the live walkthrough as an editable draft while preserving publication.", inputSchema: reviseInputSchema,
+});
+export const restoreWalkthroughVersion = defineAction({
+  ...versionAction, id: RESTORE_ACTION_ID as ActionId, executorId: "ex.authoring-restore-walkthrough" as ExecutorId,
+  description: "Restores an immutable version to the walkthrough draft while preserving publication.", inputSchema: restoreInputSchema,
+});
+
 /** The failure codes of the executors (short, fixed). */
 export type AuthoringFailureCode = "invalid_definition" | "not_a_draft" | "not_found" | "limit_reached" | "id_refused" | "store_unavailable"
-  | "application_not_found" | "application_disabled" | "application_mismatch";
+  | "application_not_found" | "application_disabled" | "application_mismatch" | "revision_conflict";
 
 /** The host's own record of what the executors received (never reachable from an AI session). */
 export interface AuthoringTrustedHandle {
@@ -126,6 +143,7 @@ export function createAuthoringExecutors(deps: AuthoringDeps): { readonly execut
     id: SAVE_EXECUTOR_ID,
     run: async (call) => {
       record(SAVE_ACTION_ID, call.params);
+      const receipt = authoringReceipt(call.security.tenantId as string, call.params.walkthroughId, SAVE_ACTION_ID);
       // Tenant and actor come from the trusted context only.
       const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
       try {
@@ -142,7 +160,11 @@ export function createAuthoringExecutors(deps: AuthoringDeps): { readonly execut
           if (locked.registryId !== application.registryId) return "invalid_definition"; // re-pointed since the read above
           const again = await resolver.resolveIn(tx, scope.tenantId, application);
           return again !== undefined && validateAuthoredDefinition(call.params.walkthroughId, call.params.definition, again.registry).ok ? "ok" : "invalid_definition";
-        });
+        }, call.params.expectedRevision, (row) => { if (receipt) receipt.row = row; });
+        if (typeof outcome === "object") {
+          if (receipt) receipt.currentRevision = outcome.currentRevision;
+          return failure("revision_conflict");
+        }
         switch (outcome) {
           case "created": case "updated": return { status: "success", affected: { type: "walkthrough", id: call.params.walkthroughId } };
           case "application_not_found": return failure("application_not_found");
@@ -161,6 +183,7 @@ export function createAuthoringExecutors(deps: AuthoringDeps): { readonly execut
     id: STATUS_EXECUTOR_ID,
     run: async (call) => {
       record(STATUS_ACTION_ID, call.params);
+      const receipt = authoringReceipt(call.security.tenantId as string, call.params.walkthroughId, STATUS_ACTION_ID);
       const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
       const { walkthroughId } = call.params;
       if (!isAuthoredId(walkthroughId)) return failure("id_refused");
@@ -189,7 +212,12 @@ export function createAuthoringExecutors(deps: AuthoringDeps): { readonly execut
           if (!resolvedFirst || applicationId !== boundTo || (locked !== null && boundApplication !== null && locked.registryId !== boundApplication.registryId)) return false;
           const resolved = await resolver.resolveIn(tx, scope.tenantId, boundApplication);
           return resolved !== undefined && validateAuthoredDefinition(walkthroughId, stored, resolved.registry).ok;
-        });
+        }, call.params.expectedRevision, (row) => { if (receipt) receipt.row = row; });
+        if (typeof outcome === "object") {
+          if (receipt) receipt.currentRevision = outcome.currentRevision;
+          return failure("revision_conflict");
+        }
+        if (receipt) receipt.failure = outcome;
         if (outcome === "application_not_found") return failure("application_not_found");
         if (outcome === "application_disabled") return failure("application_disabled");
         if (outcome === "changed" || outcome === "unchanged") return { status: "success", affected: { type: "walkthrough", id: walkthroughId } };
@@ -198,15 +226,34 @@ export function createAuthoringExecutors(deps: AuthoringDeps): { readonly execut
     },
   });
 
+  const editVersion = (action: string, executorId: string) => defineExecutor<ReviseInput | RestoreInput>({
+    id: executorId as ExecutorId,
+    run: async (call) => {
+      record(action, call.params);
+      const { walkthroughId } = call.params;
+      const tenantId = call.security.tenantId as string;
+      const receipt = authoringReceipt(tenantId, walkthroughId, action);
+      try {
+        const outcome = await store.editFromVersion?.({ tenantId, actor: call.security.userId as string }, walkthroughId,
+          "version" in call.params ? call.params.version : null, (row) => { if (receipt) receipt.row = row; });
+        if (receipt && outcome !== undefined) receipt.failure = outcome;
+        if (outcome === "changed") return { status: "success", affected: { type: "walkthrough", id: walkthroughId } };
+        return failure(outcome === "not_published" ? "not_a_draft" : outcome ?? "store_unavailable");
+      } catch { return failure("store_unavailable"); }
+    },
+  });
+  const revise = editVersion(REVISE_ACTION_ID, reviseWalkthrough.executorId!);
+  const restore = editVersion(RESTORE_ACTION_ID, restoreWalkthroughVersion.executorId!);
+
   const trusted: AuthoringTrustedHandle = Object.freeze({
     receivedCalls: (actionId: string) => Object.freeze([...(received.get(actionId) ?? [])]),
     executorCalls: (actionId?: string) => (actionId === undefined ? total : (received.get(actionId)?.length ?? 0)),
   });
-  return { executors: Object.freeze([save, status]), trusted };
+  return { executors: Object.freeze([save, status, revise, restore]), trusted };
 }
 
-/** The host extension that adds both capabilities and their executors. Each is still OFF unless `DAP_ENABLED_ACTIONS` lists it (default deny). */
+/** The host extension that adds authoring capabilities and their executors. Each is still OFF unless `DAP_ENABLED_ACTIONS` lists it (default deny). */
 export function createAuthoringExtension(deps: AuthoringDeps): { readonly extension: HostExtension; readonly trusted: AuthoringTrustedHandle } {
   const { executors, trusted } = createAuthoringExecutors(deps);
-  return { extension: Object.freeze({ definitions: Object.freeze([saveWalkthroughDraft, setWalkthroughStatus]), executors }), trusted };
+  return { extension: Object.freeze({ definitions: Object.freeze([saveWalkthroughDraft, setWalkthroughStatus, reviseWalkthrough, restoreWalkthroughVersion]), executors }), trusted };
 }
