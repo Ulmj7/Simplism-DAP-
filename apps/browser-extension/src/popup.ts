@@ -1,5 +1,5 @@
-import { readBinding, readPage, sitePattern } from "./site.js";
-import type { Binding, Page } from "./site.js";
+import { readBinding, readRuntimeStatus, readSelection, sitePattern } from "./site.js";
+import type { Binding, Selection } from "./site.js";
 
 const form = document.querySelector<HTMLFormElement>("#binding")!;
 const fields = form.querySelector("fieldset")!;
@@ -14,7 +14,7 @@ const inputs = {
   apiOrigin: form.elements.namedItem("apiOrigin") as HTMLInputElement,
 };
 
-let page: Page | null = null;
+let page: Selection | null = null;
 let binding: Binding | null = null;
 let access = false;
 let busy = false;
@@ -41,22 +41,32 @@ const messages: Record<string, string> = {
   UNAVAILABLE: "Simplism cannot access this page.",
 };
 
-async function send(action: string, current: Page | null, draft?: Binding | null) {
+async function send(action: string, current: Selection | null, draft?: Binding | null) {
   const response = await chrome.runtime.sendMessage({ action, page: current, binding: draft ?? null });
   return response && typeof response === "object" ? response as Record<string, unknown> : {};
 }
 
 function inspect(reply: Record<string, unknown>) {
-  page = readPage(reply.page);
+  page = readSelection(reply.page);
   site.textContent = page?.origin ?? "This browser page is unavailable.";
   access = reply.access === true;
   binding = page ? readBinding(reply.binding, page.origin) : null;
   inputs.applicationId.value = binding?.applicationId ?? "";
   inputs.runtimeKey.value = binding?.runtimeKey ?? "";
   inputs.apiOrigin.value = binding?.apiOrigin ?? "";
-  return binding?.enabled
-    ? access ? "Simplism is enabled on this site." : messages.ACCESS_REQUIRED!
-    : binding ? messages.DETACHED! : page ? "Save an application binding to get started." : messages.UNAVAILABLE!;
+  if (!binding?.enabled) return binding ? messages.DETACHED! : page ? "Save an application binding to get started." : messages.UNAVAILABLE!;
+  if (!access) return messages.ACCESS_REQUIRED!;
+  const runtime = readRuntimeStatus(reply.runtime);
+  const count = runtime?.count;
+  const published = count === null || count === undefined ? "" : ` ${count} published ${count === 1 ? "guide" : "guides"} available.`;
+  switch (runtime?.state) {
+    case "READY": return published.trim();
+    case "EMPTY": return messages.EMPTY!;
+    case "RUNNING": return "A guide is running." + published;
+    case "ERROR": return "Simplism encountered an error." + published;
+    case "DIRECT_RUNTIME": return messages.DIRECT_RUNTIME!;
+    default: return "Simplism is enabled. Open Simplism to check for published guides.";
+  }
 }
 
 async function request(action: "inspect" | "save" | "open" | "disable" | "enable" | "refresh") {
@@ -84,6 +94,7 @@ async function request(action: "inspect" | "save" | "open" | "disable" | "enable
     }
     const reply = await send(action, action === "refresh" ? page : current, draft);
     const outcome = typeof reply.status === "string" && Object.hasOwn(messages, reply.status) ? reply.status : "UNAVAILABLE";
+    page = readSelection(reply.page) ?? page;
     if (Object.hasOwn(reply, "access")) access = reply.access === true;
     if (page && Object.hasOwn(reply, "binding")) binding = readBinding(reply.binding, page.origin);
     if (action === "open" && (outcome === "READY" || outcome === "EMPTY")) { window.close(); return; }

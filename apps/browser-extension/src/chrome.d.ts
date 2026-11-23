@@ -5,7 +5,7 @@ interface ExtensionTarget {
   documentIds?: string[];
 }
 
-interface ExtensionTab { id?: number; url?: string }
+interface ExtensionTab { id?: number; url?: string; pendingUrl?: string }
 
 interface ExtensionSender {
   id?: string;
@@ -32,16 +32,27 @@ declare const chrome: {
       addListener(listener: (message: unknown, sender: ExtensionSender, reply: (value: unknown) => void) => boolean | void): void;
     };
   };
-  tabs: { query(query: { active?: boolean; currentWindow?: boolean; url?: string }): Promise<ExtensionTab[]> };
+  tabs: {
+    query(query: { active?: boolean; currentWindow?: boolean; url?: string }): Promise<ExtensionTab[]>;
+    sendMessage(tabId: number, message: unknown, target: { documentId: string }): Promise<unknown>;
+    onRemoved: { addListener(listener: (tabId: number) => void): void };
+  };
   permissions: {
     request(permissions: { origins: string[] }): Promise<boolean>;
     contains(permissions: { origins: string[] }): Promise<boolean>;
   };
-  storage: { local: {
-    get(key: string): Promise<Record<string, unknown>>;
-    set(values: Record<string, unknown>): Promise<void>;
-    setAccessLevel(options: { accessLevel: "TRUSTED_CONTEXTS" }): Promise<void>;
-  } };
+  storage: {
+    local: {
+      get(key: string): Promise<Record<string, unknown>>;
+      set(values: Record<string, unknown>): Promise<void>;
+      setAccessLevel(options: { accessLevel: "TRUSTED_CONTEXTS" }): Promise<void>;
+    };
+    session: {
+      get(key: string): Promise<Record<string, unknown>>;
+      set(values: Record<string, unknown>): Promise<void>;
+      remove(key: string): Promise<void>;
+    };
+  };
   scripting: {
     executeScript<T, Args extends unknown[]>(
       injection: { target: ExtensionTarget; world?: "MAIN"; func: (...args: Args) => T | Promise<T>; args?: Args },

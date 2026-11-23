@@ -53,6 +53,7 @@ Applications without a bundler can self-host `index.js` and `simplism.css` from 
 | `stopGuide()` | Cancels a pending bundle request or removes the active run and its overlay. |
 | `restartGuide()` | Starts the most recently started guide from its first step using a fresh bundle. Interactions already performed in the host application remain in effect. |
 | `getRun()` | Returns a snapshot of the run state, including a typed failure code when applicable. |
+| `getStatus()` | Reads the cached published guide count (`null` before it is known), whether a guide is running, and the current typed error (`null` when clear). |
 | `destroy()` | Stops the guide, aborts requests, and removes the instance’s launcher, listeners, timers, and stylesheet. Existing host-owned styles and DOM stay in place. |
 
 Asynchronous calls return a discriminated result with either `value` or a stable `code`. Configuration and lifecycle codes include `INVALID_CONFIGURATION`, `ALREADY_INITIALIZED`, and `RUNTIME_DESTROYED`. Loading reports `APPLICATION_UNAVAILABLE`, `NETWORK_UNAVAILABLE`, or `INVALID_RESPONSE`. The launcher offers Retry for temporary loading failures. Guide errors include `GUIDE_NOT_FOUND`, `GUIDE_BUSY`, `TARGET_NOT_FOUND`, `ROUTE_MISMATCH`, and `VERIFICATION_FAILED`. The launcher shows fixed messages and keeps actual comparison values in the page.

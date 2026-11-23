@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { settingKey, sitePattern } from "./site.js";
+import { settingKey, sitePattern, STATUS_REQUEST } from "./site.js";
 
 const origin = "http://127.0.0.1:5187";
 const otherOrigin = "http://127.0.0.1:5188";
@@ -9,12 +9,14 @@ const page = { origin, tabId: 1, documentId: "original" };
 
 async function worker() {
   const settings: Record<string, unknown> = {};
+  const documents: Record<string, unknown> = {};
   const other = { id: 2, url: otherOrigin + "/profile" };
   const active = { id: 1, url: origin + "/profile" };
   const popup = "chrome-extension://simplism/popup.html";
   const registration: string[] = [];
   let documentId = page.documentId;
   let verified = true;
+  let runtime: unknown = { state: "READY", count: 2 };
   let listener: ((message: unknown, sender: ExtensionSender, reply: (result: unknown) => void) => boolean | void) | undefined;
   const extension = {
     runtime: { id: "simplism", getURL: () => popup, onMessage: { addListener(fn: typeof listener) { listener = fn; } } },
@@ -22,14 +24,25 @@ async function worker() {
       setAccessLevel: vi.fn(async () => undefined),
       get: vi.fn(async (key: string) => ({ [key]: settings[key] })),
       set: vi.fn(async (pairs: Record<string, unknown>) => { Object.assign(settings, pairs); }),
+    }, session: {
+      get: vi.fn(async (key: string) => ({ [key]: documents[key] })),
+      set: vi.fn(async (pairs: Record<string, unknown>) => { Object.assign(documents, pairs); }),
+      remove: vi.fn(async (key: string) => { delete documents[key]; }),
     } },
-    tabs: { query: vi.fn(async (query: { active?: boolean }) => query.active ? [active] : [active, other]) },
+    tabs: {
+      query: vi.fn(async (query: { active?: boolean }) => query.active ? [active] : [active, other]),
+      onRemoved: { addListener: vi.fn() },
+      sendMessage: vi.fn(async (_tabId: number, _message: unknown, target: { documentId: string }) => {
+        if (target.documentId !== documentId) throw new Error("Document changed");
+        return runtime;
+      }),
+    },
     permissions: { contains: vi.fn(async ({ origins }: { origins: string[] }) => origins[0] === sitePattern(origin)) },
     scripting: {
       executeScript: vi.fn(async (script: { target: ExtensionTarget; world?: "MAIN"; files?: string[]; args?: string[] }) => {
         const top = { documentId, frameId: 0 };
-        if (!script.world) return [{ ...top, result: origin }];
         if (script.files) return [top];
+        if (!script.world) return [{ ...top, result: origin }];
         const action = script.args?.[0];
         const status = action === "verify" ? verified ? "VERIFIED" : "APPLICATION_UNAVAILABLE" : action === "detach" ? "DETACHED" : "READY";
         return [{ ...top, result: { status, css: status === "READY" } }];
@@ -49,7 +62,7 @@ async function worker() {
       if (listener?.(message, { id: "simplism", ...sender }, resolve) !== true) resolve(undefined);
     });
   }
-  return { extension, settings, send, rejectBinding() { verified = false; }, navigate() { documentId = "replacement"; },
+  return { extension, settings, send, rejectBinding() { verified = false; }, navigate() { documentId = "replacement"; }, status(value: unknown) { runtime = value; },
     popup: (action: string, draft = binding) => send({ action, page, binding: draft }, { url: popup }) };
 }
 
@@ -58,7 +71,8 @@ afterEach(() => { vi.unstubAllGlobals(); });
 it("registers one exact site after a public verification and uses the pinned document for MAIN and CSS", async () => {
   const { extension, settings, popup } = await worker();
   const css = { target: { tabId: 1, documentIds: [page.documentId] }, files: ["simplism.css"] };
-  expect(await popup("inspect")).toMatchObject({ page, binding: null, access: true });
+  expect(await popup("inspect")).toMatchObject({ page: { tabId: 1, origin }, binding: null, access: true, runtime: null });
+  expect(extension.scripting.executeScript).not.toHaveBeenCalled();
   expect(await popup("save")).toMatchObject({ status: "READY", binding });
   expect(settings).toEqual({ [settingKey(origin)]: binding });
   expect(extension.scripting.registerContentScripts).toHaveBeenCalledOnce();
@@ -69,10 +83,31 @@ it("registers one exact site after a public verification and uses the pinned doc
   expect(extension.scripting.insertCSS).toHaveBeenCalledExactlyOnceWith(css);
   expect(await popup("disable")).toMatchObject({ status: "DETACHED", binding: { enabled: false } });
   expect(extension.scripting.unregisterContentScripts).toHaveBeenCalledOnce();
+  expect(extension.scripting.removeCSS).toHaveBeenCalledTimes(2);
   expect(extension.scripting.removeCSS).toHaveBeenLastCalledWith(css);
   expect(await popup("enable")).toMatchObject({ status: "READY", binding });
   expect(extension.scripting.registerContentScripts).toHaveBeenCalledTimes(2);
   expect(extension.scripting.executeScript.mock.calls.some(([script]) => script.target.tabId === 2)).toBe(false);
+});
+
+it("reads only the pinned document's closed cached status when the popup reopens", async () => {
+  const { extension, popup, status, navigate } = await worker();
+  await popup("save");
+  vi.clearAllMocks();
+  expect(await popup("inspect")).toEqual({ status: "READY", page, binding, access: true, runtime: { state: "READY", count: 2 } });
+  expect(extension.tabs.sendMessage).toHaveBeenCalledExactlyOnceWith(1, STATUS_REQUEST, { documentId: "original" });
+  status({ state: "RUNNING", count: 2 });
+  expect(await popup("inspect")).toMatchObject({ runtime: { state: "RUNNING", count: 2 } });
+  status({ state: "ERROR", count: 1, message: "Extra detail" });
+  expect(await popup("inspect")).toMatchObject({ runtime: null });
+  navigate();
+  expect(await popup("inspect")).toMatchObject({ runtime: null });
+  expect(extension.scripting.executeScript).not.toHaveBeenCalled();
+  expect(extension.scripting.registerContentScripts).not.toHaveBeenCalled();
+  expect(extension.scripting.insertCSS).not.toHaveBeenCalled();
+  expect(extension.scripting.removeCSS).not.toHaveBeenCalled();
+  expect(extension.storage.local.set).not.toHaveBeenCalled();
+  expect(extension.storage.session.set).not.toHaveBeenCalled();
 });
 
 it("keeps the saved configuration when validation fails or the popup's document has changed", async () => {

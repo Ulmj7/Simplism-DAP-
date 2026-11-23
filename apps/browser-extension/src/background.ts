@@ -1,11 +1,26 @@
-import { readBinding, readPage, settingKey, sitePattern, webOrigin } from "./site.js";
-import type { Binding, Page, PageAction, PageReply } from "./site.js";
+import { readBinding, readPage, readRuntimeStatus, readSelection, settingKey, sitePattern, STATUS_REQUEST, webOrigin } from "./site.js";
+import type { Binding, Page, PageAction, PageReply, Selection } from "./site.js";
 
 const popupUrl = chrome.runtime.getURL("popup.html");
 const ready = chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 const queue = new Map<string, Promise<unknown>>();
 const unavailable = { status: "UNAVAILABLE" } as const;
 const changed = { status: "SITE_CHANGED" } as const;
+const documentKey = (tabId: number) => `document:${tabId}`;
+
+chrome.tabs.onRemoved.addListener(tabId => {
+  void chrome.storage.session.remove(documentKey(tabId)).catch(() => undefined);
+});
+
+async function inspectPage(selection: Selection) {
+  const key = documentKey(selection.tabId);
+  const page = readPage((await chrome.storage.session.get(key))[key]);
+  if (page?.tabId !== selection.tabId || page.origin !== selection.origin) return { page: selection, runtime: null };
+  try {
+    const status = await chrome.tabs.sendMessage(page.tabId, STATUS_REQUEST, { documentId: page.documentId });
+    return { page, runtime: readRuntimeStatus(status) };
+  } catch { return { page: selection, runtime: null }; }
+}
 
 function onSite<T>(origin: string, action: () => Promise<T>): Promise<T> {
   const work = (queue.get(origin) ?? ready).catch(() => undefined).then(async () => {
@@ -73,6 +88,11 @@ async function sendToPage(page: Page, action: PageAction, binding?: Binding): Pr
   };
 
   try {
+    if (action === "attach" || action === "open" || action === "refresh") {
+      const [receiver] = await chrome.scripting.executeScript({ target, files: ["receiver.js"] });
+      if (receiver?.documentId !== page.documentId || receiver.frameId !== 0) return changed;
+      await chrome.storage.session.set({ [documentKey(page.tabId)]: page });
+    }
     const result = await call(action);
     if (action !== "verify") {
       // Repeated popup actions must not accumulate copies of the stylesheet.
@@ -101,26 +121,35 @@ async function fromPopup(message: Record<string, unknown>) {
   const action = message.action;
   if (typeof action !== "string" || !popupActions.has(action)) return unavailable;
   const [tab, ...others] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (others.length || tab?.id === undefined || webOrigin(tab.url) === null) return unavailable;
-  const current = await pageAt(tab.id);
-  if (!current || current.origin !== webOrigin(tab.url)) return changed;
-  if (action !== "inspect") {
-    const previous = readPage(message.page);
-    if (previous?.tabId !== current.tabId || previous?.documentId !== current.documentId || previous?.origin !== current.origin) return changed;
+  const origin = webOrigin(tab?.url);
+  if (others.length || tab?.id === undefined || origin === null) return unavailable;
+  if (tab.pendingUrl !== undefined) return changed;
+  const selection = { tabId: tab.id, origin };
+  if (action === "inspect") {
+    await ready;
+    const binding = await saved(origin);
+    const access = await hasAccess(origin);
+    const inspection = binding?.enabled && access ? await inspectPage(selection) : { page: selection, runtime: null };
+    return { status: "READY", binding, access, ...inspection };
   }
+
+  const current = await pageAt(tab.id);
+  if (!current || current.origin !== origin) return changed;
+  const previous = readSelection(message.page);
+  if (previous?.tabId !== current.tabId || previous.origin !== current.origin
+    || (previous.documentId !== undefined && previous.documentId !== current.documentId)) return changed;
 
   return onSite(current.origin, async () => {
     const binding = await saved(current.origin);
     const access = await hasAccess(current.origin);
     const key = settingKey(current.origin);
-    if (action === "inspect") return { status: "READY", page: current, binding, access };
     if (action === "disable" && binding) {
       const disabled = { ...binding, enabled: false };
       await chrome.storage.local.set({ [key]: disabled });
       const reply = await sendToPage(current, "detach");
       await withSitePages(current.origin, current, "detach");
       await register(current.origin, false);
-      return { status: reply.status, binding: disabled, access };
+      return { status: reply.status, page: current, binding: disabled, access };
     }
     if (!access) return { status: "ACCESS_REQUIRED", binding, access };
 
@@ -133,12 +162,12 @@ async function fromPopup(message: Record<string, unknown>) {
       await chrome.storage.local.set({ [key]: draft });
       const reply = await sendToPage(current, "attach", draft);
       await withSitePages(current.origin, current, "attach", draft);
-      return { status: reply.status, binding: draft, access };
+      return { status: reply.status, page: current, binding: draft, access };
     }
     if ((action === "open" || action === "refresh") && binding?.enabled) {
       await register(current.origin, true);
       const reply = await sendToPage(current, action, binding);
-      return { status: reply.status, binding, access };
+      return { status: reply.status, page: current, binding, access };
     }
     return { status: "INVALID_CONFIGURATION", binding, access };
   });

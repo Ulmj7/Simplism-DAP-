@@ -13,7 +13,7 @@ The Chromium extension lets a user run published Studio guides on a site they en
 1. Ask the Studio maintainer for the application's **Application ID**, **Runtime key**, and **API origin**. The API origin is the backend's scheme, host and optional port. Leave off any path or trailing slash.
 2. Navigate to the exact enrolled site and open the Simplism toolbar popup. Enter the three values and choose **Save site**. Approve the access prompt for the site you are enrolling.
 3. Choose **Open Simplism**, then select a published guide. Use the in-page launcher to stop or restart an active guide. A page reload ends the run. The enabled site can mount a fresh launcher for the next run.
-4. Use **Refresh** to refresh the site's published catalog. Use **Disable on this site** to remove the extension's runtime and stop loading guides there. Use **Enable on this site** and then **Open Simplism** to start using the saved binding again.
+4. Reopen the popup to see the current page's cached status and published guide count when available. Use **Refresh** to fetch the latest catalog. Use **Disable on this site** to remove the extension's runtime and stop loading guides there. Use **Enable on this site** and then **Open Simplism** to start using the saved binding again.
 
 If a page already integrates the SDK directly, its runtime owns the page. Use that page's **Guides** launcher. If an enrolled site changes origin, save a new binding on that origin.
 

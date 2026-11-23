@@ -34,6 +34,8 @@ export interface Simplism {
   startGuide(id: string): Promise<RuntimeResult>;
   stopGuide(): void;
   getRun(): GuideRun;
+  /** Read the current catalog and delivery state without fetching or changing the launcher. */
+  getStatus(): { readonly count: number | null; readonly running: boolean; readonly error: ErrorCode | null };
   restartGuide(): Promise<RuntimeResult>;
   destroy(): void;
 }
@@ -103,6 +105,8 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
   let mounted: Extract<ReturnType<typeof mountManagedRuntime>, { ok: true }> | undefined;
   let lastGuide: string | undefined;
   let run: GuideRun = { status: "idle" };
+  let catalogError: ErrorCode | null = null;
+  let guideError: ErrorCode | null = null;
   const trigger = h("button", { type: "button", class: "dap-launcher-button", "aria-haspopup": "dialog", "aria-expanded": "false" }, "Guides");
   const heading = h("h2", { tabindex: "-1" }, "Available guides");
   const contents = h("div");
@@ -135,6 +139,7 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
   }
   function announce(code: ErrorCode) { status.textContent = messages[code]; }
   function showError(code: ErrorCode) {
+    catalogError = code;
     const message = h("p", { role: "alert" }, messages[code]);
     if (code !== "NETWORK_UNAVAILABLE") { contents.replaceChildren(message); return; }
     const retry = h("button", { type: "button", "data-simplism-retry": "" }, "Retry");
@@ -175,6 +180,7 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     if (guideList) return Promise.resolve(success(guideList));
     if (loading) return loading.result;
     const controller = new AbortController();
+    catalogError = null;
     const focused = doc.activeElement;
     const moveFocus = !panel.hidden && contents.contains(focused);
     const focusedGuide = focused?.getAttribute("data-simplism-guide") ?? undefined;
@@ -193,6 +199,7 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
   }
 
   function stopGuide() {
+    guideError = null;
     pending?.abort();
     pending = undefined;
     const current = mounted;
@@ -216,12 +223,13 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
   async function startGuide(id: string): Promise<RuntimeResult> {
     if (lifetime.signal.aborted) return failure("RUNTIME_DESTROYED");
     if (pending || mounted) return failure("GUIDE_BUSY");
-    if (typeof id !== "string" || !GUIDE_ID.test(id)) { announce("GUIDE_NOT_FOUND"); return failure("GUIDE_NOT_FOUND"); }
+    const reject = (code: ErrorCode) => { guideError = code; announce(code); return failure(code); };
+    if (typeof id !== "string" || !GUIDE_ID.test(id)) return reject("GUIDE_NOT_FOUND");
+    guideError = null;
     const operation = new AbortController();
     pending = operation;
     const signal = AbortSignal.any([lifetime.signal, operation.signal]);
     const stopped = () => failure(lifetime.signal.aborted ? "RUNTIME_DESTROYED" : "GUIDE_STOPPED");
-    const reject = (code: ErrorCode) => { announce(code); return failure(code); };
     try {
       const ready = await start();
       if (signal.aborted) return stopped();
@@ -296,6 +304,8 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     cancelLoad();
     stopGuide();
     run = { status: "idle" };
+    guideList = undefined;
+    catalogError = null;
     root?.remove();
     stylesheet?.remove();
     release();
@@ -327,5 +337,8 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     if (event.persisted && root) void listGuides();
   }, ownedListener);
 
-  return Object.freeze({ start, listGuides, openLauncher, startGuide, stopGuide, getRun: () => ({ ...run }), restartGuide, destroy });
+  return Object.freeze({
+    start, listGuides, openLauncher, startGuide, stopGuide, getRun: () => ({ ...run }), restartGuide, destroy,
+    getStatus: () => ({ count: guideList?.length ?? null, running: run.status === "running", error: run.status === "failed" ? run.code : guideError ?? catalogError }),
+  });
 }

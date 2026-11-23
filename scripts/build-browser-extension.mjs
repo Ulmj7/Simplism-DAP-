@@ -9,7 +9,7 @@ const outDir = join(root, "dist");
 
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
-for (const name of ["background", "content", "main", "popup"]) {
+for (const name of ["background", "content", "main", "popup", "receiver"]) {
   await build({
     configFile: false,
     root,

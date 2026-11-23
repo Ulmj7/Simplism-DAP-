@@ -1,7 +1,7 @@
 import { createSimplism } from "../../reference-web/dist/sdk/index.js";
 import type { ErrorCode, Simplism } from "../../reference-web/dist/sdk/index.js";
-import { readBinding } from "./site.js";
-import type { PageReply } from "./site.js";
+import { readBinding, STATUS_REPLY, STATUS_REQUEST } from "./site.js";
+import type { PageReply, RuntimeStatus } from "./site.js";
 
 type Command = "verify" | "attach" | "open" | "refresh" | "detach";
 type Bridge = (command: Command, site: string, raw?: unknown) => Promise<PageReply>;
@@ -9,23 +9,40 @@ type Bridge = (command: Command, site: string, raw?: unknown) => Promise<PageRep
 // Runtime V1's cross-bundle owner slot is shared by the published package. Preserve a
 // direct SDK owner, even when createSimplism would return that instance for identical options.
 const sdkOwner = Symbol.for("simplism.runtime.v1");
+const previewOwner = Symbol.for("simplism.preview.v1");
 const bridgeKey = Symbol.for("simplism.browser-extension.v1");
 const page = window as Window & { [bridgeKey]?: Bridge; [sdkOwner]?: unknown };
 if (window === window.top && !Object.hasOwn(page, bridgeKey)) {
   let instance: Simplism | undefined;
   let ownership: unknown;
   let configuration: string | undefined;
+  let lastStatus: RuntimeStatus["state"] = "PENDING";
   const release = () => {
     if (instance && Object.hasOwn(page, sdkOwner) && page[sdkOwner] === ownership) instance.destroy();
     instance = undefined;
     ownership = undefined;
     configuration = undefined;
+    lastStatus = "PENDING";
   };
   const failure = (code: ErrorCode): PageReply => {
     release();
+    lastStatus = "ERROR";
     return { status: code === "APPLICATION_UNAVAILABLE" || code === "NETWORK_UNAVAILABLE" || code === "INVALID_RESPONSE"
       ? code : "UNAVAILABLE" };
   };
+
+  function snapshot(): RuntimeStatus {
+    if (!instance || page[sdkOwner] !== ownership) {
+      const direct = Object.hasOwn(page, sdkOwner) || Object.hasOwn(page, previewOwner) || Object.hasOwn(page, "DapEmbed");
+      return { state: direct ? "DIRECT_RUNTIME" : lastStatus === "DIRECT_RUNTIME" ? "PENDING" : lastStatus, count: null };
+    }
+    const { count, running, error } = instance.getStatus();
+    return { state: running ? "RUNNING" : error ? "ERROR" : count === null ? "PENDING" : count === 0 ? "EMPTY" : "READY", count };
+  }
+
+  document.addEventListener(STATUS_REQUEST, () => {
+    document.dispatchEvent(new CustomEvent(STATUS_REPLY, { detail: JSON.stringify(snapshot()) }));
+  });
 
   const bridge: Bridge = async (command, site, raw) => {
     if (location.origin !== site || window !== window.top) return { status: "SITE_CHANGED" };
@@ -53,9 +70,12 @@ if (window === window.top && !Object.hasOwn(page, bridgeKey)) {
     const key = JSON.stringify([binding.applicationId, binding.runtimeKey, binding.apiOrigin]);
     if (instance && (configuration !== key || !Object.hasOwn(page, sdkOwner) || page[sdkOwner] !== ownership)) release();
     if (!instance) {
-      if (Object.hasOwn(page, sdkOwner)) return { status: "DIRECT_RUNTIME" };
+      if (Object.hasOwn(page, sdkOwner)) { lastStatus = "DIRECT_RUNTIME"; return { status: "DIRECT_RUNTIME" }; }
       const prepared = createSimplism(binding);
-      if (!prepared.ok) return { status: prepared.code === "ALREADY_INITIALIZED" ? "DIRECT_RUNTIME" : "INVALID_CONFIGURATION" };
+      if (!prepared.ok) {
+        lastStatus = prepared.code === "ALREADY_INITIALIZED" ? "DIRECT_RUNTIME" : "ERROR";
+        return { status: lastStatus === "DIRECT_RUNTIME" ? "DIRECT_RUNTIME" : "INVALID_CONFIGURATION" };
+      }
       instance = prepared.value;
       ownership = page[sdkOwner];
       configuration = key;
