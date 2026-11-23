@@ -64,7 +64,7 @@ describe("every rejection class", () => {
   it.each(["private", "redact", "Public", "", null, undefined, true])("refuses the privacy %j: only public targets are registrable", (privacy) => {
     expect(issuesOf(valid({ privacy }))).toEqual([TARGET_ISSUE_PHRASES.privacy]);
   });
-  it.each(["", "   ", "a<b", "a>b", "a&b", 'a"b', "a'b", "a`b", "line\nbreak", "bidi‮over", "x".repeat(81), 5, null])("refuses the label %j", (label) => {
+  it.each(["", "   ", "a<b", "a>b", "a&b", 'a"b', "a'b", "a`b", "line\nbreak", "bidi\u202eover", "x".repeat(81), 5, null])("refuses the label %j", (label) => {
     expect(issuesOf(valid({ label }))).toEqual([TARGET_ISSUE_PHRASES.label]);
   });
   it.each(["", "   ", "a<b", "a&b", "x".repeat(241), 5])("refuses the description %j", (description) => {
