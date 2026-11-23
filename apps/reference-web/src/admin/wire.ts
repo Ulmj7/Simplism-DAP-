@@ -38,6 +38,10 @@ export const managedPageOf = (value: unknown): value is string => bounded(value,
 export const targetIdOf = (value: unknown): value is string => bounded(value, LIMITS.targetId) && ID_PATTERN.test(value);
 export const operationList = (value: unknown): value is readonly string[] => Array.isArray(value) && value.length >= 1 && value.length <= LIMITS.operations
   && new Set(value as unknown[]).size === value.length && (value as unknown[]).every(item => (OPERATIONS as readonly unknown[]).includes(item));
+export const managedOperations = (role: unknown, value: unknown): value is readonly string[] => {
+  if (typeof role !== "string" || !["button", "link", "textbox", "checkbox", "select"].includes(role)) return false;
+  return operationList(value) && value.includes("highlight") && !value.includes(role === "textbox" ? "click" : "input");
+};
 export const unsafeKey = (key: string) => key === "__proto__" || key === "constructor" || key === "prototype";
 
 /** A normalized `scheme://host[:port]` origin: what a URL parser gives back unchanged. */

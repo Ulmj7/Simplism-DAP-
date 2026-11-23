@@ -661,3 +661,101 @@ it("keeps Connect off with a hint for a draft whose application the editor knows
   expect(control<HTMLSelectElement>(root, "#editor-target").value).toBe("orders.submit");
   expect(host.studio()).toEqual([]);
 });
+
+const managed = app(ORD, "Managed orders", 5187, "studio-managed");
+const managedTarget = {
+  id: "orders.submit", route: "orders", page: "/#/orders", role: "button", label: "Submit order", description: "Submits the order",
+  operations: ["highlight", "click"], privacy: "public", status: "active", references: { drafts: 2, published: 1 }, updatedAt: stamp,
+};
+const managedRegistry = (active: boolean) => ({
+  routes: active ? ["orders"] : [], elements: active ? [ordersElements[1]] : [], postconditionNames: active ? ["route.orders"] : [],
+  previewable: active, source: "studio-managed", pages: active ? { "/#/orders": "orders" } : {}, previewMode: "application-window",
+});
+const proposed = {
+  ref: "@e7", name: "Submit order", role: "button", route: null, status: "registrable",
+  proposal: { targetId: "orders.submit", role: "button", page: "/#/orders", route: "orders", routeIsNew: true,
+    suggestedLabel: "Submit order", allowedOperations: ["highlight", "click", "focus"], defaultOperations: ["highlight", "click"], privacy: "public" },
+};
+
+it("registers, refreshes the editor registry, and saves only the durable target ID in a managed draft", async () => {
+  const host = fakeHost({ apps: [managed] });
+  let registered = false;
+  host.overrides.set(`GET /api/admin/applications/${ORD}/registry`, () => json(managedRegistry(registered)));
+  const original = host.fetch;
+  const browserFetch: FetchLike = async (url, init) => {
+    if (url !== "/api/studio/browser") return original(url, init);
+    const command = JSON.parse(init.body as string);
+    if (command.action === "register") {
+      expect(command).toEqual({ action: "register", applicationId: ORD, sessionId: "session-b", ref: "@e7",
+        targetId: "orders.submit", route: "orders", operations: ["highlight", "click", "focus"],
+        label: "Submit order", description: "Submits the order", privacy: "public" });
+      registered = true;
+      return json({ target: { ...managedTarget, operations: ["highlight", "click", "focus"] }, route: { route: "orders", page: "/#/orders", created: true } });
+    }
+    if (command.action === "refresh") return json({ url: managed.origin + "/#/orders", route: registered ? "orders" : null,
+      page: "/#/orders", hidden: 8, truncated: true, elements: registered ? [candidates[ORD]![0]] : [proposed] });
+    return original(url, init);
+  };
+  const { root } = await setup("editor", { ...host, fetch: browserFetch });
+  expect(options(root, "editor-target")).toEqual([""]);
+  await click(root, "Connect Chrome"); await click(root, "Inspect current page");
+  expect(root.querySelector(".studio-list-note")?.textContent).toContain("8 elements are not shown");
+  expect(root.querySelector(".studio-list-note")?.textContent).toContain("64");
+  await click(root, "Register target: Submit order");
+  const form = control<HTMLFormElement>(root, "form.studio-register");
+  const input = <T extends HTMLElement>(suffix: string) => control<T>(form, `[id$="-register-${suffix}"]`);
+  expect(document.activeElement).toBe(form.querySelector("h3"));
+  expect(form.textContent).toContain("Live evidence");
+  expect(form.textContent).toContain("What will be saved");
+  expect(input<HTMLInputElement>("id").readOnly).toBe(true);
+  expect(input<HTMLInputElement>("id").value).toBe("orders.submit");
+  input<HTMLInputElement>("route").value = "order-list";
+  input<HTMLTextAreaElement>("description").value = "Submits the order";
+  control<HTMLInputElement>(form, 'input[value="focus"]').checked = true;
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  expect(root.querySelector(".studio-alert")?.getAttribute("role")).toBe("alert");
+  expect(root.querySelector(".studio-alert")?.textContent).toContain("Check the highlighted fields");
+  expect(document.activeElement).toBe(input("route"));
+  expect(registered).toBe(false);
+  input<HTMLInputElement>("route").value = "orders";
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await turn();
+  expect(registered).toBe(true);
+  expect(root.querySelector('[data-status="trusted"]')?.textContent).toContain("orders.submit");
+  expect(options(root, "editor-target")).toContain("orders.submit");
+  expect(control<HTMLSelectElement>(root, "#editor-target").value).toBe("");
+  await click(root, "Use: Submit order");
+  fill(root, "editor-title", "Orders tour"); fill(root, "editor-description", "Submit orders."); fill(root, "editor-completion", "Done.");
+  fill(root, "editor-text", "Press Submit order."); fill(root, "editor-wait", "click", "change");
+  expect(button(root, c.preview).disabled).toBe(true);
+  expect(root.querySelector("#editor-preview-hint")?.textContent).toBe("Preview in the application window is added in the next step.");
+  await click(root, c.save);
+  const body = JSON.stringify(host.writes().at(-1)?.body);
+  expect(body).toContain("orders.submit");
+  expect(body).not.toMatch(/@e\d/);
+  expect(JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage), location.href])).not.toMatch(/@e\d/);
+});
+
+it("shows managed routes and target references and confirms a referenced disable before sending the status", async () => {
+  let status = "active";
+  const host = fakeHost({ apps: [managed] });
+  const path = `/api/admin/applications/${ORD}/targets`;
+  host.overrides.set(`GET ${path}`, () => json({ targets: [{ ...managedTarget, status }],
+    routes: [{ route: "orders", page: "/#/orders" }], limits: { maxTargets: 200, maxRoutes: 20 } }));
+  host.overrides.set(`POST ${path}/orders.submit/status`, () => {
+    status = String(host.writes().at(-1)?.body?.status);
+    return json({ ...managedTarget, status });
+  });
+  const { root } = await setup("applications", host);
+  await click(root, "View registry: Managed orders");
+  expect(root.textContent).toContain("orders · /#/orders");
+  expect(root.textContent).toContain("2 drafts, 1 published");
+  await click(root, "Disable orders.submit");
+  const confirm = control(root, "dialog[open]");
+  expect(confirm.textContent).toContain("2 drafts and 1 published walkthroughs");
+  expect(host.writes()).toEqual([]);
+  expect(document.activeElement?.textContent).toBe(c.cancel);
+  await click(confirm, "Disable target");
+  expect(host.writes().at(-1)?.body).toEqual({ status: "disabled" });
+  await click(root, "Enable orders.submit");
+  expect(host.writes().at(-1)?.body).toEqual({ status: "active" });
+});

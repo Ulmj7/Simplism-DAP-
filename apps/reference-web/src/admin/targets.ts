@@ -1,5 +1,5 @@
 import { isPlainText } from "@dap/walkthrough";
-import { LIMITS, bounded, count, exact, managedPageOf, operationList, record, routeKey, targetIdOf } from "./wire.js";
+import { LIMITS, bounded, count, exact, managedOperations, managedPageOf, record, routeKey, targetIdOf } from "./wire.js";
 import type { Bag } from "./wire.js";
 
 /**
@@ -28,7 +28,7 @@ export function parseTargetView(value: unknown, id?: string): TargetView | null 
   if (!record(value) || !exact(value, KEYS)) return null;
   const { references, updatedAt } = value;
   if (!targetIdOf(value.id) || (id !== undefined && value.id !== id) || !routeKey(value.route) || !managedPageOf(value.page) || !bounded(value.role, LIMITS.role)
-    || !isPlainText(value.label, LIMITS.label) || !isPlainText(value.description, LIMITS.description) || !operationList(value.operations) || !value.operations.includes("highlight")
+    || !isPlainText(value.label, LIMITS.label) || !isPlainText(value.description, LIMITS.description) || !managedOperations(value.role, value.operations)
     || value.privacy !== "public" || (value.status !== "active" && value.status !== "disabled")
     || !record(references) || !exact(references, ["drafts", "published"]) || !count(references.drafts, LIMITS.references) || !count(references.published, LIMITS.references)
     || !bounded(updatedAt, LIMITS.updatedAt) || !Number.isFinite(Date.parse(updatedAt))) return null;

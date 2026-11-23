@@ -208,11 +208,11 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
   }
 
   // ---- rows ------------------------------------------------------------------------------------------------------
-  function action(label: string, candidate: Candidate, run: () => void): HTMLButtonElement {
+  function action(label: string, candidate: Candidate, run: (trigger: HTMLButtonElement) => void): HTMLButtonElement {
     const control = button(label);
     control.setAttribute("aria-label", `${label.replace("…", "")}: ${candidate.name}`);
     // Handlers check the state table itself, not the button attribute: a button forced on in the DOM still cannot run a command.
-    control.addEventListener("click", () => { if (allowedNow().rows && candidates.includes(candidate)) run(); });
+    control.addEventListener("click", () => { if (allowedNow().rows && candidates.includes(candidate)) run(control); });
     rowButtons.push(control);
     return control;
   }
@@ -232,7 +232,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
           h("strong", {}, candidate.name), facts,
           h("p", { class: "hint" }, `Registrable · not registered yet · marker ${candidate.proposal.targetId}`),
           h("p", { class: "hint" }, `Page ${candidate.proposal.page}`), evidence,
-          h("div", { class: "admin-actions" }, action("Highlight", candidate, () => { void highlightRow(candidate); }), action("Register target…", candidate, () => openRegister(candidate))));
+          h("div", { class: "admin-actions" }, action("Highlight", candidate, () => { void highlightRow(candidate); }), action("Register target…", candidate, trigger => openRegister(candidate, trigger))));
       case "trusted":
         return h("li", { class: "studio-candidate", "data-status": "trusted" },
           h("strong", {}, candidate.name), facts,
@@ -249,7 +249,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
     focus?.focus();
   }
   /** "Live evidence" (read-only facts the host read from the page) kept visibly apart from "What will be saved" (what the maintainer confirms). */
-  function openRegister(candidate: RegistrableCandidate) {
+  function openRegister(candidate: RegistrableCandidate, trigger: HTMLButtonElement) {
     if (!session) return;
     const proposal = candidate.proposal;
     const field = (name: string) => uid(`register-${name}`);
@@ -297,8 +297,8 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
     const title = h("h3", { id: field("title"), tabindex: "-1" }, "Register target");
     const element = h("form", { class: "studio-register", "aria-labelledby": field("title"), novalidate: "" }, title, evidence, save, h("div", { class: "admin-actions" }, submit, cancel));
     registerForm = { element, submit };
-    cancel.addEventListener("click", () => closeRegister(rowFocus(candidate.ref)));
-    element.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); closeRegister(rowFocus(candidate.ref)); } });
+    cancel.addEventListener("click", () => closeRegister(trigger));
+    element.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); closeRegister(trigger); } });
     element.addEventListener("submit", event => {
       event.preventDefault();
       if (state !== "CONNECTED" || pending || registerForm?.element !== element) return;
@@ -327,10 +327,6 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
     render();
     title.focus();
   }
-  const rowFocus = (ref: string): HTMLElement | undefined => {
-    const index = candidates.findIndex(candidate => candidate.ref === ref);
-    return index < 0 ? undefined : list.children[index]?.querySelector<HTMLElement>("button") ?? undefined;
-  };
 
   // ---- session bookkeeping -----------------------------------------------------------------------------------------
   function flushRetired() {

@@ -639,3 +639,69 @@ it("switching to an application known to be disabled closes the session and keep
   expect(harness.states().connect).toBe(true);
   expect(harness.notice()).toBe("This application is disabled. Enable it in Applications to connect.");
 });
+
+it("recovers an owned session only after BROWSER_BUSY and disconnects the replacement id on exit", async () => {
+  const harness = setup({
+    connect: () => refused("BROWSER_BUSY"),
+    resume: () => ok({ kind: "connected", sessionId: "renewed", applicationId: APP.id, application: APP.name,
+      origin: "http://127.0.0.1:5173", registrySource: "studio-managed", resumed: true }),
+  });
+  expect(harness.named("Reconnect").hidden).toBe(true);
+  await harness.press("Connect Chrome");
+  expect(harness.named("Reconnect").hidden).toBe(false);
+  expect(harness.panel.querySelector('[role="alert"]')?.textContent).toBe("A browser workspace is already active.");
+  await harness.press("Reconnect");
+  expect(harness.workspace.state()).toBe("CONNECTED");
+  expect(harness.named("Reconnect").hidden).toBe(true);
+  harness.abort.abort(); await settle();
+  expect(harness.call.mock.calls.map(([command]) => command)).toEqual([{ action: "connect", applicationId: APP.id }, { action: "resume", applicationId: APP.id },
+    { action: "disconnect", sessionId: "renewed", applicationId: APP.id }]);
+});
+
+it.each([
+  ["TARGET_NOT_REGISTRABLE", "This element can no longer be registered. Inspect the current page again.", true],
+  ["TARGET_ID_MISMATCH", "The marker on the page changed since it was inspected. Inspect the current page again.", true],
+  ["TARGET_EXISTS", "A target with this ID is already registered for this application. Inspect the current page again.", true],
+  ["ROUTE_MISMATCH", "This page already has a route with another name. Inspect the current page again.", true],
+  ["REGISTRY_NOT_MANAGED", "This application's registry is built in, so targets cannot be registered from the browser.", false],
+  ["REGISTRY_FULL", "This application's registry is full. No additional targets or routes can be registered for this application.", false],
+  ["INVALID_TARGET", "The target was not registered. Fix these problems and try again.", false],
+] as const)("reports %s in the alert region and retires stale candidate rows as appropriate", async (code, message, stale) => {
+  const candidate: Candidate = { status: "registrable", ref: "@e50", name: "New", role: "button", route: "orders", proposal: {
+    targetId: "orders.new", route: "orders", routeIsNew: false, role: "button", page: "/#/orders", suggestedLabel: "New",
+    defaultOperations: ["highlight"], allowedOperations: ["highlight", "click"], privacy: "public",
+  } };
+  const harness = setup({
+    refresh: () => snapshot([candidate], "orders"),
+    register: () => ({ kind: "browser-error", code, ...(code === "INVALID_TARGET" ? { issues: ["description: must be plain text"] } : {}) }),
+  });
+  await harness.press("Connect Chrome"); await harness.press("Inspect current page"); await harness.press("Register target: New");
+  const form = harness.panel.querySelector<HTMLFormElement>("form")!;
+  expect(form.querySelector('[id$="-register-route"]')).toBeNull();
+  form.querySelector("textarea")!.value = "New order button.";
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await settle();
+  const alert = harness.panel.querySelector('[role="alert"]')!;
+  expect(alert.querySelector("p")?.textContent).toBe(message);
+  expect(alert.querySelector("li")?.textContent).toBe(code === "INVALID_TARGET" ? "description: must be plain text" : undefined);
+  expect(harness.rows()).toHaveLength(stale ? 0 : 1);
+  expect(harness.panel.querySelector("form") !== null).toBe(code === "INVALID_TARGET" || code === "REGISTRY_FULL");
+});
+
+it("keeps disabled targets display-only and restores keyboard focus on registration cancel", async () => {
+  const candidate: Candidate = { status: "registrable", ref: "@e50", name: "New", role: "button", route: null, proposal: {
+    targetId: "orders.new", route: "orders", routeIsNew: true, role: "button", page: "/#/orders", suggestedLabel: "New",
+    defaultOperations: ["highlight"], allowedOperations: ["highlight", "click"], privacy: "public",
+  } };
+  const harness = setup({ refresh: () => snapshot([candidate, { status: "disabled", ref: "@e51", name: "Previous", role: "button", route: "orders", targetId: "orders.previous" }]) });
+  document.body.append(harness.panel);
+  await harness.press("Connect Chrome"); await harness.press("Inspect current page"); await harness.press("Register target: New");
+  expect(harness.panel.querySelector('[data-status="disabled"] button')).toBeNull();
+  expect(harness.panel.querySelector('[data-status="registrable"] button[aria-label^="Use"]')).toBeNull();
+  const form = harness.panel.querySelector<HTMLFormElement>("form")!;
+  expect(form.querySelectorAll("label")).toHaveLength(6);
+  form.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(harness.panel.querySelector("form")).toBeNull();
+  expect(document.activeElement).toBe(harness.named("Register target: New"));
+  harness.abort.abort();
+  harness.panel.remove();
+});
