@@ -664,8 +664,8 @@ it("keeps Connect off with a hint for a draft whose application the editor knows
 
 const managed = app(ORD, "Managed orders", 5187, "studio-managed");
 const managedTarget = {
-  id: "orders.submit", route: "orders", page: "/#/orders", role: "button", label: "Submit order", description: "Submits the order",
-  operations: ["highlight", "click"], privacy: "public", status: "active", references: { drafts: 2, published: 1 }, updatedAt: stamp,
+  id: "orders.submit", marker: "orders.submit", route: "orders", page: "/#/orders", role: "button", label: "Submit order", description: "Submits the order",
+  operations: ["highlight", "click"], privacy: "public", status: "active", health: "unverified", healthCheckedAt: null, revision: 1, references: { drafts: 2, published: 1 }, updatedAt: stamp,
 };
 const managedRegistry = (active: boolean) => ({
   routes: active ? ["orders"] : [], elements: active ? [ordersElements[1]] : [], postconditionNames: active ? ["route.orders"] : [],

@@ -36,7 +36,7 @@ function setup(script: Partial<Record<StudioCommand["action"], (command: StudioC
       case "highlight": return ok({ kind: "highlighted", ref: command.ref });
       case "capture": return ok({ kind: "captured", target });
       case "disconnect": return closed();
-      case "resume": case "register": throw new Error(`Unexpected ${command.action} command`);
+      case "resume": case "register": case "check": case "repair": throw new Error(`Unexpected ${command.action} command`);
     }
   });
   const apply = vi.fn<(applied: StudioTarget) => boolean>(() => true);

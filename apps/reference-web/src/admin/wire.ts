@@ -9,7 +9,7 @@ export const LIMITS = Object.freeze({
   url: 300, page: 200, managedPage: 120, route: 40, candidateName: 120, role: 40, candidates: 64, hidden: 100_000,
   targetId: 80, label: 80, description: 240, operations: OPERATIONS.length,
   issues: 20, issueChars: 200, targets: 200, routes: 20, registryRoutes: 20, registryElements: 200, postconditions: 50, postconditionChars: 80, pages: 40,
-  references: 100_000, updatedAt: 32,
+  references: 100_000, updatedAt: 32, revision: 1_000_000, usage: 100, changes: 100, actor: 256, results: 200, problems: 20, checks: 100, expected: 120, attributeExpected: 40, counts: 100_000,
 });
 
 export const APPLICATION_ID = /^app-[a-f0-9]{12}$/u;

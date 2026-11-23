@@ -6,8 +6,10 @@ import { readReply } from "../help/client.js";
 import type { FetchLike } from "../help/client.js";
 import { parseApplication, parseApplicationList, parseApplicationRegistry } from "./applications.js";
 import type { ApplicationInput, ApplicationList, ApplicationRegistry, ApplicationView } from "./applications.js";
-import { parseTargetList, parseTargetView } from "./targets.js";
-import type { TargetList, TargetView } from "./targets.js";
+import { checkBody, parseCheckList, parseCheckView } from "./checks.js";
+import type { CheckInput, CheckView } from "./checks.js";
+import { parseTargetDetail, parseTargetList, parseTargetView } from "./targets.js";
+import type { TargetDetail, TargetList, TargetView } from "./targets.js";
 import { LIMITS, applicationIdOf, normalizedOrigin, targetIdOf } from "./wire.js";
 
 export type DemoRole = "user" | "maintainer";
@@ -56,6 +58,14 @@ export interface AdminClient {
   applicationRegistry(id: string): Promise<AdminResult<ApplicationRegistry>>;
   targets(applicationId: string): Promise<AdminResult<TargetList>>;
   setTargetStatus(applicationId: string, targetId: string, status: "active" | "disabled"): Promise<AdminResult<TargetView>>;
+  /** `GET …/targets/:targetId`: the target with its usage and its change history. */
+  targetDetail(applicationId: string, targetId: string): Promise<AdminResult<TargetDetail>>;
+  /** The client may only report `broken` or `unverified`; `healthy` is set by the host (a page check or a repair). */
+  setTargetHealth(applicationId: string, targetId: string, state: "broken" | "unverified"): Promise<AdminResult<TargetView>>;
+  checks(applicationId: string): Promise<AdminResult<readonly CheckView[]>>;
+  /** Create-or-get: the same check (same kind, target, route, attribute and expected value) is the same name. */
+  createCheck(applicationId: string, input: CheckInput): Promise<AdminResult<CheckView>>;
+  setCheckStatus(applicationId: string, name: string, status: "active" | "disabled"): Promise<AdminResult<CheckView>>;
   publishedBundle(id: string): Promise<AdminResult<ManagedBundle>>;
   externalGuides(): Promise<AdminResult<readonly ExternalGuide[]>>;
 }
@@ -192,7 +202,7 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
     try { return await Promise.race([exchange, expired]); } finally { clearTimeout(timer); }
   }
   return {
-    studio: command => request(studioPath, value => parseStudioReply(command.action, value), "POST", { ...command }),
+    studio: command => request(studioPath, value => parseStudioReply(command.action, value, command.action === "repair" ? command.confirm : undefined), "POST", { ...command }),
     analytics: () => request("/api/admin/analytics", analytics),
     publishedCatalog: () => request("/api/walkthroughs/published", value => {
       const guides = published(value); const entries = external(value);
@@ -221,6 +231,20 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
     setTargetStatus: (id, targetId, wanted) => applicationId(id) && targetIdOf(targetId) && (wanted === "active" || wanted === "disabled")
       ? request(`${APPLICATIONS}/${id}/targets/${targetId}/status`, value => { const parsed = parseTargetView(value, targetId); return parsed?.status === wanted ? parsed : null; }, "POST", { status: wanted })
       : Promise.resolve(FAILED),
+    targetDetail: (id, targetId) => applicationId(id) && targetIdOf(targetId) ? request(`${APPLICATIONS}/${id}/targets/${targetId}`, value => parseTargetDetail(value, targetId)) : Promise.resolve(FAILED),
+    setTargetHealth: (id, targetId, state) => applicationId(id) && targetIdOf(targetId) && (state === "broken" || state === "unverified")
+      ? request(`${APPLICATIONS}/${id}/targets/${targetId}/health`, value => { const parsed = parseTargetView(value, targetId); return parsed?.health === state ? parsed : null; }, "POST", { state }) : Promise.resolve(FAILED),
+    checks: id => applicationId(id) ? request(`${APPLICATIONS}/${id}/checks`, parseCheckList) : Promise.resolve(FAILED),
+    createCheck: (id, input) => {
+      const body = checkBody(input);
+      return applicationId(id) && body !== null ? request(`${APPLICATIONS}/${id}/checks`, value => {
+        const parsed = parseCheckView(value);
+        // The reply is the check that was asked for, nothing else.
+        return parsed !== null && parsed.kind === input.kind && parsed.targetId === (input.targetId ?? null) && parsed.route === (input.route ?? null) && parsed.status === "active" ? parsed : null;
+      }, "POST", body) : Promise.resolve(FAILED);
+    },
+    setCheckStatus: (id, name, wanted) => applicationId(id) && /^check\.v[0-9a-f]{10}$/u.test(name) && (wanted === "active" || wanted === "disabled")
+      ? request(`${APPLICATIONS}/${id}/checks/${name}/status`, value => { const parsed = parseCheckView(value, name); return parsed?.status === wanted ? parsed : null; }, "POST", { status: wanted }) : Promise.resolve(FAILED),
     publishedBundle: id => authoredId(id) ? request(`/api/walkthroughs/published/${id}/bundle`, value => {
       const parsed = parseBundle(value);
       return parsed.ok && parsed.bundle.definition.id === id ? parsed.bundle : null;

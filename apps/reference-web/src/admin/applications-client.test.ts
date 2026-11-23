@@ -319,7 +319,7 @@ it("keeps the managed targets wire closed and sends status alone", async () => {
   const { fetch, client } = setup();
   const page = "/#/orders";
   const references = { drafts: 0, published: 1 };
-  const target = { ...element, page, status: "active", references, updatedAt: application.updatedAt };
+  const target = { ...element, marker: element.id, page, status: "active", health: "unverified", healthCheckedAt: null, revision: 1, references, updatedAt: application.updatedAt };
   const reply = { targets: [target], routes: [{ route: target.route, page }], limits: { maxRoutes: 20, maxTargets: 200 } };
   fetch.mockResolvedValueOnce(json(reply));
   expect(await client.targets(appId)).toEqual({ kind: "ok", value: reply });

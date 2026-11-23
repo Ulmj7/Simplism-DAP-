@@ -2,7 +2,8 @@ import { isPlainText, MAX_DESCRIPTION, MAX_LABEL } from "@dap/walkthrough";
 import { h } from "../dom.js";
 import { button, card, statusMessage } from "../ui/pieces.js";
 import type { AdminClient } from "./client.js";
-import type { Candidate, DisabledCandidate, RegisterFields, RegistrableCandidate, RegistrySource, StudioCommand, StudioReply, StudioTarget, TrustedCandidate } from "./studio-client.js";
+import type { Candidate, DisabledCandidate, MismatchedCandidate, RegisterFields, RegistrableCandidate, RegistrySource, RepairImpact, StudioCommand, StudioReply, StudioTarget, TrustedCandidate } from "./studio-client.js";
+import type { RepairFields } from "./targets.js";
 import type { TargetView } from "./targets.js";
 import { ROUTE_KEY } from "./wire.js";
 
@@ -67,6 +68,10 @@ export const failures: Readonly<Record<string, string>> = Object.freeze({
   REGISTRY_NOT_MANAGED: "This application's registry is built in, so targets cannot be registered from the browser.",
   REGISTRY_FULL: "This application's registry is full. No additional targets or routes can be registered for this application.",
   INVALID_TARGET: "The target was not registered. Fix these problems and try again.",
+  REPAIR_ROUTE_MISMATCH: "That element is on another page than the target. A target keeps its page: open the target's page, inspect it and choose an element there.",
+  MARKER_IN_USE: "That marker already belongs to another target of this application. Choose another element.",
+  REPAIR_INCOMPATIBLE: "The repair was not applied: a workflow that uses this target would no longer be valid. Review these problems.",
+  TARGET_NOT_FOUND: "This target no longer exists. Reload the target list.",
 });
 // After a command (not a connect) the host has already closed the session for these two, so the workspace is simply disconnected.
 const closedByHost: Readonly<Record<string, string>> = Object.freeze({
@@ -81,9 +86,9 @@ const reconnectBusy = "A browser session is already active and cannot be taken o
 const unavailable = failures.BROWSER_UNAVAILABLE!;
 // Failures that leave a usable session. The first group means the page, the marker or the route changed under the refs, so the list goes; the second keeps the list.
 const STALE = new Set(["REF_NOT_FOUND", "TARGET_NOT_REGISTRABLE", "TARGET_ID_MISMATCH", "TARGET_EXISTS", "ROUTE_MISMATCH"]);
-const SESSION_KEPT = new Set([...STALE, "TARGET_UNAVAILABLE", "REGISTRY_FULL", "REGISTRY_NOT_MANAGED", "INVALID_TARGET"]);
+const SESSION_KEPT = new Set([...STALE, "TARGET_UNAVAILABLE", "REGISTRY_FULL", "REGISTRY_NOT_MANAGED", "INVALID_TARGET", "REPAIR_ROUTE_MISMATCH", "MARKER_IN_USE", "REPAIR_INCOMPATIBLE", "TARGET_NOT_FOUND"]);
 // The confirmation stays open (so it can be corrected) only for these.
-const PANEL_KEPT = new Set(["INVALID_TARGET", "REGISTRY_FULL"]);
+const PANEL_KEPT = new Set(["INVALID_TARGET", "REGISTRY_FULL", "REPAIR_INCOMPATIBLE"]);
 const statusText: Readonly<Record<WorkspaceState, string>> = Object.freeze({
   DISCONNECTED: "Disconnected", CONNECTING: "Connecting…", CONNECTED: "Connected", INSPECTING: "Inspecting…", ERROR: "Error",
 });
@@ -102,6 +107,13 @@ export interface BrowserWorkspaceOptions {
   readonly walkthroughId?: (() => string | undefined) | undefined;
   /** Called after a target was registered and before the page is inspected again, so the editor can reload the registry its picker and its checks use. */
   readonly onRegistered?: ((target: TargetView) => Promise<void> | void) | undefined;
+  /**
+   * REPAIR mode (Studio completion S3): the workspace is used to choose replacement evidence for ONE existing target. Registrable and mismatched candidates get "Use as replacement"; the
+   * maintainer previews the repair (a dry run: old vs new evidence and its impact on drafts and live published versions) and only then confirms it. Nothing is ever repaired automatically.
+   */
+  readonly repair?: { readonly target: TargetView; readonly onRepaired?: (target: TargetView) => void } | undefined;
+  /** Shows "Check targets on this page": the host verifies every active target of the current page and the results come back here. */
+  readonly onChecked?: ((reply: Extract<StudioReply, { kind: "checked" }>) => void) | undefined;
 }
 export interface BrowserWorkspace {
   readonly element: HTMLElement;
@@ -113,13 +125,15 @@ interface Session { readonly sessionId: string; readonly applicationId: string }
 
 let instances = 0;
 
-export function browserWorkspace({ call, signal, bindTarget, application: initial, walkthroughId, onRegistered }: BrowserWorkspaceOptions): BrowserWorkspace {
+export function browserWorkspace({ call, signal, bindTarget, application: initial, walkthroughId, onRegistered, repair, onChecked }: BrowserWorkspaceOptions): BrowserWorkspace {
   const instance = instances += 1;
   const uid = (name: string) => `studio-${instance}-${name}`;
   const connect = button("Connect Chrome");
   const reconnect = button("Reconnect");
   const inspect = button("Inspect current page");
   const disconnect = button("Disconnect");
+  const checkPage = button("Check targets on this page");
+  checkPage.hidden = onChecked === undefined;
   reconnect.hidden = true;
   const applicationLine = h("dd");
   const registryLine = h("dd");
@@ -140,7 +154,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
   const alert = h("div", { role: "alert", class: "error studio-alert" });
   const panel = card(h("h2", {}, "Browser workspace"),
     h("p", { class: "hint" }, "Navigate and interact in the separate Chrome window, then inspect the page."),
-    h("div", { class: "admin-actions" }, connect, reconnect, inspect, disconnect), reconnectNote, header, list, listNote, registerHost, alert, notice);
+    h("div", { class: "admin-actions" }, connect, reconnect, inspect, ...(onChecked ? [checkPage] : []), disconnect), reconnectNote, header, list, listNote, registerHost, alert, notice);
   panel.classList.add("studio-workspace");
   reconnect.setAttribute("aria-describedby", uid("reconnect-note"));
   reconnectNote.id = uid("reconnect-note");
@@ -168,6 +182,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
   const rowButtons: HTMLButtonElement[] = [];
   let registerForm: { readonly element: HTMLElement; readonly submit: HTMLButtonElement } | undefined;
   let registeredNote = "";
+  let repairedNote = "";
 
   const say = (text: string) => { alert.replaceChildren(); notice.textContent = text; };
   const warn = (text: string, issues: readonly string[] = []) => {
@@ -182,6 +197,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
     const allowed = allowedNow();
     connect.disabled = !allowed.connect;
     inspect.disabled = !allowed.inspect;
+    checkPage.disabled = !allowed.inspect || state !== "CONNECTED";
     disconnect.disabled = !allowed.disconnect;
     reconnect.hidden = reconnectNote.hidden = !offeredReconnect || session !== undefined;
     reconnect.disabled = !reconnectNow();
@@ -227,7 +243,17 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
         return h("li", { class: "studio-candidate", "data-status": "disabled" },
           h("strong", {}, candidate.name), facts, h("p", { class: "hint" }, `Disabled target · DAP target ${candidate.targetId}`),
           h("p", { class: "hint" }, "This target is disabled in the registry. Enable it in Applications to use it."), evidence);
+      case "mismatched":
+        return h("li", { class: "studio-candidate", "data-status": "mismatched" },
+          h("strong", {}, candidate.name), facts, h("p", { class: "hint" }, `Marker of registered target ${candidate.targetId} · role or page differs from the target`), evidence,
+          h("div", { class: "admin-actions" }, action("Highlight", candidate, () => { void highlightRow(candidate); }),
+            ...(repair ? [action("Use as replacement…", candidate, trigger => openRepair(candidate, trigger))] : [])));
       case "registrable":
+        if (repair) {
+          return h("li", { class: "studio-candidate", "data-status": "registrable" },
+            h("strong", {}, candidate.name), facts, h("p", { class: "hint" }, `Registrable · new marker ${candidate.proposal.targetId}`), h("p", { class: "hint" }, `Page ${candidate.proposal.page}`), evidence,
+            h("div", { class: "admin-actions" }, action("Highlight", candidate, () => { void highlightRow(candidate); }), action("Use as replacement…", candidate, trigger => openRepair(candidate, trigger))));
+        }
         return h("li", { class: "studio-candidate", "data-status": "registrable" },
           h("strong", {}, candidate.name), facts,
           h("p", { class: "hint" }, `Registrable · not registered yet · marker ${candidate.proposal.targetId}`),
@@ -238,7 +264,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
           h("strong", {}, candidate.name), facts,
           h("p", { class: "hint" }, `Trusted target ✓ · DAP target ${candidate.targetId}`),
           h("p", { class: "hint" }, `Operations: ${candidate.operations.join(", ")} · Public`),
-          evidence, h("div", { class: "admin-actions" }, action("Highlight", candidate, () => { void highlightRow(candidate); }), action("Use", candidate, () => { void useRow(candidate); })));
+          evidence, h("div", { class: "admin-actions" }, action("Highlight", candidate, () => { void highlightRow(candidate); }), ...(repair ? [] : [action("Use", candidate, () => { void useRow(candidate); })])));
     }
   }
 
@@ -326,6 +352,130 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
     registerHost.replaceChildren(element);
     render();
     title.focus();
+  }
+
+  // ---- repair --------------------------------------------------------------------------------------------------------
+  const repairOperations = (role: string): readonly string[] => (role === "textbox" || role === "searchbox" ? ["highlight", "input", "focus"] : ["highlight", "click", "focus"]);
+  function openRepair(candidate: RegistrableCandidate | MismatchedCandidate, trigger: HTMLButtonElement) {
+    if (!session || !repair) return;
+    const target = repair.target;
+    const field = (name: string) => uid(`repair-${name}`);
+    const fact = (term: string, value: string) => [h("dt", {}, term), h("dd", {}, value)];
+    const markerOf = candidate.status === "registrable" ? candidate.proposal.targetId : candidate.targetId;
+    const allowed = candidate.status === "registrable" ? candidate.proposal.allowedOperations : repairOperations(candidate.role);
+    const evidence = h("section", { class: "studio-register-section", "aria-labelledby": field("evidence-title") },
+      h("h4", { id: field("evidence-title") }, "Replacement evidence"),
+      h("p", { class: "hint" }, "Read from the page just now. Evidence only: it is saved only when you confirm the repair."),
+      h("dl", { class: "studio-facts" }, ...fact("Accessible name", candidate.name), ...fact("Role on the page", candidate.role), ...fact("Marker", markerOf), ...fact("Live ref", `${candidate.ref} Session only`)));
+    const label = h("input", { id: field("label"), type: "text", maxlength: String(MAX_LABEL), autocomplete: "off", "aria-describedby": field("label-issue") }) as HTMLInputElement;
+    label.value = target.label;
+    const description = h("textarea", { id: field("description"), rows: "3", maxlength: String(MAX_DESCRIPTION), "aria-describedby": field("description-issue") }) as HTMLTextAreaElement;
+    description.value = target.description;
+    const issueOf = (name: string) => h("p", { id: field(`${name}-issue`), class: "error hint", hidden: true });
+    const issues = { label: issueOf("label"), description: issueOf("description") };
+    const checks = allowed.map(operation => {
+      const box = h("input", { type: "checkbox", value: operation }) as HTMLInputElement;
+      box.checked = operation === "highlight" || target.operations.includes(operation);
+      if (operation === "highlight") { box.checked = true; box.disabled = true; }
+      return { operation, box, element: h("label", { class: "studio-check" }, box, ` ${operationLabels[operation] ?? operation}`) };
+    });
+    const previewHost = h("div", { class: "studio-repair-preview" });
+    const title = h("h3", { id: field("title"), tabindex: "-1" }, `Repair target ${target.id}`);
+    const previewButton = button("Preview repair", true); previewButton.type = "submit";
+    const confirm = button("Confirm repair", true); confirm.hidden = true;
+    const cancel = button("Cancel repair");
+    const element = h("form", { class: "studio-register studio-repair", "aria-labelledby": field("title"), novalidate: "" }, title, evidence,
+      h("section", { class: "studio-register-section", "aria-labelledby": field("fields-title") }, h("h4", { id: field("fields-title") }, "What the target becomes"),
+        h("p", { class: "hint" }, "The durable ID, page, route and privacy never change. Only the live evidence and the descriptive fields do."),
+        h("fieldset", { class: "field" }, h("legend", {}, "Operations"), ...checks.map(item => item.element)),
+        h("div", { class: "field" }, h("label", { for: field("label") }, "Label"), label, issues.label),
+        h("div", { class: "field" }, h("label", { for: field("description") }, "Description"), description, issues.description)),
+      previewHost, h("div", { class: "admin-actions" }, previewButton, confirm, cancel));
+    registerForm = { element, submit: previewButton };
+    let previewed: { readonly operations: readonly string[]; readonly label: string; readonly description: string } | undefined;
+    const request = (confirmed: boolean) => {
+      const operations = checks.filter(item => item.box.checked).map(item => item.operation);
+      return { operations, label: label.value.trim(), description: description.value.trim(), confirmed };
+    };
+    const stale = () => { previewed = undefined; confirm.hidden = true; previewHost.replaceChildren(); };
+    for (const control of [label, description, ...checks.map(item => item.box)]) control.addEventListener("input", stale);
+    cancel.addEventListener("click", () => closeRegister(trigger));
+    element.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); closeRegister(trigger); } });
+    const valid = () => {
+      const { label: labelText, description: descriptionText } = request(false);
+      for (const [control, hint] of [[label, issues.label], [description, issues.description]] as const) { control.removeAttribute("aria-invalid"); hint.textContent = ""; hint.hidden = true; }
+      const problems: [HTMLElement, HTMLElement, string][] = [];
+      if (!isPlainText(labelText, MAX_LABEL)) problems.push([label, issues.label, `Enter a label of 1 to ${MAX_LABEL} characters in plain text.`]);
+      if (!isPlainText(descriptionText, MAX_DESCRIPTION)) problems.push([description, issues.description, `Enter a description of 1 to ${MAX_DESCRIPTION} characters in plain text.`]);
+      if (problems.length === 0) return true;
+      for (const [control, hint, message] of problems) { control.setAttribute("aria-invalid", "true"); hint.textContent = message; hint.hidden = false; }
+      warn("Check the highlighted fields before previewing the repair.");
+      problems[0]![0].focus();
+      return false;
+    };
+    const showPreview = (reply: Extract<StudioReply, { kind: "repairPreview" }>) => {
+      const row = (name: string, before: string, after: string) => h("tr", {}, h("th", { scope: "row" }, name), h("td", {}, before), h("td", {}, after));
+      const fields = (f: RepairFields) => [f.marker, f.role, f.operations.join(", "), f.label, f.description];
+      const names = ["Marker", "Role", "Operations", "Label", "Description"];
+      const was = fields(reply.current); const now = fields(reply.proposed);
+      const impact: RepairImpact = reply.impact;
+      const list = (items: readonly string[]) => (items.length === 0 ? h("p", { class: "hint" }, "None") : h("ul", {}, ...items.map(item => h("li", {}, item))));
+      previewHost.replaceChildren(
+        h("section", { class: "studio-register-section", "aria-labelledby": field("compare-title") }, h("h4", { id: field("compare-title") }, "Old and new evidence"),
+          h("table", { class: "admin-table studio-compare", "aria-label": "Old and new evidence" },
+            h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Field"), h("th", { scope: "col" }, "Current"), h("th", { scope: "col" }, "After the repair"))),
+            h("tbody", {}, ...names.map((name, index) => row(name, was[index]!, now[index]!))))),
+        h("section", { class: "studio-register-section", "aria-labelledby": field("impact-title") }, h("h4", { id: field("impact-title") }, "Impact"),
+          h("p", {}, `Draft workflows that use this target (${impact.drafts.length})`), list(impact.drafts.map(item => item.title)),
+          h("p", {}, `Published workflows that use this target (${impact.published.length})`), list(impact.published.map(item => `${item.title} · version ${item.version}`)),
+          h("p", { class: impact.compatible ? "" : "error" }, impact.compatible ? "Compatible: every workflow stays valid." : "Not compatible: the repair cannot be applied."),
+          ...(impact.compatible ? [] : [list(impact.problems)])));
+      confirm.hidden = false; confirm.disabled = !impact.compatible || pending;
+      if (!impact.compatible) warn(failures.REPAIR_INCOMPATIBLE!, impact.problems);
+      else say("Review the old and new evidence and the impact, then confirm the repair.");
+    };
+    element.addEventListener("submit", event => {
+      event.preventDefault();
+      if (state !== "CONNECTED" || pending || registerForm?.element !== element || !valid()) return;
+      const asked = request(false);
+      void run({ action: "repair", sessionId: session!.sessionId, applicationId: session!.applicationId, targetId: target.id, ref: candidate.ref, operations: asked.operations, label: asked.label, description: asked.description, confirm: false }, undefined, reply => {
+        if (reply.kind !== "repairPreview" || reply.target.id !== target.id) { fail(undefined, "repair"); return; }
+        previewed = { operations: asked.operations, label: asked.label, description: asked.description };
+        showPreview(reply);
+        confirm.focus();
+      });
+    });
+    confirm.addEventListener("click", () => {
+      if (state !== "CONNECTED" || pending || registerForm?.element !== element || previewed === undefined || confirm.disabled) return;
+      const asked = request(true);
+      if (asked.label !== previewed.label || asked.description !== previewed.description || asked.operations.join() !== previewed.operations.join()) { stale(); return; }
+      const open = session!;
+      let repaired: TargetView | undefined;
+      void run({ action: "repair", sessionId: open.sessionId, applicationId: open.applicationId, targetId: target.id, ref: candidate.ref, operations: asked.operations, label: asked.label, description: asked.description, confirm: true }, undefined, reply => {
+        if (reply.kind !== "repaired" || reply.target.id !== target.id) { fail(undefined, "repair"); return; }
+        repaired = reply.target;
+        closeRegister();
+        say(`Repaired target ${reply.target.id} — marker ${reply.target.marker}. Health: ${reply.target.health}.`);
+      }).then(async () => {
+        if (!repaired || signal.aborted) return;
+        repair.onRepaired?.(repaired);
+        // The page is inspected again so the repaired target shows as trusted with its new evidence.
+        if (session === open) { repairedNote = `Repaired target ${repaired.id} — marker ${repaired.marker}. Health: ${repaired.health}.`; await inspectNow(); }
+      });
+    });
+    registerHost.replaceChildren(element);
+    render();
+    title.focus();
+  }
+  async function checkNow() {
+    if (!session || !onChecked) return;
+    const open = session;
+    await run({ action: "check", sessionId: open.sessionId, applicationId: open.applicationId }, undefined, reply => {
+      if (reply.kind !== "checked") { fail(undefined, "check"); return; }
+      const broken = reply.results.filter(item => item.state === "broken").length;
+      say(reply.results.length === 0 ? "No active target is registered for this page." : `Checked ${reply.results.length} targets on this page: ${reply.results.length - broken} healthy, ${broken} broken.`);
+      onChecked(reply);
+    });
   }
 
   // ---- session bookkeeping -----------------------------------------------------------------------------------------
@@ -446,6 +596,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
       closeRegister();
       url = reply.url; route = reply.route; page = reply.page; hidden = reply.hidden; truncated = reply.truncated; setCandidates(reply.elements); state = "CONNECTED";
       if (registeredNote) { say(registeredNote); registeredNote = ""; return; }
+      if (repairedNote) { say(repairedNote); repairedNote = ""; return; }
       say(reply.elements.length > 0 ? "Highlight a target to find it in Chrome, use a trusted one for the selected step, or register a registrable one." : "No candidates on this page.");
     });
   };
@@ -457,7 +608,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
       lost(); state = "DISCONNECTED"; say(disconnected);
     });
   };
-  async function highlightRow(candidate: TrustedCandidate | RegistrableCandidate) {
+  async function highlightRow(candidate: TrustedCandidate | RegistrableCandidate | MismatchedCandidate) {
     if (!session) return;
     const open = session;
     await run({ action: "highlight", sessionId: open.sessionId, applicationId: open.applicationId, ref: candidate.ref }, undefined, reply => {
@@ -499,6 +650,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
   reconnect.addEventListener("click", () => { if (reconnectNow()) resumeNow(); });
   inspect.addEventListener("click", () => { if (allowedNow().inspect) void inspectNow(); });
   disconnect.addEventListener("click", () => { if (allowedNow().disconnect) disconnectNow(); });
+  checkPage.addEventListener("click", () => { if (allowedNow().inspect && state === "CONNECTED") void checkNow(); });
   if (application?.enabled === false) say(disabledHint);
   signal.addEventListener("abort", () => {
     if (session && !pending) void call({ action: "disconnect", sessionId: session.sessionId, applicationId: session.applicationId }).catch(() => {});
@@ -522,4 +674,4 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
 }
 
 // The candidate kinds the rows distinguish are exported for the tests that build them.
-export type { Candidate, DisabledCandidate, RegistrableCandidate, TrustedCandidate };
+export type { Candidate, DisabledCandidate, MismatchedCandidate, RegistrableCandidate, TrustedCandidate };

@@ -1,6 +1,6 @@
 import { isPlainText, MAX_LABEL } from "@dap/walkthrough";
-import { parseTargetView } from "./targets.js";
-import type { TargetView } from "./targets.js";
+import { parseRepairFields, parseTargetView, parseUsage } from "./targets.js";
+import type { RepairFields, TargetUsage, TargetView } from "./targets.js";
 import { APPLICATION_ID, LIMITS, REF_PATTERN, applicationIdOf, bounded, count, exact, managedOperations, managedPageOf, normalizedOrigin, operationList, pageOf, record, reference, routeKey, routeOrNull, targetIdOf } from "./wire.js";
 
 export { APPLICATION_ID, REF_PATTERN, normalizedOrigin };
@@ -11,6 +11,7 @@ export { APPLICATION_ID, REF_PATTERN, normalizedOrigin };
  *   trusted        a registered, active target of this application (a registry id that may be saved in a draft)
  *   registrable    an element of a Studio-managed application that may be REGISTERED, with the host's proposal (never persisted until the maintainer confirms it)
  *   disabled       a registered target that is currently disabled (display only)
+ *   mismatched     (repair) an element carrying a REGISTERED target's own marker whose role or route no longer matches it: a candidate to repair that target with
  *   unregistered   an approved-label element of a built-in application that has no target (display only)
  * `ref` (`@eN`) is session-only evidence: it exists in these types so the inspector can send it back to the host, and nowhere else.
  */
@@ -60,7 +61,16 @@ export interface UnregisteredCandidate {
   readonly role: string;
   readonly route: string | null;
 }
-export type Candidate = TrustedCandidate | RegistrableCandidate | DisabledCandidate | UnregisteredCandidate;
+/** The app's own registered marker on an element whose role (or route) differs from the target's: listed with name and role so a maintainer can pick it as the replacement evidence. */
+export interface MismatchedCandidate {
+  readonly status: "mismatched";
+  readonly ref: string;
+  readonly name: string;
+  readonly role: string;
+  readonly route: string | null;
+  readonly targetId: string;
+}
+export type Candidate = TrustedCandidate | RegistrableCandidate | DisabledCandidate | UnregisteredCandidate | MismatchedCandidate;
 export interface StudioTarget { readonly targetId: string; readonly route: string; readonly name: string; readonly role: string; readonly operations: readonly string[] }
 export interface RegisterFields {
   readonly targetId: string;
@@ -72,18 +82,36 @@ export interface RegisterFields {
 }
 export interface RegisteredRoute { readonly route: string; readonly page: string; readonly created: boolean }
 
+export type CheckReason = "not_found" | "role_changed" | "private" | "ambiguous";
+export const CHECK_REASONS: readonly CheckReason[] = ["not_found", "role_changed", "private", "ambiguous"];
+export interface CheckResult { readonly targetId: string; readonly state: "healthy" | "broken"; readonly reason?: CheckReason }
+/** What a repair would change, and who it touches: the referencing drafts and the LIVE published versions, whether every one still validates, and the problems if not. */
+export interface RepairImpact {
+  readonly drafts: TargetUsage["drafts"];
+  readonly published: TargetUsage["published"];
+  readonly compatible: boolean;
+  readonly problems: readonly string[];
+}
+export interface RepairRequest { readonly targetId: string; readonly ref: string; readonly operations: readonly string[]; readonly label: string; readonly description: string }
+
 export type StudioCommand =
   | { readonly action: "connect"; readonly applicationId: string; readonly walkthroughId?: string }
   | { readonly action: "resume"; readonly applicationId: string }
   | { readonly action: "refresh" | "disconnect"; readonly sessionId: string; readonly applicationId: string }
   | { readonly action: "highlight" | "capture"; readonly sessionId: string; readonly applicationId: string; readonly ref: string }
-  | ({ readonly action: "register"; readonly sessionId: string; readonly applicationId: string; readonly ref: string } & RegisterFields);
+  | ({ readonly action: "register"; readonly sessionId: string; readonly applicationId: string; readonly ref: string } & RegisterFields)
+  | { readonly action: "check"; readonly sessionId: string; readonly applicationId: string }
+  // `confirm: false` is a dry run (nothing is written); `confirm: true` applies it iff every referencing draft and live published version still validates.
+  | ({ readonly action: "repair"; readonly sessionId: string; readonly applicationId: string; readonly confirm: boolean } & RepairRequest);
 export type StudioReply =
   | { readonly kind: "connected"; readonly sessionId: string; readonly applicationId: string; readonly application: string; readonly origin: string; readonly registrySource: RegistrySource; readonly resumed: boolean }
   | { readonly kind: "snapshot"; readonly url: string; readonly route: string | null; readonly page: string | null; readonly elements: readonly Candidate[]; readonly hidden: number; readonly truncated: boolean }
   | { readonly kind: "highlighted"; readonly ref: string }
   | { readonly kind: "captured"; readonly target: StudioTarget }
   | { readonly kind: "registered"; readonly target: TargetView; readonly route: RegisteredRoute }
+  | { readonly kind: "checked"; readonly page: string | null; readonly route: string | null; readonly results: readonly CheckResult[] }
+  | { readonly kind: "repairPreview"; readonly target: TargetView; readonly current: RepairFields; readonly proposed: RepairFields; readonly impact: RepairImpact }
+  | { readonly kind: "repaired"; readonly target: TargetView; readonly impact: RepairImpact }
   | { readonly kind: "closed" };
 
 export const studioPath = "/api/studio/browser";
@@ -121,6 +149,8 @@ function candidate(item: unknown): Candidate | null {
       const proposed = exact(item, ["ref", "name", "role", "route", "status", "proposal"]) ? proposal(item.proposal) : null;
       return proposed ? { status: "registrable", ref, name, role, route, proposal: proposed } : null;
     }
+    case "mismatched":
+      return exact(item, ["ref", "name", "role", "route", "status", "targetId"]) && targetIdOf(item.targetId) ? { status: "mismatched", ref, name, role, route, targetId: item.targetId } : null;
     case "trusted":
       return exact(item, ["ref", "name", "role", "route", "status", "targetId", "operations", "privacy"]) && targetIdOf(item.targetId) && operationList(item.operations) && item.privacy === "public"
         ? { status: "trusted", ref, name, role, route, targetId: item.targetId, operations: [...item.operations], privacy: "public" } : null;
@@ -135,7 +165,17 @@ const connected = (reply: Record<string, unknown>, resumed: boolean): StudioRepl
     ? { kind: "connected", sessionId: reply.sessionId, applicationId: reply.applicationId, application: reply.application, origin: reply.origin, registrySource: reply.registrySource, resumed } : null;
 };
 
-export function parseStudioReply(action: StudioCommand["action"], reply: unknown): StudioReply | null {
+function impact(value: unknown): RepairImpact | null {
+  if (!record(value) || !exact(value, ["drafts", "published", "compatible", "problems"]) || typeof value.compatible !== "boolean") return null;
+  const used = parseUsage({ drafts: value.drafts, published: value.published });
+  if (!used || !Array.isArray(value.problems) || value.problems.length > LIMITS.problems || !value.problems.every(problem => bounded(problem, LIMITS.issueChars))) return null;
+  // A repair that is compatible has no problem to report, and an incompatible one says why.
+  if (value.compatible === (value.problems.length > 0)) return null;
+  return { drafts: used.drafts, published: used.published, compatible: value.compatible, problems: [...value.problems as string[]] };
+}
+
+/** `confirm` only matters for `repair` (a dry run answers {target, current, proposed, impact}, a confirmed repair {target, impact}). */
+export function parseStudioReply(action: StudioCommand["action"], reply: unknown, confirm?: boolean): StudioReply | null {
   if (!record(reply)) return null;
   switch (action) {
     case "connect": return connected(reply, false);
@@ -166,6 +206,31 @@ export function parseStudioReply(action: StudioCommand["action"], reply: unknown
       return target && routeKey(route) && pageOf(page) && typeof created === "boolean" && target.route === route && target.page === page
         ? { kind: "registered", target, route: { route, page, created } } : null;
     }
+    case "check": {
+      if (!exact(reply, ["page", "route", "results"]) || !(reply.page === null || pageOf(reply.page)) || !routeOrNull(reply.route) || !Array.isArray(reply.results) || reply.results.length > LIMITS.results) return null;
+      const results: CheckResult[] = [];
+      for (const item of reply.results as unknown[]) {
+        if (!record(item) || !targetIdOf(item.targetId) || results.some(other => other.targetId === item.targetId)) return null;
+        // A healthy target has no reason; a broken one names exactly one of the four reasons.
+        if (item.state === "healthy" && exact(item, ["targetId", "state"])) results.push({ targetId: item.targetId, state: "healthy" });
+        else if (item.state === "broken" && (exact(item, ["targetId", "state", "reason"]) || exact(item, ["targetId", "state"])) && (item.reason === undefined || (CHECK_REASONS as readonly unknown[]).includes(item.reason))) {
+          results.push({ targetId: item.targetId, state: "broken", ...(item.reason === undefined ? {} : { reason: item.reason as CheckReason }) });
+        } else return null;
+      }
+      return { kind: "checked", page: reply.page, route: reply.route, results };
+    }
+    case "repair": {
+      if (confirm === true) {
+        const target = exact(reply, ["target", "impact"]) ? parseTargetView(reply.target) : null;
+        const effect = impact(reply.impact);
+        return target && effect && effect.compatible ? { kind: "repaired", target, impact: effect } : null;
+      }
+      const target = exact(reply, ["target", "current", "proposed", "impact"]) ? parseTargetView(reply.target) : null;
+      const current = record(reply) ? parseRepairFields(reply.current) as RepairFields | null : null;
+      const proposed = record(reply) ? parseRepairFields(reply.proposed) as RepairFields | null : null;
+      const effect = impact(reply.impact);
+      return target && current && proposed && effect ? { kind: "repairPreview", target, current, proposed, impact: effect } : null;
+    }
     case "disconnect": return exact(reply, ["closed"]) && reply.closed === true ? { kind: "closed" } : null;
   }
 }
@@ -175,7 +240,7 @@ const STUDIO_ERRORS = new Set([
   "TARGET_UNAVAILABLE", "APPLICATION_DISABLED", "APPLICATION_MISMATCH", "TARGET_NOT_REGISTRABLE", "TARGET_ID_MISMATCH",
   "TARGET_EXISTS", "ROUTE_MISMATCH", "REGISTRY_NOT_MANAGED", "REGISTRY_FULL", "BROWSER_UNAVAILABLE",
   "BROWSER_NOT_STARTED", "BROWSER_TIMEOUT", "SNAPSHOT_FAILED", "HIGHLIGHT_FAILED", "NAVIGATION_FAILED", "DOMAIN_BLOCKED",
-  "CLOSE_FAILED", "INVALID_BROWSER_OUTPUT",
+  "CLOSE_FAILED", "INVALID_BROWSER_OUTPUT", "REPAIR_ROUTE_MISMATCH", "MARKER_IN_USE", "TARGET_NOT_FOUND",
 ]);
 
 export function parseStudioError(status: number, value: unknown): { code: string; issues?: readonly string[] } | null {
@@ -184,6 +249,11 @@ export function parseStudioError(status: number, value: unknown): { code: string
     if (status !== 422 || !exact(value, ["error", "issues"]) || !Array.isArray(value.issues)
       || value.issues.length > LIMITS.issues || !value.issues.every(issue => bounded(issue, LIMITS.issueChars))) return null;
     return { code: value.error, issues: [...value.issues] };
+  }
+  if (value.error === "REPAIR_INCOMPATIBLE") {
+    // 409 with the problems that make the repair incompatible (at most 20 fixed phrases), or with none.
+    if (status !== 409 || !(exact(value, ["error"]) || (exact(value, ["error", "problems"]) && Array.isArray(value.problems) && value.problems.length <= LIMITS.problems && value.problems.every(problem => bounded(problem, LIMITS.issueChars))))) return null;
+    return { code: value.error, ...(Array.isArray(value.problems) ? { issues: [...value.problems as string[]] } : {}) };
   }
   return exact(value, ["error"]) && STUDIO_ERRORS.has(value.error) ? { code: value.error } : null;
 }
