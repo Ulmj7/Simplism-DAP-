@@ -172,6 +172,8 @@ function fill(root: ParentNode, id: string, value: string, event = "input") {
   const input = control<HTMLInputElement>(root, `[id="${id}"]`); input.value = value; input.dispatchEvent(new Event(event, { bubbles: true }));
 }
 const click = async (root: ParentNode, name: string) => { button(root, name).click(); await turn(); };
+// Switching application with chosen targets asks first (the dirty guard): confirm it.
+const confirmSwitch = async (root: ParentNode) => { await click(control(root, "dialog[open]"), "Switch application"); };
 const navigate = async (route: "dashboard" | "walkthroughs" | "applications" | "targets" | "editor" | "analytics") => { mounted?.current()?.router.navigate(route); await turn(); };
 const options = (root: ParentNode, id: string) => [...control<HTMLSelectElement>(root, `[id="${id}"]`).options].map(item => item.value);
 // The first cell is the name followed by its Enabled/Disabled badge.
@@ -422,6 +424,7 @@ it("disables Preview with a plain sentence for an application whose registry is 
   expect(button(root, c.preview).disabled).toBe(false);
   expect(control<HTMLElement>(root, "#editor-preview-hint").hidden).toBe(true);
   fill(root, "editor-application", ORD, "change"); await turn();
+  await confirmSwitch(root);
   fill(root, "editor-target", "orders.submit", "change"); fill(root, "editor-text", "Press it."); fill(root, "editor-wait", "click", "change");
   expect(control<HTMLElement>(root, "#editor-problems").hidden).toBe(true);
   expect(button(root, c.preview).disabled).toBe(true);
@@ -438,6 +441,7 @@ it("flags targets of the old application instead of silently keeping or clearing
   fill(root, "editor-target", "settings.securityPanel", "change"); fill(root, "editor-text", "Read this.");
   expect(button(root, c.save).disabled).toBe(false);
   fill(root, "editor-application", ORD, "change"); await turn();
+  await confirmSwitch(root);
   expect(control<HTMLSelectElement>(root, "#editor-target").getAttribute("aria-invalid")).toBe("true");
   expect(root.querySelector("#editor-problems")?.textContent).toContain(c.problem.unknownTarget);
   expect(button(root, c.save).disabled).toBe(true);
@@ -763,6 +767,10 @@ it("registers, refreshes the editor registry, and saves only the durable target 
     expect(notice(root)).toBe("Walkthrough running in the application window.");
     send({ type: "dap-run-status", version: 1, status: "COMPLETED" }); await turn();
     expect(notice(root)).toBe("Walkthrough finished.");
+    // Preview is a mode now: the results replace the editor panes until the maintainer goes back with Edit.
+    expect(control(root, "#editor-preview-panel").textContent).toContain("✓ Preview completed.");
+    expect(button(root, c.preview).disabled).toBe(true);
+    await click(root, "Edit");
     expect(button(root, c.preview).disabled).toBe(false);
     expect(host.writes()).toEqual([]);
   } finally { open.mockRestore(); }

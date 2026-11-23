@@ -31,7 +31,7 @@ export const copy = {
   target: "Semantic target", wait: "Interaction", text: "Instruction", verify: "Check after this step", completion: "Completion message", none: "None",
   chooseWait: "Select an interaction.", waits: { ack: "Acknowledge", click: "Click", input: "Input" },
   checks: { "profile.saved": "Profile was saved", "route.profile": "Profile is open", "route.settings": "Settings is open", "settings.advancedOpen": "Advanced settings are open" },
-  save: "Save draft", saving: "Saving…", saved: "Saved", saveFailed: "Could not save",
+  save: "Save draft", saving: "Saving…", saved: "Saved", saveFailed: "Could not save", conflict: "This workflow was changed somewhere else. Load the saved version to continue.",
   writeFailed: "This change could not be saved. Please wait a moment and try again.",
   oversize: "This walkthrough is too large to save. Shorten the instructions and try again.",
   readOnly: "A published walkthrough cannot be edited. Unpublish it first.", foreign: "This guide uses features the editor cannot edit.",

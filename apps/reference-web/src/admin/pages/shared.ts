@@ -1,6 +1,7 @@
 import type { SemanticRegistry, WalkthroughDef } from "@dap/walkthrough";
 import { copy } from "../../copy.js";
 import { h } from "../../dom.js";
+import type { NavigationGuard } from "../../router.js";
 import { breadcrumb } from "../../ui/breadcrumb.js";
 import type { Crumb } from "../../ui/breadcrumb.js";
 import { button } from "../../ui/pieces.js";
@@ -11,6 +12,8 @@ export interface AdminPageOptions {
   registry: SemanticRegistry;
   signal: AbortSignal;
   navigate(route: "walkthroughs" | "applications" | "editor" | "targets"): void;
+  /** The editor's dirty guard on in-app navigation (see router.ts). */
+  setNavigationGuard?(guard: NavigationGuard | undefined): void;
   preview(definition: WalkthroughDef): void;
   refresh(focus?: boolean): void;
 }
@@ -19,14 +22,14 @@ const c = copy.admin;
 export const adminPage = (title: string, crumbs?: readonly Crumb[]) => h("section", { class: "admin-page", "data-ai-ignore": true }, ...(crumbs ? [breadcrumb(crumbs)] : []), h("h1", { tabindex: "-1" }, title));
 export const readError = (result: AdminResult<unknown>) => result.kind === "denied" ? c.denied : c.readFailed;
 export const writeError = (result: AdminResult<unknown>) => result.kind === "oversize" ? c.oversize : result.kind === "published" ? c.readOnly
-  : result.kind === "application" ? c.application.failures[result.code] : result.kind === "limit" ? c.application.limit : c.writeFailed;
+  : result.kind === "application" ? c.application.failures[result.code] : result.kind === "limit" ? c.application.limit : result.kind === "conflict" ? c.conflict : c.writeFailed;
 export const backLink = () => h("a", { class: "button", href: "#/walkthroughs" }, c.listBack);
 
 export function confirmPublish(trigger: HTMLButtonElement, page: HTMLElement, publish: () => void) {
   confirmAction(trigger, page, c.publishTitle, c.publishMessage, c.publish, publish);
 }
 
-export function confirmAction(trigger: HTMLButtonElement, page: HTMLElement, title: string, message: string, action: string, submit: () => void) {
+export function confirmAction(trigger: HTMLElement, page: HTMLElement, title: string, message: string, action: string, submit: () => void, cancelled?: () => void) {
   if (page.querySelector("dialog[open]")) return;
   const dialog = h("dialog", { class: "dap-result", "aria-labelledby": "dap-publish-title", "aria-describedby": "dap-publish-message", "aria-modal": "true", "data-ai-ignore": true }) as HTMLDialogElement;
   const cancel = button(c.cancel);
@@ -38,11 +41,12 @@ export function confirmAction(trigger: HTMLButtonElement, page: HTMLElement, tit
     trigger.focus();
     return true;
   };
-  cancel.addEventListener("click", close);
+  const dismiss = () => { if (close()) cancelled?.(); };
+  cancel.addEventListener("click", dismiss);
   accept.addEventListener("click", () => { if (close()) submit(); });
-  dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
+  dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
   dialog.addEventListener("keydown", event => {
-    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); dismiss(); }
     if (event.key === "Tab" && dialog.ownerDocument.activeElement === (event.shiftKey ? cancel : accept)) {
       event.preventDefault(); (event.shiftKey ? accept : cancel).focus();
     }

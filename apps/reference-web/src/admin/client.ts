@@ -21,11 +21,17 @@ import { parseStudioError, parseStudioReply, studioPath } from "./studio-client.
 import type { StudioCommand, StudioReply } from "./studio-client.js";
 
 /** `applicationId` is null only for a legacy draft written before applications existed; it is assigned on its first save. */
-export interface GuideRecord { id: string; status: GuideStatus; applicationId: string | null; definition: WalkthroughDef }
+export interface GuideRecord {
+  id: string; status: GuideStatus; applicationId: string | null; definition: WalkthroughDef;
+  /** Optimistic concurrency (S5): the revision of the working copy, the version users run (null = none) and the newest version. Absent from a host that predates versions. */
+  revision?: number; liveVersion?: number | null; latestVersion?: number;
+}
 export type ApplicationFailureCode = "APPLICATION_NOT_FOUND" | "APPLICATION_DISABLED" | "APPLICATION_MISMATCH" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED" | "ROUTING_LOCKED";
 /** `browser-error` carries the host's closed `{error: CODE}`; only a 422 INVALID_TARGET adds `issues` (at most 20 fixed phrases of at most 200 characters). */
 export type AdminResult<T> = { kind: "ok"; value: T } | { kind: "denied" | "failed" | "oversize" | "published" | "limit" | "not-found" } | { kind: "invalid"; issues: readonly string[] }
-  | { kind: "browser-error"; code: string; issues?: readonly string[] } | { kind: "application"; code: ApplicationFailureCode };
+  | { kind: "browser-error"; code: string; issues?: readonly string[] } | { kind: "application"; code: ApplicationFailureCode }
+  /** 409 REVISION_CONFLICT: the stored working copy is at `currentRevision`, not at the revision the save was based on. */
+  | { kind: "conflict"; currentRevision: number };
 /** Metadata of a published guide of a Studio-managed application (its definition is delivered by the bundle route, a later step). */
 export interface ExternalGuide { id: string; title: string; description: string; application: { id: string; name: string; origin: string } }
 
@@ -48,7 +54,7 @@ export interface AdminClient {
   list(): Promise<AdminResult<GuideList>>;
   get(id: string): Promise<AdminResult<GuideRecord>>;
   create(applicationId: string, definition: WalkthroughDef): Promise<AdminResult<GuideRecord>>;
-  update(id: string, applicationId: string, definition: WalkthroughDef): Promise<AdminResult<GuideRecord>>;
+  update(id: string, applicationId: string, definition: WalkthroughDef, expectedRevision?: number): Promise<AdminResult<GuideRecord>>;
   setStatus(id: string, status: GuideStatus): Promise<AdminResult<GuideRecord>>;
   applications(): Promise<AdminResult<ApplicationList>>;
   application(id: string): Promise<AdminResult<ApplicationView>>;
@@ -104,10 +110,15 @@ function step(value: unknown): boolean {
 }
 const definition = (value: unknown): value is WalkthroughDef => object(value) && only(value, ["id", "title", "description", "start", "steps"])
   && summary(value) && authoredId(value.id) && text(value.start, 64) && Array.isArray(value.steps) && value.steps.length > 0 && value.steps.length <= 24 && value.steps.every(step);
-const record = (value: unknown, id?: string, wanted?: GuideStatus): GuideRecord | null => object(value) && only(value, ["id", "status", "applicationId", "definition"])
+const versionNumber = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= 1_000_000;
+const record = (value: unknown, id?: string, wanted?: GuideStatus): GuideRecord | null => object(value) && only(value, ["id", "status", "applicationId", "definition", "revision", "liveVersion", "latestVersion"])
   && status(value.status) && (wanted === undefined || value.status === wanted) && (value.applicationId === null || applicationId(value.applicationId)) && definition(value.definition)
   && value.id === value.definition.id && (id === undefined || id === value.id)
-  ? { id: value.definition.id, status: value.status, applicationId: value.applicationId, definition: value.definition } : null;
+  && (value.revision === undefined || versionNumber(value.revision)) && (value.liveVersion === undefined || value.liveVersion === null || versionNumber(value.liveVersion))
+  && (value.latestVersion === undefined || (typeof value.latestVersion === "number" && Number.isSafeInteger(value.latestVersion) && value.latestVersion >= 0 && value.latestVersion <= 1_000_000))
+  ? { id: value.definition.id, status: value.status, applicationId: value.applicationId, definition: value.definition,
+    ...(value.revision === undefined ? {} : { revision: value.revision }), ...(value.liveVersion === undefined ? {} : { liveVersion: value.liveVersion }),
+    ...(value.latestVersion === undefined ? {} : { latestVersion: value.latestVersion }) } : null;
 const externalGuide = (value: unknown): value is ExternalGuide => object(value) && only(value, ["id", "title", "description", "application"]) && Object.keys(value).length === 4
   && authoredId(value.id) && text(value.title, MAX_TITLE) && text(value.description, MAX_TEXT) && object(value.application)
   && only(value.application, ["id", "name", "origin"]) && Object.keys(value.application).length === 3
@@ -149,6 +160,13 @@ const APPLICATIONS = "/api/admin/applications";
 const FAILED = { kind: "failed" } as const;
 // 404 and 409 can name an application problem in a closed `{kind, code, message?}` body. The message is never used.
 const APPLICATION_CODES: readonly ApplicationFailureCode[] = ["APPLICATION_NOT_FOUND", "APPLICATION_DISABLED", "APPLICATION_MISMATCH", "TARGET_NOT_FOUND", "REGISTRY_NOT_MANAGED", "ROUTING_LOCKED"];
+/** `{kind:"conflict", code:"REVISION_CONFLICT", currentRevision}` (the message, if any, is never used). */
+function revisionConflict(raw: string | null): number | null {
+  try {
+    const body: unknown = raw === null ? null : JSON.parse(raw);
+    return object(body) && only(body, ["kind", "message", "code", "currentRevision"]) && body.kind === "conflict" && body.code === "REVISION_CONFLICT" && versionNumber(body.currentRevision) ? body.currentRevision : null;
+  } catch { return null; }
+}
 function applicationFailure(raw: string | null): ApplicationFailureCode | null {
   try {
     const body: unknown = raw === null ? null : JSON.parse(raw);
@@ -182,7 +200,10 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
       if (method !== "GET" && response.status === 413) return { kind: "oversize" };
       if (response.status === 404 && url.startsWith("/api/walkthroughs/published/")) return { kind: "not-found" };
       if (response.status === 404 || response.status === 409) {
-        const code = applicationFailure(await readReply(response, controller.signal, 512));
+        const raw = await readReply(response, controller.signal, 512);
+        const current = response.status === 409 ? revisionConflict(raw) : null;
+        if (current !== null) return { kind: "conflict", currentRevision: current };
+        const code = applicationFailure(raw);
         if (code !== null) return { kind: "application", code };
         // Without an application code a 409 keeps its older meaning: a published record cannot be edited, or the application limit is reached.
         if (response.status === 409 && method === "PUT" && url.startsWith(`${ADMIN}/`)) return { kind: "published" };
@@ -217,8 +238,8 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
     // The body is exactly {applicationId, definition}; a create never carries the temporary definition id.
     create: (owner, { title, description, start, steps }) => applicationId(owner)
       ? request(ADMIN, value => record(value, undefined, "draft"), "POST", { applicationId: owner, definition: { title, description, start, steps } }) : Promise.resolve(FAILED),
-    update: (id, owner, def) => authoredId(id) && id === def.id && applicationId(owner)
-      ? request(`${ADMIN}/${id}`, value => record(value, id, "draft"), "PUT", { applicationId: owner, definition: def }) : Promise.resolve(FAILED),
+    update: (id, owner, def, expectedRevision) => authoredId(id) && id === def.id && applicationId(owner) && (expectedRevision === undefined || versionNumber(expectedRevision))
+      ? request(`${ADMIN}/${id}`, value => record(value, id, "draft"), "PUT", { applicationId: owner, definition: def, ...(expectedRevision === undefined ? {} : { expectedRevision }) }) : Promise.resolve(FAILED),
     setStatus: (id, wanted) => authoredId(id)
       ? request(`${ADMIN}/${id}/status`, value => record(value, id, wanted), "POST", { status: wanted }) : Promise.resolve(FAILED),
     applications: () => request(APPLICATIONS, parseApplicationList),

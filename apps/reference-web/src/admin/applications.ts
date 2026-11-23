@@ -1,5 +1,7 @@
 import { createSemanticRegistry, ID_PATTERN, isPlainText, MAX_DESCRIPTION, MAX_LABEL, OPERATIONS, ROLES } from "@dap/walkthrough";
 import type { SemanticElementDef, SemanticRegistry } from "@dap/walkthrough";
+import { parseCheckList } from "./checks.js";
+import type { CheckView } from "./checks.js";
 import { LIMITS, POSTCONDITION, REGISTRY_ID, APPLICATION_ID, exact, managedPageOf, normalizedOrigin, pageOf, record, routeKey, unsafeKey } from "./wire.js";
 import type { Bag } from "./wire.js";
 
@@ -45,6 +47,8 @@ export interface ApplicationRegistry {
   /** `in-app`: the reference web app runs the guide; `application-window`: the application's own window does (a later step). */
   readonly previewMode: "in-app" | "application-window";
   readonly registry: SemanticRegistry;
+  /** The verification checks of a Studio-managed registry (S4); empty for a built-in one or a host that predates checks. */
+  readonly checks: readonly CheckView[];
 }
 
 const object = record;
@@ -114,7 +118,9 @@ function parsePages(value: unknown, routes: readonly unknown[], managed: boolean
 
 /** Public targets only: a private element in this reply breaks the contract, so the whole reply is refused. */
 export function parseApplicationRegistry(value: unknown): ApplicationRegistry | null {
-  if (!object(value) || !exact(value, ["routes", "elements", "postconditionNames", "previewable", "source", "pages", "previewMode"]) || typeof value.previewable !== "boolean"
+  const hasChecks = object(value) && Object.hasOwn(value, "checks");
+  const parsedChecks = hasChecks ? parseCheckList({ checks: (value as Bag).checks }) : [];
+  if (!object(value) || !exact(value, ["routes", "elements", "postconditionNames", "previewable", "source", "pages", "previewMode", ...(hasChecks ? ["checks"] : [])]) || parsedChecks === null || typeof value.previewable !== "boolean"
     || (value.source !== "built-in" && value.source !== "studio-managed") || (value.previewMode !== "in-app" && value.previewMode !== "application-window")
     || !Array.isArray(value.routes) || !value.routes.every(routeKey) || value.routes.length > LIMITS.registryRoutes || !Array.isArray(value.elements) || value.elements.length > LIMITS.registryElements
     || !Array.isArray(value.postconditionNames) || value.postconditionNames.length > LIMITS.postconditions) return null;
@@ -134,7 +140,7 @@ export function parseApplicationRegistry(value: unknown): ApplicationRegistry | 
   try {
     // The semantic registry is the one validator for ids, routes and duplicates; a throw means the reply is not a usable registry.
     const registry = createSemanticRegistry({ routes: value.routes as string[], elements });
-    return { routes: registry.routes, elements: registry.list(), postconditionNames: names as string[], previewable: value.previewable, source: value.source, pages, previewMode: value.previewMode, registry };
+    return { routes: registry.routes, elements: registry.list(), postconditionNames: names as string[], previewable: value.previewable, source: value.source, pages, previewMode: value.previewMode, registry, checks: parsedChecks };
   } catch { return null; }
 }
 

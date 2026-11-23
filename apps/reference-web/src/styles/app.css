@@ -124,3 +124,17 @@ input { min-height: var(--touch); width: var(--full); min-width: var(--zero); bo
 .studio-compare { width: var(--full); table-layout: fixed; }
 .studio-compare :is(th, td) { text-align: left; padding: var(--space-1) var(--space-2); overflow-wrap: anywhere; vertical-align: top; border-bottom: var(--border); }
 .admin-page .admin-table :is(th, td) { overflow-wrap: anywhere; }
+
+/* Editor core (S9): step rows with summary and validity, save state, conflict, verification and the preview mode. Tokens only; text and icon carry meaning, never colour alone. */
+.editor-step-row { display: grid; gap: var(--space-1); margin-bottom: var(--space-3); min-width: var(--zero); }
+.step-summary { overflow-wrap: anywhere; }
+.step-validity { font-size: var(--type-small); overflow-wrap: anywhere; margin: var(--zero); color: var(--dap-text-muted); }
+.step-validity[data-validity="invalid"] { color: var(--dap-danger); }
+.step-validity[data-validity="valid"] { color: var(--dap-accent); }
+.save-state { margin: var(--space-2) var(--zero); font-size: var(--type-small); }
+.save-state[data-state="failed"] { color: var(--dap-danger); }
+.verification { min-width: var(--zero); }
+.verification select, .verification input[type="text"] { width: var(--full); box-sizing: border-box; }
+.preview-panel { overflow-wrap: anywhere; }
+.preview-status p { margin: var(--space-1) var(--zero); }
+#editor-conflict { margin: var(--space-3) var(--zero); }

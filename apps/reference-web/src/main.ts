@@ -162,7 +162,7 @@ export function mountApp(root: HTMLElement, options: { readonly window?: Window;
         const page = settingsPage(() => store.set({ advancedOpen: !store.get().advancedOpen })); main.replaceChildren(page.element); updatePage = s => page.update(s.advancedOpen);
       } else if (isAdminRoute(state.route)) {
         const page = state.route === "walkthroughs" ? walkthroughsPage : state.route === "applications" ? applicationsPage : state.route === "targets" ? targetsPage : state.route === "editor" ? editorPage : analyticsPage;
-        main.replaceChildren(admin ? page({ ...admin, registry, signal: pageScope.signal, navigate: router.navigate })
+        main.replaceChildren(admin ? page({ ...admin, registry, signal: pageScope.signal, navigate: router.navigate, ...(router.setGuard ? { setNavigationGuard: router.setGuard } : {}) })
           : adminPage(copy.admin[state.route])); updatePage = () => {};
         if (!admin) main.firstElementChild?.append(h("p", { role: "status" }, copy.admin.denied));
       } else { launcher=createLauncher(guides,start,options.hideFromLauncher);launcher.update();main.replaceChildren(dashboardPage(launcher.element)); if(options.externalGuides) main.append(options.externalGuides()); updatePage = () => {launcher?.update();}; if(revealGuides){revealGuides=false;launcher.reveal();} }

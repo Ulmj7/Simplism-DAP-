@@ -19,6 +19,8 @@ export interface EditSession {
   dirty: boolean;
   saved?: boolean;
   saving?: Promise<AdminResult<GuideRecord>>;
+  /** The revision the working copy was loaded or last saved at (S5): sent as `expectedRevision` on the next save. */
+  revision?: number;
 }
 let current: EditSession | undefined;
 export const getEditSession = () => current;
@@ -37,3 +39,8 @@ export function takeRequestedEdit(): string | undefined { const id = requestedId
 let focused: string | undefined;
 export const focusApplication = (id?: string): void => { focused = id; };
 export const getFocusedApplication = (): string | undefined => focused;
+
+/** "Re-record target" in a failed Preview: the Targets page opens that target's repair flow (once). */
+let repairRequest: { applicationId: string; targetId: string } | undefined;
+export const requestRepair = (applicationId: string, targetId: string): void => { repairRequest = { applicationId, targetId }; focusApplication(applicationId); };
+export function takeRepairRequest(): { applicationId: string; targetId: string } | undefined { const request = repairRequest; repairRequest = undefined; return request; }
