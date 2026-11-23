@@ -58,11 +58,11 @@ async function build(options: { rateLimit?: { max: number; windowMs: number; max
   await targets.register(scopeB, APP_B, TARGET);
   await targets.register(scopeA, APP_H, { ...TARGET, targetId: "users.save", route: "users123", page: "/users/123", label: "Save" });
   const rows: (Omit<StoredWalkthrough, "status"> & { tenantId: string; status: "draft" | "published" })[] = [];
-  const publish = (tenantId: string, id: string, applicationId: string | null, definition: unknown, status: "draft" | "published" = "published") => rows.push({ tenantId, id, status, applicationId, definition: { ...(definition as object), id }, updatedAt: "2026-01-01T00:00:00.000Z" });
+  const publish = (tenantId: string, id: string, applicationId: string | null, definition: unknown, status: "draft" | "published" = "published", liveVersion?: number) => rows.push({ tenantId, id, status, applicationId, ...(liveVersion === undefined ? {} : { liveVersion }), definition: { ...(definition as object), id }, updatedAt: "2026-01-01T00:00:00.000Z" });
   publish(TENANT_A, GUIDE_A, APP_A, def());
   publish(TENANT_A, GUIDE_A2, APP_A2, def("orders", "orders.submitButton", "Second app guide"));
   publish(TENANT_A, GUIDE_DRAFT, APP_A, def("orders", "orders.submitButton", "A draft"), "draft");
-  publish(TENANT_A, GUIDE_H, APP_H, def("users123", "users.save", "History guide"));
+  publish(TENANT_A, GUIDE_H, APP_H, def("users123", "users.save", "History guide"), "published", 3);
   publish(TENANT_B, GUIDE_B, APP_B, def("orders", "orders.submitButton", "Tenant B guide"));
   const store: Pick<WalkthroughStore, "listPublished"> = { listPublished: async (tenantId) => rows.filter((row) => row.tenantId === tenantId && row.status === "published") };
   const lookups: string[] = [];
@@ -146,6 +146,7 @@ describe("the guide bundle", () => {
   it("for a history application the pages map is pathname -> route and the routing says history", async () => {
     const h = await build();
     const res = await h.call(`/api/runtime/${await h.key(TENANT_A, APP_H)}/guides/${GUIDE_H}`, { origin: "http://127.0.0.1:5189" });
+    expect(res.body.version).toBe(3);
     expect(res.body.registry).toMatchObject({ routing: "history", pages: { "/users/123": "users123" }, routes: ["users123"] });
   });
   it("binds the runtime bundle to the allowed origin requesting playback", async () => {

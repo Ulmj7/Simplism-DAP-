@@ -23,7 +23,7 @@ export class FakeTargetStore implements TargetStore {
   private readonly routes: { tenantId: string; applicationId: string; route: string; page: string }[] = [];
   failWith: Error | null = null;
   /** The stored workflows of an application, set by tests: `definitionsUsing` and the repair's compatibility check read them. */
-  readonly definitions: { tenantId: string; applicationId: string; id: string; title: string; status: "draft" | "published"; definition: unknown }[] = [];
+  readonly definitions: { tenantId: string; applicationId: string; id: string; title: string; status: "draft" | "published"; version?: number; definition: unknown }[] = [];
   private readonly changeRows: { tenantId: string; applicationId: string; targetId: string; change: TargetChange }[] = [];
   /** How many stored definitions of an application name a target (drafts, published); tests set it directly. */
   readonly references = new Map<string, { drafts: number; published: number }>();
@@ -152,7 +152,7 @@ export class FakeTargetStore implements TargetStore {
     this.check();
     return this.definitions.filter((item) => item.tenantId === tenantId && item.applicationId === applicationId
       && Array.isArray((item.definition as { steps?: unknown }).steps) && ((item.definition as { steps: { target?: unknown }[] }).steps).some((step) => step?.target === targetId))
-      .map((item) => ({ id: item.id, title: item.title, status: item.status, version: item.status === "published" ? 1 : null, definition: item.definition }));
+      .map((item) => ({ id: item.id, title: item.title, status: item.status, version: item.status === "published" ? item.version ?? 1 : null, definition: item.definition }));
   }
   async changes(tenantId: string, applicationId: string, targetId: string, limit: number): Promise<readonly TargetChange[]> {
     this.check();

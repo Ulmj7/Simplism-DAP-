@@ -231,6 +231,9 @@ describe("check evaluators compare locally and fail closed", () => {
     const input = add("input", "profile.nameField", { type: "text" }) as HTMLInputElement; input.value = "Ada";
     expect(run({ kind: "element.value.equals", targetId: "profile.displayName", expected: "Ada" })).toBe(true);
     expect(run({ kind: "element.value.equals", targetId: "profile.displayName", expected: "ada" })).toBe(false);
+    input.value = " Ada ";
+    expect(run({ kind: "element.value.equals", targetId: "profile.displayName", expected: "Ada" })).toBe(false);
+    expect(run({ kind: "element.value.equals", targetId: "profile.displayName", expected: " Ada " })).toBe(true);
     const box = add("input", "profile.agree", { type: "checkbox" }) as HTMLInputElement; box.checked = true;
     expect(run({ kind: "element.value.equals", targetId: "profile.agree", expected: "true" })).toBe(true);
     box.checked = false;
@@ -294,6 +297,8 @@ describe("closed-shape parsing of the additive bundle fields", () => {
     const parsed = parseBundle(bundle);
     expect(parsed.ok && parsed.bundle).toEqual(bundle);
     expect(parsed.ok && parsed.bundle.registry.checks).not.toBe(bundle.registry.checks);
+    expect(parsed.ok && parsed.bundle.definition.steps).not.toBe(bundle.definition.steps);
+    expect(parsed.ok && parsed.bundle.definition.steps[0]).not.toBe(bundle.definition.steps[0]);
     const { checks: _checks, routing: _routing, ...bare } = bundle.registry;
     void _checks; void _routing;
     const old = { ...bundle, version: undefined, registry: { ...bare, postconditionNames: ["route.home", "route.profile", "route.settings"], pages: { "/": "home", "/#/profile": "profile", "/#/settings": "settings" }, elements: bundle.registry.elements.filter(item => item.role !== "text").map(item => { const copy = { ...item }; delete (copy as { marker?: string }).marker; return copy; }) } };

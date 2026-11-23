@@ -535,9 +535,13 @@ it("publishes immutable versions, revises while v1 remains live, compares v1 wit
   button(root, "Create draft from published: Original workflow").click(); await turn();
   expect(location.hash).toBe("#/editor");
   expect(host.rows.get(savedId)).toMatchObject({ status: "draft", liveVersion: 1 });
-  fill(root, "editor-title", "Updated workflow");
+  fill(root, "editor-title", "Intermediate workflow");
   button(root, c.save).click(); await turn();
   expect(host.writes().at(-1)).toMatchObject({ method: "PUT", body: { expectedRevision: 3 } });
+  fill(root, "editor-title", "Updated workflow");
+  button(root, c.save).click(); await turn();
+  expect(host.writes().at(-1)).toMatchObject({ method: "PUT", body: { expectedRevision: 4 } });
+  expect(host.rows.get(savedId)).toMatchObject({ revision: 5, definition: { title: "Updated workflow" } });
   expect(host.versions.get(savedId)?.[0]?.definition.title).toBe("Original workflow");
 
   button(root, "Version history").click(); await turn();

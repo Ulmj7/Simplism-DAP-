@@ -906,13 +906,13 @@ describe("repair: re-bind a registered target to a live control", () => {
   it("a DRY RUN (confirm false) returns the current and proposed fields and the impact, and writes nothing", async () => {
     const h = await broken();
     h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a1", title: "Submit an order", status: "draft", definition: guide("orders.exportButton", "ack") });
-    h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a2", title: "Live guide", status: "published", definition: { ...guide("orders.exportButton", "ack", "Live guide"), id: "wt-0000000000a2" } });
+    h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a2", title: "Live guide", status: "published", version: 3, definition: { ...guide("orders.exportButton", "ack", "Live guide"), id: "wt-0000000000a2" } });
     const res = await h.command(repairBody({ operations: ["highlight", "click"] }));
     expect(res.status).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual(["current", "impact", "proposed", "target"]);
     expect(res.body.current).toEqual({ marker: "orders.exportButton", role: "button", operations: ["highlight", "click"], label: "orders.exportButton", description: "orders.exportButton." });
     expect(res.body.proposed).toEqual({ marker: "orders.exportButton", role: "link", operations: ["highlight", "click"], label: "Export link", description: "Exports the orders." });
-    expect(res.body.impact).toEqual({ drafts: [{ id: "wt-0000000000a1", title: "Submit an order" }], published: [{ id: "wt-0000000000a2", title: "Live guide", version: 1 }], compatible: true, problems: [] });
+    expect(res.body.impact).toEqual({ drafts: [{ id: "wt-0000000000a1", title: "Submit an order" }], published: [{ id: "wt-0000000000a2", title: "Live guide", version: 3 }], compatible: true, problems: [] });
     expect(res.body.target).toMatchObject({ id: "orders.exportButton", revision: 1 });
     expect(h.calls).toEqual([]);
     expect(await h.targets.get(TENANT_A, MANAGED, "orders.exportButton")).toMatchObject({ role: "button", revision: 1 });
@@ -939,9 +939,9 @@ describe("repair: re-bind a registered target to a live control", () => {
     const shown = (await h.command(refresh())).body.elements as { name: string; status: string }[];
     expect(shown.map((e) => [e.name, e.status])).toEqual([["Export now", "trusted"], ["Order note", "trusted"]]);
   });
-  it("is refused for an incompatible repair: the dry run says why (fixed problems), confirm is 409 REPAIR_INCOMPATIBLE and nothing is written", async () => {
+  it.each(["draft", "published"] as const)("refuses a repair that makes a %s workflow incompatible and writes nothing", async (status) => {
     const h = await broken([control("Export", "textbox", "orders.exportButton"), control("Order note", "textbox", "orders.note")]);
-    h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a1", title: "Submit an order", status: "draft", definition: guide("orders.exportButton", "click") });
+    h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a1", title: "Submit an order", status, definition: guide("orders.exportButton", "click") });
     const dry = await h.command(repairBody({ operations: ["highlight", "input"] }));
     expect(dry.status).toBe(200);
     expect((dry.body.impact as { compatible: boolean; problems: string[] })).toMatchObject({ compatible: false });
