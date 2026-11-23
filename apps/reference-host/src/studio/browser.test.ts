@@ -45,6 +45,7 @@ function fakeRuntime(snapshot: BrowserSnapshot = profileSnapshot, ids: Record<st
     snapshot: vi.fn(async () => runtime.snapshotValue),
     inspectSemanticId: vi.fn(async (ref: ElementRef) => runtime.ids[ref] ?? null),
     inspectSemanticIds: vi.fn(async (from: BrowserSnapshot) => new Map(from.elements.map((element) => [element.ref, runtime.ids[element.ref] ?? null] as const))),
+    inspectElementFacts: vi.fn(async (refs: readonly ElementRef[]) => new Map(refs.map((ref) => [ref, { tagName: null, inputType: null, autocomplete: null, dataAiPrivate: false, dataAiIgnore: false, dataAiRedact: false }] as const))),
     highlight: vi.fn(async () => {}), clearHighlight: vi.fn(async () => {}), getUrl: vi.fn(async () => runtime.snapshotValue.url), waitForChange: vi.fn(async () => ({ status: "timeout" as const })),
     close: vi.fn(async () => {}),
   };
