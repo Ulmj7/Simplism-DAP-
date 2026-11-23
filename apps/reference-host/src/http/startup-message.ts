@@ -10,8 +10,8 @@ import { GuidanceConfigError } from "../guidance/anthropic-model.js";
 export type StartupPhase = "config" | "compose" | "session" | "listen";
 
 export const STARTUP_MESSAGES = Object.freeze({
-  portInUse: "Guidance host could not start: the HTTP port on 127.0.0.1 is already in use. Stop the other process or set DAP_HTTP_PORT to a free port.",
-  cannotBind: "Guidance host could not start: it cannot listen on 127.0.0.1 at the configured HTTP port (DAP_HTTP_PORT).",
+  portInUse: "Guidance host could not start: the HTTP port is already in use on the configured address. Stop the other process or set DAP_HTTP_PORT to a free port.",
+  cannotBind: "Guidance host could not start: it cannot listen on the configured address and port (DAP_HTTP_HOST and DAP_HTTP_PORT).",
   compose: "Guidance host could not start: the reference host could not be composed. Check that PostgreSQL is running and migrated and that DAP_DATABASE_URL points to it.",
   session: "Guidance host could not start: the demo session could not be opened. Check DAP_DEMO_SESSION_TOKEN and DEV_SESSIONS.",
   generic: "Guidance host startup failed.",

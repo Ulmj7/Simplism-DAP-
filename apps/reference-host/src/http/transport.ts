@@ -11,6 +11,7 @@
  * No CORS headers are sent: the browser reaches this server same-origin through the reference web app's dev proxy (`/api` -> 127.0.0.1:8787), and
  * `application/json` is the only accepted body type, so a cross-site page cannot post here without a (refused) preflight.
  */
+import { isIPv4 } from "node:net";
 import { fastify } from "fastify";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { MAX_QUERY_CHARS, parseSemanticContextInput, unsupportedResult } from "@dap/ai";
@@ -45,6 +46,7 @@ export interface GuidanceTransportDeps {
   readonly resolveSession: (headers: RequestHeaders) => Promise<GuidanceSession | null>;
   readonly proposals: ProposalStore;
   readonly bodyLimit?: number;
+  readonly allowedHost?: string;
 }
 
 /** A full 60-element context is about 31 KB of JSON; 64 KiB admits every valid request with room for escaping and nothing much larger. */
@@ -76,6 +78,11 @@ export const TRANSPORT_MESSAGES = Object.freeze({
 /** Loopback host names only (any port): a request whose Host names another site (DNS rebinding) is refused before routing. */
 const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/;
 
+export function isLabHttpHost(value: string): boolean {
+  const match = /^([0-9.]+):([1-9][0-9]{0,4})$/.exec(value);
+  return match !== null && isIPv4(match[1] ?? "") && parseHttpPort(match[2]) !== null;
+}
+
 const unsupported = (message: string) => ({ kind: "unsupported" as const, message });
 const unavailable = () => ({ kind: "unavailable" as const, message: TRANSPORT_MESSAGES.unavailable });
 
@@ -104,7 +111,8 @@ export function createGuidanceTransport(deps: GuidanceTransportDeps): FastifyIns
   const session = async (request: FastifyRequest): Promise<GuidanceSession | null> => { try { return await resolveSession(request.headers); } catch { return null; } };
 
   app.addHook("onRequest", async (request, reply) => {
-    if (!LOOPBACK_HOST.test(request.headers.host ?? "")) return send(reply, 403, unsupported(TRANSPORT_MESSAGES.forbiddenHost));
+    const host = request.headers.host ?? "";
+    if (!LOOPBACK_HOST.test(host) && host !== deps.allowedHost) return send(reply, 403, unsupported(TRANSPORT_MESSAGES.forbiddenHost));
     // A browser names where the request came from: only the page's own origin (via the Vite proxy) or a direct navigation may call in. No header
     // (curl, tests) passes; a browser that sends it can't be talked out of it by page script.
     const site = request.headers["sec-fetch-site"];

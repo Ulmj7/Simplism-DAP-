@@ -1,5 +1,6 @@
 /**
- * C01 dev server (`npm run dev:host`): the reference host composed with the guidance capability, behind the narrow browser transport, on 127.0.0.1 only.
+ * C01 dev server (`npm run dev:host`): the reference host composed with the guidance capability, behind the narrow browser transport.
+ * DAP_HTTP_HOST defaults to 127.0.0.1. The Docker lab binds to 0.0.0.0 inside the container and publishes to host loopback.
  *
  * DEV-ONLY DEMO LIMITATION: the browser supplies no identity. The host opens its OWN demo session server-side from `DAP_DEMO_SESSION_TOKEN` (dev-auth
  * evidence, read from the environment, never from a request), so every browser that can reach 127.0.0.1 shares that one session. A real deployment needs
@@ -41,13 +42,21 @@ import { createApprovalRecorder, createGatewayStart } from "./approved-start.js"
 import { createProposalStore } from "./proposal-store.js";
 import { startupFailureMessage } from "./startup-message.js";
 import type { StartupPhase } from "./startup-message.js";
-import { HTTP_HOST, createGuidanceTransport, parseHttpPort } from "./transport.js";
+import { HTTP_HOST, createGuidanceTransport, isLabHttpHost, parseHttpPort } from "./transport.js";
 import type { GuidanceSession } from "./transport.js";
 
 const env = process.env;
 let close: (() => Promise<void>) | undefined;
 let phase: StartupPhase = "config";
 try {
+  const bindHost = env.DAP_HTTP_HOST ?? HTTP_HOST;
+  if (bindHost !== HTTP_HOST && bindHost !== "0.0.0.0") {
+    throw new GuidanceConfigError("DAP_HTTP_HOST must be 127.0.0.1 or 0.0.0.0");
+  }
+  const allowedHost = env.DAP_HTTP_ALLOWED_HOST;
+  if (allowedHost !== undefined && (bindHost !== "0.0.0.0" || !isLabHttpHost(allowedHost))) {
+    throw new GuidanceConfigError("DAP_HTTP_ALLOWED_HOST requires a lab IPv4 address and port with DAP_HTTP_HOST=0.0.0.0");
+  }
   const port = parseHttpPort(env.DAP_HTTP_PORT);
   if (port === null) throw new GuidanceConfigError("DAP_HTTP_PORT must be a port number from 1 to 65535");
   const token = env.DAP_DEMO_SESSION_TOKEN;
@@ -75,10 +84,19 @@ try {
   if ((await host.openSession(token)) === null) throw new GuidanceConfigError("DAP_DEMO_SESSION_TOKEN session was refused");
   const demoSession: GuidanceSession = Object.freeze({ key: "dev-demo-session", start: createGatewayStart({ openSession: () => host.openSession(token), recorder }) });
   const app = createGuidanceTransport({
+    ...(allowedHost === undefined ? {} : { allowedHost }),
     ask: guidance.askGuidance,
     catalog: demoCatalogView,
     resolveSession: async () => demoSession,
     proposals: createProposalStore({ now: Date.now, newId: () => randomBytes(32).toString("base64url") }),
+  });
+  app.get("/readyz", async (_request, reply) => {
+    try {
+      await authoringPool.query("SELECT 1 FROM public.walkthrough_definitions LIMIT 0");
+      return reply.code(200).send({ status: "ready" });
+    } catch {
+      return reply.code(503).send({ status: "unavailable" });
+    }
   });
   // Feature 004: the authoring routes on the SAME instance, before listen, so every transport guard applies to them. The principal comes from the host's own
   // session table (see principal.ts); the demo role header only picks one of the two server-held sessions.
@@ -91,8 +109,8 @@ try {
   registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: store, targets, resolver });
   close = async () => { await app.close(); await host.close(); await authoringPool.end(); };
   phase = "listen";
-  await app.listen({ host: HTTP_HOST, port });
-  console.log(`DAP guidance host listening on http://${HTTP_HOST}:${port} (dev only)`);
+  await app.listen({ host: bindHost, port });
+  console.log(`DAP guidance host listening on http://${bindHost}:${port} (dev only)`);
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void close?.().finally(() => process.exit(0)); });
 } catch (error) {
   console.error(startupFailureMessage(error, phase));

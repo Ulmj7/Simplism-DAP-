@@ -22,3 +22,32 @@ handle cannot open turns. This is not exactly-once execution across host retries
 `composeReferenceHost` and its trusted result are host APIs, never model tools. AiSession
 limits object capabilities; it is not a sandbox for arbitrary JavaScript or process globals.
 Production mode checks ignore surrounding whitespace and case; opt-in remains exactly `1`.
+
+## Docker lab
+
+From the repository root, create a Git-ignored `.env.docker.local` with a
+fresh local demo session. Use a random token of at least 16 characters in both
+entries and set `validUntil` to a future ISO 8601 timestamp.
+
+```dotenv
+DAP_DEMO_SESSION_TOKEN=<local-demo-token>
+DEV_SESSIONS='[{"token":"<local-demo-token>","userId":"lab","tenantId":"11111111-1111-4111-8111-111111111111","sessionId":"docker-lab","validUntil":"<future-ISO-8601-timestamp>","permissions":["perm.guidance.start"]}]'
+```
+
+```sh
+docker compose --progress plain --env-file .env.docker.local -p dap-docker-lab -f deploy/compose.yaml --profile lab build app
+docker compose --env-file .env.docker.local -p dap-docker-lab -f deploy/compose.yaml --profile lab up -d --no-build
+docker compose --env-file .env.docker.local -p dap-docker-lab -f deploy/compose.yaml --profile lab ps -a
+curl --fail-with-body --retry 5 --retry-connrefused -H 'Content-Type: application/json' \
+  -d '{"query":"How do I change my profile name?","semanticContext":{"route":"profile","elements":[{"id":"profile.displayName","role":"textbox","label":"Display name","description":"Your public name","privacy":"public","available":true}]}}' \
+  http://127.0.0.1:8787/api/guidance
+```
+
+Once the app has started, the guidance request returns `kind: "walkthrough"`.
+The `migrate` service exits with code 0 and the app stays up on host loopback.
+The optional `DAP_OWNER_PASSWORD` and `DAP_APP_PASSWORD` overrides must use
+URL-safe characters and match the passwords used to initialize the PostgreSQL
+volume. Repeat the build after changing a backend TypeScript file to verify
+that both npm install steps are cached while TypeScript recompiles.
+
+For the three-replica Kubernetes version, see the [Minikube lab](../../deploy/k8s/README.md).

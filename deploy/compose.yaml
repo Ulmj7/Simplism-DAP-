@@ -17,27 +17,45 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ../db/migrations/000_roles.sql:/docker-entrypoint-initdb.d/000_roles.sql:ro
-    configs:
-      - source: postgres-passwords
-        target: /docker-entrypoint-initdb.d/001_passwords.sh
+      - ../db/bootstrap/001_passwords.sh:/docker-entrypoint-initdb.d/001_passwords.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 2s
       timeout: 3s
       retries: 30
 
-configs:
-  postgres-passwords:
-    content: |
-      #!/bin/sh
-      set -eu
-      psql --set=ON_ERROR_STOP=1 --username="$$POSTGRES_USER" --dbname="$$POSTGRES_DB" \
-        --set=owner_password="$$DAP_OWNER_PASSWORD" --set=app_password="$$DAP_APP_PASSWORD" \
-        --set=database_name="$$POSTGRES_DB" <<'SQL'
-      ALTER ROLE dap_owner PASSWORD :'owner_password';
-      ALTER ROLE dap_app PASSWORD :'app_password';
-      ALTER DATABASE :"database_name" OWNER TO dap_owner;
-      SQL
+  migrate:
+    profiles: [lab]
+    image: ai-support-agent-clean:local
+    pull_policy: never
+    command: ["node", "db/migrate.mjs"]
+    environment:
+      DAP_MIGRATE_DATABASE_URL: postgresql://dap_owner:${DAP_OWNER_PASSWORD:-dap_owner_local_only}@postgres:5432/dap
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    profiles: [lab]
+    image: ai-support-agent-clean:local
+    pull_policy: never
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      NODE_ENV: development
+      DAP_ALLOW_DEV_AUTH: "1"
+      DAP_DATABASE_URL: postgresql://dap_app:${DAP_APP_PASSWORD:-dap_app_local_only}@postgres:5432/dap
+      DEV_SESSIONS: ${DEV_SESSIONS:-}
+      DAP_DEMO_SESSION_TOKEN: ${DAP_DEMO_SESSION_TOKEN:-}
+      DAP_ENABLED_ACTIONS: startWalkthrough
+      DAP_GUIDANCE_MODEL: fake
+      DAP_HTTP_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8787:8787"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   postgres-data:
