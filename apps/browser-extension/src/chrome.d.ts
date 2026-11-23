@@ -34,6 +34,9 @@ declare const chrome: {
   };
   tabs: {
     query(query: { active?: boolean; currentWindow?: boolean; url?: string }): Promise<ExtensionTab[]>;
+    get(tabId: number): Promise<ExtensionTab>;
+    create(options: { url: string }): Promise<ExtensionTab>;
+    update(tabId: number, options: { active: true }): Promise<ExtensionTab>;
     sendMessage(tabId: number, message: unknown, target: { documentId: string }): Promise<unknown>;
     onRemoved: { addListener(listener: (tabId: number) => void): void };
   };

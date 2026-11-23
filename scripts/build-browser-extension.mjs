@@ -9,7 +9,7 @@ const outDir = join(root, "dist");
 
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
-for (const name of ["background", "content", "main", "popup", "receiver"]) {
+for (const name of ["background", "content", "main", "popup", "receiver", "setup"]) {
   await build({
     configFile: false,
     root,
@@ -34,5 +34,5 @@ for (const name of ["background", "content", "main", "popup", "receiver"]) {
     }],
   });
 }
-for (const asset of ["manifest.json", "popup.html", "popup.css"]) await copyFile(join(root, asset), join(outDir, asset));
+for (const asset of ["manifest.json", "popup.html", "popup.css", "setup.html"]) await copyFile(join(root, asset), join(outDir, asset));
 await copyFile(join(sdk, "simplism.css"), join(outDir, "simplism.css"));

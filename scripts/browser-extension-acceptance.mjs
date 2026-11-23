@@ -79,6 +79,18 @@ async function accept(session, hash, history, unknown, apps) {
   const ui = (...args) => callBrowser(session, ...args);
   const evaluate = async code => (await ui("eval", "-b", Buffer.from(code).toString("base64"))).result;
   const count = selector => evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
+  const waitVisible = selector => until(
+    () => evaluate(`(document.querySelector(${JSON.stringify(selector)})?.getClientRects().length ?? 0) > 0`),
+    `Missing visible ${selector}`,
+  );
+  // The worker inserts CSS after the SDK attaches. Wait for layout before clicking.
+  const waitLauncher = () => until(
+    () => evaluate(`(() => {
+      const node = document.querySelector(${JSON.stringify(root)});
+      return !!node && getComputedStyle(node).position === "fixed";
+    })()`),
+    "Simplism launcher did not become styled on the application page",
+  );
   const clickButton = name => ui("find", "role", "button", "click", "--name", name, "--exact");
   const waitText = text => until(() => evaluate(`document.body.innerText.includes(${JSON.stringify(text)})`), `Missing ${text}`);
   const go = (site, path = "/") => ui("open", site.origin + path);
@@ -91,15 +103,15 @@ async function accept(session, hash, history, unknown, apps) {
     assert.equal(await count(overlay), 0);
   };
   const openCatalog = async () => {
-    await ui("wait", launcher);
+    await waitLauncher();
     if (await evaluate(`document.querySelector("${panel}").hidden`)) await ui("click", launcher);
-    await ui("wait", `${panel} li button`);
+    await waitVisible(`${panel} li button`);
   };
   const start = async () => {
     await openCatalog();
     await ui("press", "Enter");
     await waitText("Open Profile.");
-    await ui("wait", ".dap-guide-ring");
+    await waitVisible(".dap-guide-ring");
   };
   const enterName = async site => {
     await ui("click", `[data-ai-id="${site.prefix}.profile"]`);
@@ -125,8 +137,8 @@ async function accept(session, hash, history, unknown, apps) {
     await step(`${site.name} validates playback, catalog isolation, strict CSP and stop/restart/reload`, async () => {
       await go(site);
       await noRuntime();
-      await operator(`On ${site.origin}, open the toolbar popup and enter:\nApplication ID: ${app.id}\nRuntime key: ${app.runtimeKey}\nAPI origin: ${hostOrigin}\nChoose Save site and approve any exact-site permission prompt. Choose Open Simplism, then close the toolbar popup.`);
-      await ui("wait", launcher);
+      await operator(`On ${site.origin}, open the toolbar popup and enter:\nApplication ID: ${app.id}\nRuntime key: ${app.runtimeKey}\nAPI origin: ${hostOrigin}\nChoose Save site. If a setup tab opens, choose Allow site access there, approve Chrome's exact-site prompt, and wait for Simplism to return to the original tab. Reopen the toolbar popup and choose Open Simplism.`);
+      await waitLauncher();
       assert.equal(await count(root), 1);
       assert.equal(await evaluate("typeof window.simplism"), "undefined", "The fixture did not bootstrap the direct SDK");
       assert.equal(await evaluate(`getComputedStyle(document.querySelector(${JSON.stringify(root)})).position`), "fixed", "Launcher CSS must apply under CSP");
@@ -155,7 +167,7 @@ async function accept(session, hash, history, unknown, apps) {
       await ui("reload");
       assert.equal(await count(overlay), 0, "Reload must end the in-progress guide");
       await operator("Open the toolbar popup, confirm the saved site, choose Refresh then Open Simplism and close the popup.");
-      await ui("wait", launcher);
+      await waitLauncher();
       assert.equal(await count(root), 1);
       await validateCsp();
     });
@@ -213,7 +225,7 @@ async function accept(session, hash, history, unknown, apps) {
     await evaluate(`document.querySelector('[data-ai-id="${hash.prefix}.profile"]').removeAttribute("data-ai-id")`);
     await openCatalog();
     await ui("press", "Enter");
-    await ui("wait", result);
+    await waitVisible(result);
     assert.equal(await count(".dap-guide-ring"), 0);
     assert.equal(await evaluate('document.body.innerText.includes("Enter a display name.")'), false);
     await ui("click", `${result} button`);
@@ -224,7 +236,7 @@ async function accept(session, hash, history, unknown, apps) {
     await enterName(hash);
     await evaluate('document.querySelector("#save").addEventListener("click", () => { document.querySelector("#saved").textContent = "Could not save"; }, { once: true })');
     await ui("click", "#save");
-    await ui("wait", result);
+    await waitVisible(result);
     assert.equal(await evaluate('document.body.innerText.includes("Your name was saved.")'), false);
     await validateCsp();
   });

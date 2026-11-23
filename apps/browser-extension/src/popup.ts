@@ -1,4 +1,4 @@
-import { readBinding, readRuntimeStatus, readSelection, sitePattern } from "./site.js";
+import { readBinding, readRuntimeStatus, readSelection } from "./site.js";
 import type { Binding, Selection } from "./site.js";
 
 const form = document.querySelector<HTMLFormElement>("#binding")!;
@@ -38,6 +38,7 @@ const messages: Record<string, string> = {
   NETWORK_UNAVAILABLE: "Could not reach the guide service from this site.",
   INVALID_RESPONSE: "The guide service sent an invalid response.",
   ACCESS_REQUIRED: "Allow access to this site to enable Simplism.",
+  SETUP_OPENED: "Continue in the Simplism setup tab.",
   UNAVAILABLE: "Simplism cannot access this page.",
 };
 
@@ -84,10 +85,6 @@ async function request(action: "inspect" | "save" | "open" | "disable" | "enable
   display();
   status.textContent = "Checking…";
   try {
-    if ((action === "save" || action === "enable") && current && !access) {
-      const granted = await chrome.permissions.request({ origins: [sitePattern(current.origin)] });
-      if (!granted) { status.textContent = messages.ACCESS_REQUIRED!; return; }
-    }
     if (action === "inspect" || action === "refresh") {
       status.textContent = inspect(await send("inspect", null));
       if (action === "inspect" || !binding?.enabled || !access) return;

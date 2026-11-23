@@ -7,7 +7,7 @@ const artifact = new URL("../apps/browser-extension/dist/", import.meta.url);
 const bytes = name => readFile(new URL(name, artifact));
 const source = async name => (await bytes(name)).toString("utf8");
 const expectedFiles = [
-  "background.js", "content.js", "main.js", "manifest.json", "popup.css", "popup.html", "popup.js", "receiver.js", "simplism.css",
+  "background.js", "content.js", "main.js", "manifest.json", "popup.css", "popup.html", "popup.js", "receiver.js", "setup.html", "setup.js", "simplism.css",
 ];
 assert.deepEqual((await readdir(artifact)).sort(), expectedFiles);
 const manifest = JSON.parse(await source("manifest.json"));
@@ -153,4 +153,47 @@ for (const [runtime, expected] of [
   window.close();
 }
 
-console.log("Chromium manifest, packaged SDK/CSS and main-world lifecycle verified.");
+for (const granted of [true, false]) {
+  const setupId = "a1b2c3d4-e5f6-4000-8000-aabbccddeeff";
+  const dom = new JSDOM(await source("setup.html"), {
+    url: `chrome-extension://simplism/setup.html?tab=17&id=${setupId}`, runScripts: "outside-only",
+  });
+  const { window } = dom;
+  let completePermission;
+  const request = new Promise(resolve => { completePermission = resolve; });
+  const calls = [];
+  window.close = () => { calls.push("close"); };
+  window.chrome = {
+    runtime: { async sendMessage(message) {
+      assert.equal(message.tabId, 17);
+      assert.equal(message.id, setupId);
+      calls.push(message.action);
+      return message.action === "setup-inspect"
+        ? { status: "READY", origin: site }
+        : { status: message.granted ? "READY" : "ACCESS_REQUIRED" };
+    } },
+    permissions: { request({ origins }) {
+      assert.deepEqual(Array.from(origins), [site + "/*"]);
+      calls.push("permission");
+      return request;
+    } },
+    tabs: { async update(tabId, options) {
+      assert.equal(tabId, 17);
+      assert.equal(options.active, true);
+      calls.push("return");
+    } },
+  };
+  runInContext(await source("setup.js"), dom.getInternalVMContext(), { filename: "setup.js" });
+  await new Promise(resolve => setImmediate(resolve));
+  const button = window.document.querySelector("#allow");
+  assert.deepEqual(calls, ["setup-inspect"]);
+  assert.equal(button.disabled, false);
+  button.click();
+  assert.deepEqual(calls, ["setup-inspect", "permission"]);
+  completePermission(granted);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ["setup-inspect", "permission", "setup-finish", ...(granted ? ["return", "close"] : [])]);
+  assert.match(window.document.querySelector("#status").textContent, granted ? /^Site saved/u : /^Site access was not granted/u);
+}
+
+console.log("Chromium manifest, packaged SDK/CSS, main-world lifecycle and site setup verified.");
