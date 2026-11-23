@@ -68,7 +68,7 @@ Follow the [Feature 004 quickstart](../specs/004-authoring-analytics/quickstart.
 
 The maintainer-only Studio API binds one Chrome session per host to the principal, tenant, actor, enrolled application and opaque session ID. The selected registry supplies approved pages and accessibility labels. Enrollment supplies the allowed origins. The vendored CLI allowlist operates at the hostname level. The adapter reads the accessibility snapshot locally and checks the exact origin and supported route before returning filtered candidates. Highlight and Use re-check the current observation against the selected application's registry. Saved steps carry registry IDs.
 
-Disconnect, five minutes of inactivity and host shutdown trigger session cleanup. Removing, disabling or changing the browser policy of an application triggers cleanup on the next inspection command. See [Studio V1B](studio-v1.md#browser-session-and-inspection) for the current inspector and session behavior.
+Disconnect, five minutes of inactivity and host shutdown trigger session cleanup. Removing, disabling or changing the browser policy of an application triggers cleanup on the next inspection command. See [Studio V1B](studio-v1.md#browser-boundary-and-session-recovery) for the current inspector and session behavior.
 
 ## Verification
 
