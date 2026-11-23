@@ -132,6 +132,7 @@ describe("route checks", () => {
     await route(tenant, id, "home", "/");
     await route(tenant, id, "nested", "/#/a/b-c/d.e_f~g");
     await route(tenant, id, `a${"b".repeat(39)}`, `/#/${"a".repeat(117)}`);
+    expect((await asTenant(app, tenant, (q) => q("SELECT route FROM public.studio_registry_routes WHERE application_id=$1", [id]))).rows).toHaveLength(3);
   });
   it("a route name and a page are each unique per application (and may repeat in another application)", async () => {
     const { tenant, id } = await ready();
@@ -171,6 +172,7 @@ describe("target checks", () => {
     await target(tenant, id, { id: "a.textbox", role: "textbox", operations: ["highlight", "input", "focus"] });
     await target(tenant, id, { id: `orders.${"a".repeat(73)}`, label: "x".repeat(80), description: "y".repeat(240) });
     await target(tenant, id, { id: "studioOrders.submit" }); // only the exact first segment is reserved
+    expect((await asTenant(app, tenant, (q) => q("SELECT target_id FROM public.studio_registry_targets WHERE application_id=$1", [id]))).rows).toHaveLength(7);
   });
   it("a target id is unique per application and may repeat in another (separate registries)", async () => {
     const { tenant, id } = await ready();
