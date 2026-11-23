@@ -252,7 +252,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
           h("p", { class: "hint" }, "This target is disabled in the registry. Enable it in Applications to use it."), evidence);
       case "mismatched":
         return h("li", { class: "studio-candidate", "data-status": "mismatched" },
-          h("strong", {}, candidate.name), facts, h("p", { class: "hint" }, `Marker of registered target ${candidate.targetId} · role or page differs from the target`), evidence,
+          h("strong", {}, candidate.name), facts, h("p", { class: "hint" }, `Marker of registered target ${candidate.targetId} · ${candidate.problem === "role" ? "its role differs from the target" : "it is on another page than the target"}`), evidence,
           h("div", { class: "admin-actions" }, action("Highlight", candidate, () => { void highlightRow(candidate); }),
             ...(repair ? [action("Use as replacement…", candidate, trigger => openRepair(candidate, trigger))] : [])));
       case "registrable":
@@ -362,7 +362,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
   }
 
   // ---- repair --------------------------------------------------------------------------------------------------------
-  const repairOperations = (role: string): readonly string[] => (role === "textbox" || role === "searchbox" ? ["highlight", "input", "focus"] : ["highlight", "click", "focus"]);
+  const repairOperations = (role: string): readonly string[] => (role === "status" || role === "alert" || role === "heading" ? ["highlight"] : role === "textbox" || role === "searchbox" ? ["highlight", "input", "focus"] : ["highlight", "click", "focus"]);
   function openRepair(candidate: RegistrableCandidate | MismatchedCandidate, trigger: HTMLButtonElement) {
     if (!session || !repair) return;
     const mode = repair;

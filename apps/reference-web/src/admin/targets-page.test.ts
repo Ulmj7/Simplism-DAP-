@@ -184,7 +184,7 @@ describe("enable and disable", () => {
 // ---- page check and repair ------------------------------------------------------------------------------------------------
 const connected = (applicationId = APP.id): AdminResult<StudioReply> => ok({ kind: "connected", sessionId: "s1", applicationId, application: "Profile", origin: APP.origin, registrySource: "studio-managed", resumed: false });
 const snapshot = (elements: unknown[]): AdminResult<StudioReply> => ok({ kind: "snapshot", url: "http://127.0.0.1:5188/profile", route: "profile", page: "/profile", elements, hidden: 0, truncated: false } as StudioReply);
-const mismatched = { ref: "@e4", name: "Save", role: "link", route: "profile", status: "mismatched", targetId: "profile.save" };
+const mismatched = { ref: "@e4", name: "Save", role: "link", route: "profile", status: "mismatched", targetId: "profile.save", problem: "role" };
 const registrable = { ref: "@e5", name: "Submit", role: "button", route: "profile", status: "registrable", proposal: { targetId: "profile.submit", role: "button", page: "/profile", route: "profile", routeIsNew: false, suggestedLabel: "Submit", allowedOperations: ["highlight", "click", "focus"], defaultOperations: ["highlight", "click"], privacy: "public" } };
 const impact = (compatible = true) => ({ drafts: [{ id: "wt-0123456789ab", title: "Change name" }], published: [{ id: "wt-0123456789ac", title: "Onboarding", version: 2 }], compatible, problems: compatible ? [] : ["Draft \"Change name\" step 2 would have no valid interaction."] });
 const fields = (marker = "profile.save", role = "button", label = "Save") => ({ marker, role, operations: ["highlight", "click"], label, description: "Saves the profile" });
@@ -241,7 +241,7 @@ describe("the repair flow", () => {
     await startRepair();
     expect($(".studio-repair-mode").hidden).toBe(false);
     expect($(".studio-repair-mode").textContent).toContain("choose the element that replaces target profile.save");
-    expect(document.body.textContent).toContain("Marker of registered target profile.save · role or page differs from the target");
+    expect(document.body.textContent).toContain("Marker of registered target profile.save · its role differs from the target");
     expect(buttonNamed("Use as replacement: Save")).toBeDefined();
     expect(buttonNamed("Use as replacement: Submit")).toBeDefined();
     expect(buttonNamed("Register target: Submit")).toBeUndefined();

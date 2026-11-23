@@ -45,6 +45,34 @@ describe("TargetView (S3)", () => {
   });
 });
 
+describe("text and heading targets (S3)", () => {
+  it("accept exactly [highlight] as operations, and nothing else", () => {
+    for (const role of ["text", "heading"]) {
+      expect(parseTargetView({ ...view(), role, operations: ["highlight"] })?.role).toBe(role);
+      for (const operations of [["highlight", "click"], ["highlight", "input"], ["highlight", "focus"], ["click"], []]) expect(parseTargetView({ ...view(), role, operations }), `${role} ${operations}`).toBeNull();
+    }
+    expect(parseTargetView({ ...view(), role: "status", operations: ["highlight"] })).toBeNull();
+  });
+  it("a repair proposal for a text target is highlight-only", () => {
+    expect(parseRepairFields({ ...fields, role: "text", operations: ["highlight"] })).not.toBeNull();
+  });
+});
+
+describe("application writes carry the full body (host contract)", () => {
+  it("create and PUT send exactly the seven keys, routing and runtimeAccess included", async () => {
+    const fetch = vi.fn<FetchLike>();
+    const client = createAdminClient({ fetch, role: "maintainer" });
+    const input = { name: "Shop", origin: "http://127.0.0.1:5190", allowedOrigins: ["http://127.0.0.1:5190"], environment: "test" as const, registryId: "studio-managed", routing: "history" as const, runtimeAccess: true };
+    const applicationView = { id: app, ...input, enabled: true, updatedAt: stamp, source: "studio-managed", runtimeKey: `rk-${"1".repeat(32)}-${"a".repeat(32)}`, counts: { targets: 0, drafts: 0, published: 0 } };
+    fetch.mockResolvedValue(new Response(JSON.stringify(applicationView), { status: 200 }));
+    await client.createApplication({ ...input, extra: 1 } as never);
+    await client.updateApplication(app, { ...input, id: "x", enabled: false } as never);
+    for (const call of fetch.mock.calls.slice(0, 2)) expect(Object.keys(JSON.parse(String(call[1].body)))).toEqual(["name", "origin", "allowedOrigins", "environment", "registryId", "routing", "runtimeAccess"]);
+    expect(fetch.mock.calls[1]![1].method).toBe("PUT");
+    expect(JSON.parse(String(fetch.mock.calls[1]![1].body))).toEqual(input);
+  });
+});
+
 describe("target detail: usage and change history", () => {
   it("accepts the documented shape", () => { expect(parseTargetDetail(detail(), "profile.save")).toEqual(detail()); });
   it("accepts no usage and no changes", () => { expect(parseTargetDetail({ ...detail(), usage: { drafts: [], published: [] }, changes: [] })?.changes).toEqual([]); });
@@ -107,7 +135,7 @@ describe("check and repair replies (session commands)", () => {
     ["101 published", { ...preview, impact: { ...impact, published: Array.from({ length: 101 }, (_, i) => ({ id: `wt-${String(i).padStart(12, "0")}`, title: "T", version: 1 })) } }, false],
   ])("repair: refuses %s", (_label, reply, confirm) => { expect(parseStudioReply("repair", reply, confirm)).toBeNull(); });
   it("a mismatched candidate has exactly ref, name, role, route, status and targetId", () => {
-    const element = { ref: "@e4", name: "Save", role: "link", route: "profile", status: "mismatched", targetId: "profile.save" };
+    const element = { ref: "@e4", name: "Save", role: "link", route: "profile", status: "mismatched", targetId: "profile.save", problem: "role" };
     const snapshot = { url: "http://127.0.0.1:5188/profile", route: "profile", page: "/profile", elements: [element], hidden: 0, truncated: false };
     expect(parseStudioReply("refresh", snapshot)).toMatchObject({ elements: [{ status: "mismatched", targetId: "profile.save" }] });
     for (const bad of [{ ...element, proposal: {} }, { ...element, operations: ["highlight"] }, { ref: "@e4", name: "Save", role: "link", route: "profile", status: "mismatched" }]) expect(parseStudioReply("refresh", { ...snapshot, elements: [bad] })).toBeNull();

@@ -69,6 +69,8 @@ export interface MismatchedCandidate {
   readonly role: string;
   readonly route: string | null;
   readonly targetId: string;
+  /** What differs from the registered target: the element's role or the page it is on. */
+  readonly problem: "role" | "route";
 }
 export type Candidate = TrustedCandidate | RegistrableCandidate | DisabledCandidate | UnregisteredCandidate | MismatchedCandidate;
 export interface StudioTarget { readonly targetId: string; readonly route: string; readonly name: string; readonly role: string; readonly operations: readonly string[] }
@@ -150,7 +152,8 @@ function candidate(item: unknown): Candidate | null {
       return proposed ? { status: "registrable", ref, name, role, route, proposal: proposed } : null;
     }
     case "mismatched":
-      return exact(item, ["ref", "name", "role", "route", "status", "targetId"]) && targetIdOf(item.targetId) ? { status: "mismatched", ref, name, role, route, targetId: item.targetId } : null;
+      return exact(item, ["ref", "name", "role", "route", "status", "targetId", "problem"]) && targetIdOf(item.targetId) && (item.problem === "role" || item.problem === "route")
+        ? { status: "mismatched", ref, name, role, route, targetId: item.targetId, problem: item.problem } : null;
     case "trusted":
       return exact(item, ["ref", "name", "role", "route", "status", "targetId", "operations", "privacy"]) && targetIdOf(item.targetId) && operationList(item.operations) && item.privacy === "public"
         ? { status: "trusted", ref, name, role, route, targetId: item.targetId, operations: [...item.operations], privacy: "public" } : null;

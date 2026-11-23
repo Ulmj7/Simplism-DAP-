@@ -39,7 +39,9 @@ export const targetIdOf = (value: unknown): value is string => bounded(value, LI
 export const operationList = (value: unknown): value is readonly string[] => Array.isArray(value) && value.length >= 1 && value.length <= LIMITS.operations
   && new Set(value as unknown[]).size === value.length && (value as unknown[]).every(item => (OPERATIONS as readonly unknown[]).includes(item));
 export const managedOperations = (role: unknown, value: unknown): value is readonly string[] => {
-  if (typeof role !== "string" || !["button", "link", "textbox", "checkbox", "select"].includes(role)) return false;
+  if (typeof role !== "string" || !["button", "link", "textbox", "checkbox", "select", "text", "heading"].includes(role)) return false;
+  // `text` (status and alert regions) and `heading` can only be highlighted: their operations are exactly ["highlight"].
+  if (role === "text" || role === "heading") return operationList(value) && value.length === 1 && value[0] === "highlight";
   return operationList(value) && value.includes("highlight") && !value.includes(role === "textbox" ? "click" : "input");
 };
 export const unsafeKey = (key: string) => key === "__proto__" || key === "constructor" || key === "prototype";
