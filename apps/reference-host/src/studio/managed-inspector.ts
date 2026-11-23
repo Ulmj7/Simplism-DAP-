@@ -16,7 +16,7 @@ import type { BrowserSnapshot, ElementFacts, ElementRef } from "@dap/browser-run
 import { effectivePrivacyOfFacts, secretNameHit } from "./element-privacy.js";
 import { REF_PATTERN } from "./browser-commands.js";
 import {
-  ALLOWED_OPERATIONS, DEFAULT_OPERATIONS, MAX_ROUTES_PER_APPLICATION, MAX_ROUTE_CHARS, MAX_TARGETS_PER_APPLICATION, MAX_TARGET_LABEL_CHARS, ROUTE_NAME_PATTERN, isPage, isTargetId, snapshotRoleToTargetRole,
+  ALLOWED_OPERATIONS, DEFAULT_OPERATIONS, MAX_ROUTES_PER_APPLICATION, MAX_ROUTE_CHARS, MAX_TARGETS_PER_APPLICATION, MAX_TARGET_LABEL_CHARS, ROUTE_NAME_PATTERN, isHashPage, isHistoryPage, isTargetId, snapshotRoleToTargetRole,
 } from "./registry-targets.js";
 import type { RegistrableRole, RegistryRouteRecord, TargetRecord } from "./registry-targets.js";
 
@@ -43,22 +43,33 @@ export type ManagedCandidate = ManagedTrusted | ManagedDisabled | ManagedRegistr
 /** The registry as the inspector sees it: ALL routes and ALL targets (active and disabled). */
 export interface ManagedRegistryView { readonly routes: readonly RegistryRouteRecord[]; readonly targets: readonly TargetRecord[] }
 
-/** The approved page of a URL: `pathname + hash` of a hash-routed page (pathname `/`, no query), or `null`. */
-export function pageOfUrl(url: string): string | null {
+/**
+ * The approved page of a URL for the application's routing. `hash` (the default, exactly as V1B): `pathname + hash` of a hash-routed page (pathname `/`, no query). `history`: the PATHNAME only:
+ * the query and the fragment are dropped (they are never stored, returned or compared), one trailing slash is removed except for `/`, and the result must follow the history grammar
+ * (`[A-Za-z0-9._~-]` segments, at most 200 characters, no empty, `.` or `..` segment; a percent escape is not a page). Anything else is `null`.
+ */
+export function pageOfUrl(url: string, routing: "hash" | "history" = "hash"): string | null {
   try {
     const parsed = new URL(url);
+    if (routing === "history") {
+      const pathname = parsed.pathname.length > 1 && parsed.pathname.endsWith("/") ? parsed.pathname.slice(0, -1) : parsed.pathname;
+      return isHistoryPage(pathname) ? pathname : null;
+    }
     if (parsed.search !== "" || parsed.pathname !== "/") return null;
     const page = parsed.pathname + parsed.hash;
-    return isPage(page) ? page : null;
+    return isHashPage(page) ? page : null;
   } catch { return null; }
 }
 
 /** The registry route of the current page, or `null`. */
 export const routeOfPage = (page: string | null, routes: readonly RegistryRouteRecord[]): string | null => (page === null ? null : (routes.find((entry) => entry.page === page)?.route ?? null));
 
-/** `/#/order-list` -> `orderList`, `/#/orders/open` -> `ordersOpen`, `/` -> `home`; a collision with an existing route name gets a numeric suffix; always matches the route-name pattern (A2). */
+/**
+ * `/#/order-list` -> `orderList`, `/#/orders/open` -> `ordersOpen`, `/` -> `home`; a history page works the same way (`/users/123` -> `users123`, `/order-list` -> `orderList`);
+ * a collision with an existing route name gets a numeric suffix; at most 40 characters; always matches the route-name pattern (A2).
+ */
 export function suggestRouteName(page: string, existing: readonly string[]): string {
-  const hash = page.startsWith("/#/") ? page.slice(3) : "";
+  const hash = page.startsWith("/#/") ? page.slice(3) : page.startsWith("/") ? page.slice(1) : "";
   const words = hash.split(/[^A-Za-z0-9]+/u).filter((word) => word !== "");
   let base = words.length === 0 ? "home" : words.map((word, index) => (index === 0 ? word.charAt(0).toLowerCase() + word.slice(1) : word.charAt(0).toUpperCase() + word.slice(1))).join("");
   if (!/^[a-z]/u.test(base)) base = `p${base}`;
@@ -95,6 +106,8 @@ export function selectFactRefs(snapshot: BrowserSnapshot, ids: ReadonlyMap<Eleme
 
 export interface ManagedInspection { readonly elements: readonly ManagedCandidate[]; readonly hidden: number; readonly truncated: boolean }
 export interface ManagedInput {
+  /** How the application's pages are addressed (default `hash`). */
+  readonly routing?: "hash" | "history";
   readonly snapshot: BrowserSnapshot;
   readonly ids: ReadonlyMap<ElementRef, string | null>;
   readonly facts: ReadonlyMap<ElementRef, ElementFacts | null>;
@@ -121,7 +134,7 @@ export function classifyControl(input: ManagedInput, element: BrowserSnapshot["e
   const marker = input.ids.get(element.ref);
   if (targetRole === null || !isTargetId(marker)) return null;
   if (isAmbiguousMarker(input, marker)) return null; // the runtime resolves a marker to ONE element: a marker on several controls identifies none of them
-  const page = pageOfUrl(input.snapshot.url);
+  const page = pageOfUrl(input.snapshot.url, input.routing ?? "hash");
   const route = routeOfPage(page, input.registry.routes);
   const facts = input.facts.get(element.ref);
   if (facts === undefined || facts === null || effectivePrivacyOfFacts(facts) !== "public") return null;

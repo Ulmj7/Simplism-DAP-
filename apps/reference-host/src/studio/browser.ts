@@ -55,7 +55,10 @@ const busyRecheckMs = 1_000;
 const MAINTAIN = "perm.walkthrough.maintain";
 
 /** The policy a runtime is created with: derived from the application, never from a request. */
-export type BrowserRuntimeConfig = Pick<AgentBrowserAdapterOptions, "labels" | "routes" | "origins">;
+export type BrowserRuntimeConfig = Pick<AgentBrowserAdapterOptions, "labels" | "routes" | "origins"> & {
+  /** `history` for an application whose pages are pathnames (the adapter then ignores query and fragment); omitted for `hash`, so a hash application's configuration is exactly V1B's. */
+  readonly routing?: "history";
+};
 
 type AnyCandidate = Candidate | ManagedCandidate;
 
@@ -67,6 +70,8 @@ interface Session {
   readonly applicationId: string;
   readonly application: { readonly name: string; readonly origin: string };
   readonly source: RegistrySource;
+  /** How the application's pages are addressed; fixed for the life of the session (a change closes it, see `policy`). */
+  readonly routing: "hash" | "history";
   /** What the live adapter was configured with: a later change to it closes the session (the adapter's policy would be stale). */
   readonly policy: string;
   readonly runtime: BrowserRuntime;
@@ -92,9 +97,9 @@ interface Options {
 }
 
 /** The fields of an application that shape the adapter's policy. A rename does not; an origin, allowed-origin or registry change does. */
-const policyOf = (application: ApplicationRecord): string => JSON.stringify([application.origin, application.allowedOrigins, application.registryId]);
+const policyOf = (application: ApplicationRecord): string => JSON.stringify([application.origin, application.allowedOrigins, application.registryId, application.routing]);
 
-export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, applications, catalog, authoring, createRuntime = (config) => createAgentBrowserAdapter(config), makeId = randomUUID, ...rest }: Options): void {
+export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, applications, catalog, authoring, createRuntime = (config) => createAgentBrowserAdapter(config as AgentBrowserAdapterOptions), makeId = randomUUID, ...rest }: Options): void {
   const targets = rest.targets ?? emptyTargetStore;
   const resolver = rest.resolver ?? createRegistryResolver({ catalog, targets });
   let current: Session | undefined;
@@ -180,7 +185,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
         if (!element) return deny(409, "REF_NOT_FOUND");
         const registry = await registryView(principal.tenantId, session.applicationId);
         const facts = await session.runtime.inspectElementFacts([ref], snapshot);
-        const live = classifyControl({ snapshot, ids: new Map([[ref, id]]), facts, registry }, element);
+        const live = classifyControl({ routing: session.routing, snapshot, ids: new Map([[ref, id]]), facts, registry }, element);
         if (live === null || live.status !== candidate.status) return deny(409, "TARGET_UNAVAILABLE");
         currentCandidate = live;
         if (live.status === "trusted") {
@@ -245,10 +250,10 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     const ids = await session.runtime.inspectSemanticIds(snapshot);
     const refs = selectFactRefs(snapshot, ids);
     const facts: ReadonlyMap<ElementRef, ElementFacts | null> = refs.length === 0 ? new Map() : await session.runtime.inspectElementFacts(refs, snapshot);
-    const inspection = classifyManaged({ snapshot, ids, facts, registry });
+    const inspection = classifyManaged({ routing: session.routing, snapshot, ids, facts, registry });
     session.snapshot = snapshot;
     session.candidates = new Map(inspection.elements.map((candidate) => [candidate.ref, candidate]));
-    const page = pageOfUrl(snapshot.url);
+    const page = pageOfUrl(snapshot.url, session.routing);
     return { url: snapshot.url.slice(0, MAX_URL_CHARS), route: routeOfPage(page, registry.routes), page, elements: inspection.elements, hidden: inspection.hidden, truncated: inspection.truncated };
   }
 
@@ -268,12 +273,12 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     const registry = await registryView(principal.tenantId, session.applicationId);
     if (registry.targets.some((target) => target.id === liveMarker)) return deny(409, "TARGET_EXISTS");
     // The caps are answered as such (not as "not registrable"): the registry is full, or the live page needs a new route and no route is left.
-    const livePage = pageOfUrl(snapshot.url);
+    const livePage = pageOfUrl(snapshot.url, session.routing);
     if (registry.targets.length >= MAX_TARGETS_PER_APPLICATION || (livePage !== null && routeOfPage(livePage, registry.routes) === null && registry.routes.length >= MAX_ROUTES_PER_APPLICATION)) return deny(409, "REGISTRY_FULL");
     // The ids of the whole inspected set are read again so a marker that now sits on a second control is seen (ambiguous markers are never registrable).
     const liveIds = new Map(await session.runtime.inspectSemanticIds(snapshot));
     liveIds.set(element.ref, liveMarker);
-    const live = classifyControl({ snapshot, ids: liveIds, facts: new Map([[element.ref, liveFacts]]), registry }, element);
+    const live = classifyControl({ routing: session.routing, snapshot, ids: liveIds, facts: new Map([[element.ref, liveFacts]]), registry }, element);
     if (live === null || live.status !== "registrable") return deny(409, "TARGET_NOT_REGISTRABLE");
     const { proposal } = live;
     // The page keeps its route; a new route name may not belong to another page.
@@ -327,7 +332,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     // Built-in: the catalog entry's labels and pages (V1A). Studio-managed: every operable control may be OBSERVED (`labels: "all"`) on any page of the allowed origins (`routes: "any"`);
     // the host decides what is forwarded.
     let config: BrowserRuntimeConfig;
-    if (source === "studio-managed") config = { labels: "all", routes: "any", origins: record.allowedOrigins };
+    if (source === "studio-managed") config = record.routing === "history" ? { labels: "all", routes: "any", routing: "history", origins: record.allowedOrigins } : { labels: "all", routes: "any", origins: record.allowedOrigins };
     else {
       const entry = catalog.get(record.registryId);
       if (entry === undefined) return deny(503, "BROWSER_UNAVAILABLE");
@@ -345,7 +350,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     try { runtime = createRuntime(config); }
     catch { return deny(503, "BROWSER_UNAVAILABLE"); } // the adapter refused the configuration (never echoed)
     const session: Session = {
-      id: makeId(), owner, tenantId, applicationId: record.id, application: { name: record.name, origin: record.origin }, source, policy: policyOf(record), runtime, candidates: new Map(),
+      id: makeId(), owner, tenantId, applicationId: record.id, application: { name: record.name, origin: record.origin }, source, routing: record.routing, policy: policyOf(record), runtime, candidates: new Map(),
     };
     current = session; // set before start so a failed start (or the idle timer, or shutdown) closes the half-open browser
     touch();

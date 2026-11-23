@@ -46,8 +46,8 @@ describe("every rejection class", () => {
     expect(isRouteName("a".repeat(40))).toBe(true);
     expect(isRouteName("a".repeat(41))).toBe(false);
   });
-  it.each(["", "orders", "/orders", "/#orders", "/#/", "/#//orders", "/?x=1", "/#/orders?id=1", "/a/#/orders", "https://x.example/#/orders", "/#/orders#more", "/#/or ders", "/#/<x>", "//#/x", "/#/orders/"])(
-    "refuses the page %j (hash-routed pages only: the pathname is / and there is no query)", (page) => {
+  it.each(["", "orders", "/#orders", "/#/", "/#//orders", "/?x=1", "/#/orders?id=1", "/a/#/orders", "https://x.example/#/orders", "/#/orders#more", "/#/or ders", "/#/<x>", "//#/x", "/#/orders/"])(
+    "refuses the page %j (neither a hash page nor a history path: no query, no fragment outside the hash grammar, no empty segment)", (page) => {
       expect(issuesOf(valid({ page }))).toEqual([TARGET_ISSUE_PHRASES.page]);
     });
   it("bounds the page at 120 characters", () => {

@@ -24,7 +24,7 @@ export interface TargetListing {
 
 export type RegisterOutcome =
   | { readonly kind: "created"; readonly route: { readonly route: string; readonly page: string; readonly created: boolean } }
-  | { readonly kind: "application_not_found" | "application_disabled" | "registry_not_managed" | "target_exists" | "route_mismatch" | "registry_full" | "id_refused" };
+  | { readonly kind: "application_not_found" | "application_disabled" | "registry_not_managed" | "target_exists" | "route_mismatch" | "registry_full" | "id_refused" | "page_refused" };
 export type TargetStatusOutcome = "changed" | "unchanged" | "target_not_found" | "application_not_found" | "application_disabled" | "registry_not_managed" | "id_refused";
 
 export interface TargetStore {
@@ -37,7 +37,7 @@ export interface TargetStore {
   /** The same read inside a transaction the caller already holds (an executor validating inside its own write transaction). */
   registryIn(tx: TenantClient, tenantId: string, applicationId: string): Promise<ManagedRegistry>;
   /**
-   * Registers one target. The application must exist in the tenant, be enabled and be Studio-managed. A page that already has a route must keep it (`route_mismatch`); a new page creates its
+   * Registers one target. The application must exist in the tenant, be enabled and be Studio-managed. The page must follow the application's routing (`page_refused`). A page that already has a route must keep it (`route_mismatch`); a new page creates its
    * route in the SAME transaction. An existing id is `target_exists`; the caps (20 routes, 200 targets) are `registry_full`.
    */
   register(scope: ApplicationScope, applicationId: string, value: TargetRegistration): Promise<RegisterOutcome>;

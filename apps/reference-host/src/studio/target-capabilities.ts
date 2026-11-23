@@ -65,7 +65,7 @@ export const setStudioTargetStatus: ActionDefinition<TargetStatusInput> = define
 
 /** The failure codes of the executors (short, fixed). */
 export type TargetFailureCode =
-  | "invalid_target" | "application_not_found" | "application_disabled" | "registry_not_managed" | "target_exists" | "route_mismatch" | "registry_full"
+  | "invalid_target" | "page_refused" | "application_not_found" | "application_disabled" | "registry_not_managed" | "target_exists" | "route_mismatch" | "registry_full"
   | "target_not_found" | "id_refused" | "store_unavailable";
 
 /** The host's own record of what the executors received (never reachable from an AI session). */

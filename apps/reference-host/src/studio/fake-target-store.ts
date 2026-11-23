@@ -6,9 +6,10 @@
 import type { TenantClient } from "../authoring/tenant-tx.js";
 import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import type { ApplicationStore } from "./application-store.js";
+import { FakeApplicationStore } from "./fake-application-store.js";
 import type { ApplicationScope } from "./application-store.js";
 import { STUDIO_MANAGED_REGISTRY_ID, isApplicationId } from "./applications.js";
-import { MAX_ROUTES_PER_APPLICATION, MAX_TARGETS_PER_APPLICATION, isTargetId } from "./registry-targets.js";
+import { MAX_ROUTES_PER_APPLICATION, MAX_TARGETS_PER_APPLICATION, isPageFor, isTargetId } from "./registry-targets.js";
 import type { RegistryRouteRecord, TargetRecord, TargetRegistration, TargetStatus, TargetView } from "./registry-targets.js";
 import type { ManagedRegistry, RegisterOutcome, TargetListing, TargetStatusOutcome, TargetStore } from "./target-store.js";
 
@@ -56,6 +57,7 @@ export class FakeTargetStore implements TargetStore {
     if (application === null) return { kind: "application_not_found" };
     if (!application.enabled) return { kind: "application_disabled" };
     if (application.registryId !== STUDIO_MANAGED_REGISTRY_ID) return { kind: "registry_not_managed" };
+    if (!isPageFor(application.routing, value.page)) return { kind: "page_refused" };
     if (this.targets.some((row) => row.tenantId === scope.tenantId && row.applicationId === applicationId && row.record.id === value.targetId)) return { kind: "target_exists" };
     const routes = this.routes.filter((route) => route.tenantId === scope.tenantId && route.applicationId === applicationId);
     const byPage = routes.find((route) => route.page === value.page);
@@ -67,7 +69,10 @@ export class FakeTargetStore implements TargetStore {
       created = true;
     }
     if (this.targets.filter((row) => row.tenantId === scope.tenantId && row.applicationId === applicationId).length >= MAX_TARGETS_PER_APPLICATION) return { kind: "registry_full" };
-    if (created) this.routes.push({ tenantId: scope.tenantId, applicationId, route: value.route, page: value.page });
+    if (created) {
+      this.routes.push({ tenantId: scope.tenantId, applicationId, route: value.route, page: value.page });
+      if (this.applications instanceof FakeApplicationStore) this.applications.withRoutes.add(`${scope.tenantId}/${applicationId}`); // routing is locked from now on
+    }
     this.targets.push({ tenantId: scope.tenantId, applicationId, record: Object.freeze({
       id: value.targetId, route: value.route, page: value.page, role: value.role, label: value.label, description: value.description, operations: Object.freeze([...value.operations]),
       privacy: "public" as const, status: "active" as const, updatedAt: this.stamp(),

@@ -8,7 +8,7 @@ import type { TenantClient, TenantPool } from "../authoring/tenant-tx.js";
 import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import { STUDIO_MANAGED_REGISTRY_ID, isApplicationId } from "./applications.js";
 import { lockApplicationShared } from "./application-lock.js";
-import { isTargetId } from "./registry-targets.js";
+import { isPageFor, isTargetId } from "./registry-targets.js";
 import type { RegistryRouteRecord, TargetOperation, TargetRecord, TargetView, RegistrableRole } from "./registry-targets.js";
 import type { ManagedRegistry, RegisterOutcome, TargetListing, TargetStatusOutcome, TargetStore } from "./target-store.js";
 
@@ -105,6 +105,7 @@ export function createPostgresTargetStore(pool: TenantPool): TargetStore {
           if (application === null) return { kind: "application_not_found" };
           if (!application.enabled) return { kind: "application_disabled" };
           if (application.registryId !== STUDIO_MANAGED_REGISTRY_ID) return { kind: "registry_not_managed" };
+          if (!isPageFor(application.routing, value.page)) return { kind: "page_refused" }; // the page must follow THIS application's routing (the database repeats the rule)
           // Registrations of one application are serialised, so the route check-then-insert below cannot interleave with another registration.
           await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`studio-registry:${scope.tenantId}:${applicationId}`]);
           const existing = await client.query("SELECT 1 FROM public.studio_registry_targets WHERE tenant_id = $1::uuid AND application_id = $2 AND target_id = $3", [scope.tenantId, applicationId, value.targetId]);

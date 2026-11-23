@@ -12,7 +12,8 @@
  *   label       plain text, 1 to 80 characters, none of `< > & " ' \``  (the walkthrough registry's text rule); description the same up to 240
  *   route       a route name: lower-case first letter, then letters and digits only, at most 40 (stricter than the walkthrough route rule on purpose: the managed postcondition
  *               `route.<route>` must stay a dotted `area.name` the editor's strict registry parser accepts)
- *   page        `/` or `/#/segment(/segment)*` (hash-routed pages only, no query), at most 120
+ *   page        by the application's routing: hash `/` or `/#/segment(/segment)*` (at most 120), history a '/'-rooted pathname of `[A-Za-z0-9._~-]` segments (at most 200, no query, no fragment,
+ *               no trailing slash except `/`, no `.` or `..` segment). The validator below checks the STRUCTURE (either grammar); the store checks the application's own routing under its lock.
  * Issues are FIXED phrases that name the field and never repeat what was supplied.
  */
 import { z } from "zod";
@@ -29,8 +30,10 @@ export const MAX_TARGET_LABEL_CHARS = 80;
 export const MAX_TARGET_DESCRIPTION_CHARS = 240;
 export const MAX_ROUTE_CHARS = 40;
 export const MAX_PAGE_CHARS = 120;
+export const MAX_HISTORY_PAGE_CHARS = 200;
 export const ROUTE_NAME_PATTERN = /^[a-z][A-Za-z0-9]{0,39}$/;
 export const PAGE_PATTERN = /^\/(#\/[A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*)?$/;
+export const HISTORY_PAGE_PATTERN = /^\/([A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*)?$/;
 /** At most this many routes and targets per application (also enforced by triggers in the database, race-safe). */
 export const MAX_ROUTES_PER_APPLICATION = 20;
 export const MAX_TARGETS_PER_APPLICATION = 200;
@@ -68,7 +71,13 @@ export function snapshotRoleToTargetRole(role: unknown): RegistrableRole | null 
 export const isTargetId = (value: unknown): value is string =>
   typeof value === "string" && value.length <= MAX_TARGET_ID_CHARS && TARGET_ID_PATTERN.test(value) && !RESERVED_TARGET_PREFIXES.includes(value.split(".")[0] ?? "");
 export const isRouteName = (value: unknown): value is string => typeof value === "string" && ROUTE_NAME_PATTERN.test(value);
-export const isPage = (value: unknown): value is string => typeof value === "string" && value.length <= MAX_PAGE_CHARS && PAGE_PATTERN.test(value);
+export const isHashPage = (value: unknown): value is string => typeof value === "string" && value.length <= MAX_PAGE_CHARS && PAGE_PATTERN.test(value);
+export const isHistoryPage = (value: unknown): value is string =>
+  typeof value === "string" && value.length <= MAX_HISTORY_PAGE_CHARS && HISTORY_PAGE_PATTERN.test(value) && !value.split("/").some((segment) => segment === "." || segment === "..");
+/** A page of the application's own routing: hash for `hash`, a pathname for `history` (the database repeats this rule as a trigger, migration 076). */
+export const isPageFor = (routing: "hash" | "history", value: unknown): value is string => (routing === "history" ? isHistoryPage(value) : isHashPage(value));
+/** A page in EITHER grammar (the structural check of the validator; the store applies the application's routing). */
+export const isPage = (value: unknown): value is string => isHashPage(value) || isHistoryPage(value);
 export const managedPostconditionName = (route: string): string => `route.${route}`;
 
 // --- stored shapes ----------------------------------------------------------------------------------------------------------------------------------------
@@ -92,7 +101,7 @@ export const TARGET_ISSUE_PHRASES = Object.freeze({
   shape: "target: must be an object with exactly the target fields",
   targetId: "targetId: must be a dotted id (for example orders.submitButton) of at most 80 characters that does not start with dap, studio, admin, system or internal",
   route: "route: must be a name of at most 40 letters and digits starting with a lower-case letter",
-  page: "page: must be / or /#/ followed by path segments, without a query",
+  page: "page: must be / , /#/ followed by path segments, or a path of segments, without a query or fragment",
   role: "role: must be button, link, textbox, checkbox or select",
   operations: "operations: must be a non-empty set allowed for the role that includes highlight",
   privacy: "privacy: must be public",
@@ -160,7 +169,7 @@ export const registerTargetInputSchema = z.strictObject({
   applicationId: z.string().max(16).regex(APPLICATION_ID),
   targetId: bounded(MAX_TARGET_ID_CHARS),
   route: bounded(MAX_ROUTE_CHARS),
-  page: bounded(MAX_PAGE_CHARS),
+  page: bounded(MAX_HISTORY_PAGE_CHARS),
   elementRole: bounded(16),
   label: bounded(MAX_TARGET_LABEL_CHARS),
   description: bounded(MAX_TARGET_DESCRIPTION_CHARS),
