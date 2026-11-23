@@ -64,7 +64,7 @@ async function start(options: Options = {}) {
   /** A FRESH Gateway session per call: each write is its own turn (as the dev server does), so per-turn limits cannot interfere. */
   const open = async (who: "maya" | "ula"): Promise<AiSession> => { const session = await host.openSession(token[who]); if (session === null) throw new Error("session refused"); return session; };
   const submit = async (who: "maya" | "ula", action: string, params: unknown) => (await open(who)).submit({ providerCallId: `call-${randomUUID()}`, arguments: JSON.stringify({ action, params }) });
-  const save = (who: "maya" | "ula", walkthroughId: string, definition: unknown, applicationId: string = appId) => submit(who, "saveWalkthroughDraft", { walkthroughId, applicationId, definition });
+  const save = (who: "maya" | "ula", walkthroughId: string, definition: unknown, applicationId: string = appId, expectedRevision = 0) => submit(who, "saveWalkthroughDraft", { expectedRevision, walkthroughId, applicationId, definition });
   const setStatus = (who: "maya" | "ula", walkthroughId: string, status: string) => submit(who, "setWalkthroughStatus", { walkthroughId, status });
   const rows = async () => (await withTenant(owner, tenant, (client) => client.query("SELECT event_type, action_id, outcome, reason, risk, params_view, execution_result, resource_type, resource_id, user_id FROM public.sec_audit_events ORDER BY seq"))).rows as Record<string, unknown>[];
   const stored = async (id: string) => (await store.get(tenant, id));
@@ -78,7 +78,7 @@ describe("a maintainer saves and publishes through the real Gateway", () => {
     expect(await t.save("maya", id, definitionFor(id))).toEqual({ outcome: "ALLOWED", category: "ok" });
     expect(t.trusted.executorCalls()).toBe(1);
     expect(t.trusted.executorCalls("saveWalkthroughDraft")).toBe(1);
-    expect(t.trusted.receivedCalls("saveWalkthroughDraft")).toEqual([{ walkthroughId: id, applicationId: t.appId, definition: definitionFor(id) }]);
+    expect(t.trusted.receivedCalls("saveWalkthroughDraft")).toEqual([{ walkthroughId: id, applicationId: t.appId, definition: definitionFor(id), expectedRevision: 0 }]);
     expect(await t.stored(id)).toMatchObject({ id, status: "draft", definition: definitionFor(id) });
     const trail = await t.rows();
     expect(trail.map((row) => row.event_type)).toEqual(["AI_ACTION_PROPOSED", "AI_ACTION_ALLOWED", "AI_ACTION_EXECUTED"]);
@@ -111,7 +111,7 @@ describe("a maintainer saves and publishes through the real Gateway", () => {
     const t = await start();
     const id = generateWalkthroughId();
     await t.save("maya", id, definitionFor(id));
-    expect(await t.save("maya", id, definitionFor(id, { title: "Second title" }))).toEqual({ outcome: "ALLOWED", category: "ok" });
+    expect(await t.save("maya", id, definitionFor(id, { title: "Second title" }), t.appId, 1)).toEqual({ outcome: "ALLOWED", category: "ok" });
     expect((await t.stored(id))?.definition).toMatchObject({ title: "Second title" });
     expect(await t.store.list(t.tenant)).toHaveLength(1);
   });
@@ -145,7 +145,7 @@ describe("spoofed fields are refused by the strict schema and have no effect", (
     const id = generateWalkthroughId();
     for (const key of keys) {
       const value = key === "permissions" ? ["perm.walkthrough.maintain"] : key === "tenantId" ? randomUUID() : key === "isAdmin" || key === "confirmed" ? true : "x";
-      expect((await t.submit("maya", "saveWalkthroughDraft", { walkthroughId: id, applicationId: t.appId, definition: definitionFor(id), [key]: value })).outcome, key).toBe("INVALID_PARAMETERS");
+      expect((await t.submit("maya", "saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: id, applicationId: t.appId, definition: definitionFor(id), [key]: value })).outcome, key).toBe("INVALID_PARAMETERS");
     }
     expect(t.trusted.executorCalls()).toBe(0);
     expect(await t.store.list(t.tenant)).toEqual([]);
@@ -164,7 +164,7 @@ describe("spoofed fields are refused by the strict schema and have no effect", (
     const t = await start();
     const id = generateWalkthroughId();
     const other = randomUUID();
-    expect((await t.submit("maya", "saveWalkthroughDraft", { walkthroughId: id, applicationId: t.appId, definition: definitionFor(id) })).outcome).toBe("ALLOWED");
+    expect((await t.submit("maya", "saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: id, applicationId: t.appId, definition: definitionFor(id) })).outcome).toBe("ALLOWED");
     expect(await t.store.get(other, id)).toBeNull();
     const row = (await withTenant(owner, t.tenant, (client) => client.query("SELECT created_by, updated_by FROM public.walkthrough_definitions"))).rows;
     expect(row).toEqual([{ created_by: "maya", updated_by: "maya" }]);
@@ -173,7 +173,7 @@ describe("spoofed fields are refused by the strict schema and have no effect", (
     const t = await start();
     const id = generateWalkthroughId();
     const session = await t.open("maya");
-    const feedback = await session.submit({ providerCallId: `call-${randomUUID()}`, arguments: JSON.stringify({ action: "saveWalkthroughDraft", params: { walkthroughId: id, applicationId: t.appId, definition: definitionFor(id) }, userId: "bob", tenantId: randomUUID(), permissions: ["perm.walkthrough.maintain"] }) });
+    const feedback = await session.submit({ providerCallId: `call-${randomUUID()}`, arguments: JSON.stringify({ action: "saveWalkthroughDraft", params: { expectedRevision: 0, walkthroughId: id, applicationId: t.appId, definition: definitionFor(id) }, userId: "bob", tenantId: randomUUID(), permissions: ["perm.walkthrough.maintain"] }) });
     expect(feedback).toEqual({ outcome: "INVALID_ACTION", category: "not_available" });
     expect(t.trusted.executorCalls()).toBe(0);
     expect(await t.store.list(t.tenant)).toEqual([]);
@@ -242,7 +242,7 @@ describe("draft and publish rules enforced by the executor", () => {
     expect(await t.save("maya", id, definitionFor(id, { title: "Overwrite attempt" }))).toEqual({ outcome: "ALLOWED", category: "try_later" });
     expect(await t.stored(id)).toMatchObject({ status: "published", definition: { title: "Original" } });
     expect(await t.setStatus("maya", id, "draft")).toEqual({ outcome: "ALLOWED", category: "ok" });
-    expect(await t.save("maya", id, definitionFor(id, { title: "Edited" }))).toEqual({ outcome: "ALLOWED", category: "ok" });
+    expect(await t.save("maya", id, definitionFor(id, { title: "Edited" }), t.appId, 3)).toEqual({ outcome: "ALLOWED", category: "ok" });
     expect(await t.stored(id)).toMatchObject({ status: "draft", definition: { title: "Edited" } });
   });
   it("publishing an unknown id fails closed (not_found: ALLOWED + try_later) and creates nothing", async () => {
@@ -312,7 +312,7 @@ describe("default deny and the document of limits", () => {
     const t = await start();
     const id = generateWalkthroughId();
     const session = await t.open("maya");
-    const call = { providerCallId: `call-${randomUUID()}`, arguments: JSON.stringify({ action: "saveWalkthroughDraft", params: { walkthroughId: id, applicationId: t.appId, definition: definitionFor(id) } }) };
+    const call = { providerCallId: `call-${randomUUID()}`, arguments: JSON.stringify({ action: "saveWalkthroughDraft", params: { expectedRevision: 0, walkthroughId: id, applicationId: t.appId, definition: definitionFor(id) } }) };
     expect((await session.submit(call)).outcome).toBe("ALLOWED");
     expect((await session.submit(call)).outcome).toBe("DENIED");
     expect(t.trusted.executorCalls()).toBe(1);
@@ -326,7 +326,7 @@ describe("default deny and the document of limits", () => {
       { id: "done", kind: "complete", text: "z".repeat(240) },
     ];
     const definition = definitionFor(id, { title: "t".repeat(80), description: "d".repeat(240), start: "g0", steps: many });
-    const payload = Buffer.byteLength(JSON.stringify({ action: "saveWalkthroughDraft", params: { walkthroughId: id, applicationId: t.appId, definition } }));
+    const payload = Buffer.byteLength(JSON.stringify({ action: "saveWalkthroughDraft", params: { expectedRevision: 0, walkthroughId: id, applicationId: t.appId, definition } }));
     expect(payload).toBeLessThan(16 * 1024);
     expect(many).toHaveLength(24);
     expect(await t.save("maya", id, definition)).toEqual({ outcome: "ALLOWED", category: "ok" });

@@ -243,11 +243,11 @@ describe("disabled applications and disabled targets", () => {
     expect(off.body).toMatchObject({ id: "orders.submitButton", status: "disabled", references: { drafts: 1, published: 1 } });
     expect(await served()).toEqual({ walkthroughs: [], external: [] });
     expect((await t.call("GET", `/api/walkthroughs/published/${live.id}/bundle`, "user")).status).toBe(404);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${draft.id}`, "maintainer", { applicationId: appId, definition: managedDef() })).status).toBe(422);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${draft.id}`, "maintainer", { expectedRevision: 1, applicationId: appId, definition: managedDef() })).status).toBe(422);
     expect((await t.call("POST", "/api/admin/walkthroughs", "maintainer", { applicationId: appId, definition: managedDef() })).status).toBe(422);
     expect((await t.call("POST", `/api/admin/walkthroughs/${draft.id}/status`, "maintainer", { status: "published" })).status).toBe(422);
     // The Gateway-level executors apply the same rule (defence in depth).
-    expect(await t.submit("saveWalkthroughDraft", { walkthroughId: draft.id, applicationId: appId, definition: { ...managedDef(), id: draft.id } })).toEqual(REJECTED);
+    expect(await t.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: draft.id, applicationId: appId, definition: { ...managedDef(), id: draft.id } })).toEqual(REJECTED);
     expect(await t.submit("setWalkthroughStatus", { walkthroughId: draft.id, status: "published" })).toEqual(REJECTED);
     expect((await t.realStore.get(t.tenant, draft.id))?.status).toBe("draft");
     // The registry the editor loads has no active target now, but the route stays.

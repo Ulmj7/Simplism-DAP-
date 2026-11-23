@@ -27,7 +27,7 @@ describe("the two capabilities", () => {
     expect(MAINTAIN_PERMISSION).toBe("perm.walkthrough.maintain");
     expect(saveWalkthroughDraft.id).toBe("saveWalkthroughDraft");
     expect(setWalkthroughStatus.id).toBe("setWalkthroughStatus");
-    expect(AUTHORING_ACTION_IDS).toEqual(["saveWalkthroughDraft", "setWalkthroughStatus"]);
+    expect(AUTHORING_ACTION_IDS).toEqual(["saveWalkthroughDraft", "setWalkthroughStatus", "reviseWalkthrough", "restoreWalkthroughVersion"]);
   });
   it("the justification says who may call it, that it is validated, invisible while a draft, reversible and display-only, and why not HIGH", () => {
     for (const phrase of ["maintainer", "validated", "draft", "unpublishing", "guidance", "confirmation service"]) expect(MEDIUM_JUSTIFICATION).toContain(phrase);
@@ -56,20 +56,20 @@ describe("the strict inputs", () => {
   const save = (value: unknown) => saveWalkthroughDraft.inputSchema.safeParse(value).success;
   const status = (value: unknown) => setWalkthroughStatus.inputSchema.safeParse(value).success;
   it("accept exactly { walkthroughId, applicationId, definition } and { walkthroughId, status }", () => {
-    expect(save({ walkthroughId: ID, applicationId: APP, definition })).toBe(true);
+    expect(save({ expectedRevision: 0, walkthroughId: ID, applicationId: APP, definition })).toBe(true);
     expect(status({ walkthroughId: ID, status: "draft" })).toBe(true);
     expect(status({ walkthroughId: ID, status: "published" })).toBe(true);
   });
   it.each(["tenantId", "permissions", "actorId", "userId", "sessionId", "role", "isAdmin", "confirmed", "risk", "createdBy", "id"])("refuse the spoofed top-level field %s", (key) => {
-    expect(save({ walkthroughId: ID, applicationId: APP, definition, [key]: "x" })).toBe(false);
+    expect(save({ expectedRevision: 0, walkthroughId: ID, applicationId: APP, definition, [key]: "x" })).toBe(false);
     expect(status({ walkthroughId: ID, status: "draft", [key]: "x" })).toBe(false);
   });
   it("refuse a spoofed field INSIDE the definition and inside a step", () => {
-    expect(save({ walkthroughId: ID, applicationId: APP, definition: { ...definition, tenantId: "t" } })).toBe(false);
-    expect(save({ walkthroughId: ID, applicationId: APP, definition: { ...definition, steps: [{ ...definition.steps[0], permissions: [] }] } })).toBe(false);
+    expect(save({ expectedRevision: 0, walkthroughId: ID, applicationId: APP, definition: { ...definition, tenantId: "t" } })).toBe(false);
+    expect(save({ expectedRevision: 0, walkthroughId: ID, applicationId: APP, definition: { ...definition, steps: [{ ...definition.steps[0], permissions: [] }] } })).toBe(false);
   });
   it.each(["profileUpdate", "findSecuritySettings", "findTwoFactorSettings", "wt-preview", "wt-ABCDEF012345", "wt-0123456789a", "wt-0123456789abc", "", " wt-0123456789ab", "__proto__"])("refuse the id %j", (id) => {
-    expect(save({ walkthroughId: id, applicationId: APP, definition })).toBe(false);
+    expect(save({ expectedRevision: 0, walkthroughId: id, applicationId: APP, definition })).toBe(false);
     expect(status({ walkthroughId: id, status: "draft" })).toBe(false);
   });
   it.each(["archived", "Published", "", null, 5, ["draft"], { a: 1 }])("refuse the status %j", (value) => { expect(status({ walkthroughId: ID, status: value })).toBe(false); });
@@ -82,8 +82,8 @@ describe("the extension", () => {
   it("is exactly { definitions, executors } with both capabilities, frozen, and a trusted handle that has run nothing", () => {
     const { extension, trusted } = createAuthoringExtension(deps());
     expect(Object.keys(extension).sort()).toEqual(["definitions", "executors"]);
-    expect(extension.definitions.map((d) => d.id)).toEqual(["saveWalkthroughDraft", "setWalkthroughStatus"]);
-    expect(extension.executors.map((e) => e.id)).toEqual([SAVE_EXECUTOR_ID, STATUS_EXECUTOR_ID]);
+    expect(extension.definitions.map((d) => d.id)).toEqual(["saveWalkthroughDraft", "setWalkthroughStatus", "reviseWalkthrough", "restoreWalkthroughVersion"]);
+    expect(extension.executors.map((e) => e.id)).toEqual([SAVE_EXECUTOR_ID, STATUS_EXECUTOR_ID, "ex.authoring-revise-walkthrough", "ex.authoring-restore-walkthrough"]);
     expect(Object.isFrozen(extension)).toBe(true);
     expect(trusted.executorCalls()).toBe(0);
     expect(trusted.receivedCalls("saveWalkthroughDraft")).toEqual([]);

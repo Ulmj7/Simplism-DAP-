@@ -132,7 +132,7 @@ it("authors, previews, publishes and measures two real runs through the Gateway 
     await vi.waitFor(() => expect(requests.some(request => request.method === "PUT" && request.path === `${ADMIN}/${id}` && request.status === 200)).toBe(true));
     const update = requests.find(request => request.method === "PUT" && request.path === `${ADMIN}/${id}`)!;
     const updatedBody = JSON.parse(update.body);
-    expect(updatedBody).toEqual({ applicationId: appId, definition: { ...createdBody.definition, id, description } });
+    expect(updatedBody).toEqual({ applicationId: appId, expectedRevision: 1, definition: { ...createdBody.definition, id, description } });
     await vi.waitFor(() => expect(root.querySelector("[role=status]")?.textContent).toBe(c.saved));
 
     button(root, c.preview).click();

@@ -95,7 +95,7 @@ describe("repairStudioTarget through the real Gateway", () => {
     const bundle = await t.call("GET", `/api/walkthroughs/published/${live}/bundle`, "user");
     expect(bundle.status).toBe(200);
     expect((bundle.body.registry as { elements: { id: string; marker: string }[] }).elements.map((e) => [e.id, e.marker])).toEqual([["orders.submitButton", "orders.submitNew"], ["orders.note", "orders.note"]]);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${draft}`, "maintainer", { applicationId: appId, definition: managedDef() })).status).toBe(200);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${draft}`, "maintainer", { expectedRevision: 1, applicationId: appId, definition: managedDef() })).status).toBe(200);
   });
   it("the audit trail records the application and target ids ONLY: never a marker, label, description, role or operations", async () => {
     const { t, appId } = await story();

@@ -102,7 +102,7 @@ describe("the full authoring flow over the real Gateway and PostgreSQL", () => {
     const served = await t.call("GET", "/api/walkthroughs/published", "user");
     expect((served.body.walkthroughs as { id: string; title: string }[]).map((g) => [g.id, g.title])).toEqual([[id, TITLE]]);
 
-    const refused = await t.call("PUT", `/api/admin/walkthroughs/${id}`, "maintainer", { applicationId: t.appId, definition: defOf({ title: "Nope" }) });
+    const refused = await t.call("PUT", `/api/admin/walkthroughs/${id}`, "maintainer", { expectedRevision: 1, applicationId: t.appId, definition: defOf({ title: "Nope" }) });
     expect(refused.status).toBe(409);
     expect(refused.body).toEqual({ kind: "conflict", message: AUTHORING_MESSAGES.published });
     expect((await t.store.get(t.tenant, id))?.definition).toMatchObject({ title: TITLE });
@@ -110,7 +110,7 @@ describe("the full authoring flow over the real Gateway and PostgreSQL", () => {
     const unpublished = await t.call("POST", `/api/admin/walkthroughs/${id}/status`, "maintainer", { status: "draft" });
     expect(unpublished.status).toBe(200);
     expect((await t.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [], external: [] });
-    const edited = await t.call("PUT", `/api/admin/walkthroughs/${id}`, "maintainer", { applicationId: t.appId, definition: defOf({ title: "Edited" }) });
+    const edited = await t.call("PUT", `/api/admin/walkthroughs/${id}`, "maintainer", { expectedRevision: 3, applicationId: t.appId, definition: defOf({ title: "Edited" }) });
     expect(edited.status).toBe(200);
     expect(edited.body).toMatchObject({ id, status: "draft", definition: { id, title: "Edited" } });
   });
@@ -182,7 +182,7 @@ describe("the full authoring flow over the real Gateway and PostgreSQL", () => {
     await a.call("POST", `/api/admin/walkthroughs/${id}/status`, "maintainer", { status: "published" });
     expect(((await b.call("GET", "/api/admin/walkthroughs", "maintainer")).body.authored as unknown[])).toEqual([]);
     expect((await b.call("GET", `/api/admin/walkthroughs/${id}`, "maintainer")).status).toBe(404);
-    expect((await b.call("PUT", `/api/admin/walkthroughs/${id}`, "maintainer", { applicationId: b.appId, definition: defOf() })).status).toBe(404);
+    expect((await b.call("PUT", `/api/admin/walkthroughs/${id}`, "maintainer", { expectedRevision: 1, applicationId: b.appId, definition: defOf() })).status).toBe(404);
     expect((await b.call("POST", `/api/admin/walkthroughs/${id}/status`, "maintainer", { status: "draft" })).status).toBe(404);
     expect((await b.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [], external: [] });
     expect((await a.call("GET", "/api/walkthroughs/published", "user")).body).toMatchObject({ walkthroughs: [expect.objectContaining({ id })] });
@@ -194,7 +194,7 @@ describe("the full authoring flow over the real Gateway and PostgreSQL", () => {
     expect(res.status).toBe(422);
     expect(t.trusted.executorCalls()).toBe(0);
     expect(await t.rows()).toEqual([]);
-    expect((await t.call("PUT", "/api/admin/walkthroughs/profileUpdate", "maintainer", { applicationId: t.appId, definition: defOf() })).status).toBe(404);
+    expect((await t.call("PUT", "/api/admin/walkthroughs/profileUpdate", "maintainer", { expectedRevision: 1, applicationId: t.appId, definition: defOf() })).status).toBe(404);
     expect((await t.call("POST", "/api/admin/walkthroughs/profileUpdate/status", "maintainer", { status: "published" })).status).toBe(404);
     expect((await t.call("GET", "/api/admin/walkthroughs/profileUpdate", "maintainer")).status).toBe(404);
   });

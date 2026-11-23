@@ -130,7 +130,7 @@ describe("a managed application end to end through the real routes", () => {
     expect((await t.call("POST", `/api/admin/applications/${appId}/targets/orders.submitButton/status`, "maintainer", { status: "disabled" })).status).toBe(200);
     expect(await external()).toEqual([]);
     expect((await t.call("GET", `/api/walkthroughs/published/${live.id}/bundle`, "user")).status).toBe(404);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${draft.id}`, "maintainer", { applicationId: appId, definition: managedDef() })).status).toBe(422);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${draft.id}`, "maintainer", { expectedRevision: 1, applicationId: appId, definition: managedDef() })).status).toBe(422);
     expect((await t.call("POST", `/api/admin/walkthroughs/${draft.id}/status`, "maintainer", { status: "published" })).status).toBe(422);
     // ... and the open browser session sees it disabled at once, with no reconnect.
     const shown = await t.studio({ action: "refresh", sessionId: session, applicationId: appId });
@@ -297,7 +297,7 @@ describe("scoping, authorship and the in-transaction re-check (mutation pass D16
     await t.registerOk(appId);
     disable = () => t.targets.setStatus({ tenantId: t.tenant, actor: "maya" }, appId, "orders.submitButton", "disabled");
     armed = true;
-    const feedback = await t.submit("saveWalkthroughDraft", { walkthroughId: "wt-0000000000f1", applicationId: appId, definition: { ...managedDef(), id: "wt-0000000000f1" } });
+    const feedback = await t.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: "wt-0000000000f1", applicationId: appId, definition: { ...managedDef(), id: "wt-0000000000f1" } });
     expect(feedback).toEqual({ outcome: "ALLOWED", category: "try_later" });
     expect(await t.realStore.get(t.tenant, "wt-0000000000f1")).toBeNull();
   });

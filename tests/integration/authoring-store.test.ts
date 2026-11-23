@@ -123,7 +123,7 @@ describe("the store", () => {
   it("updates a draft in place (same id), recording who updated it, and keeps who created it", async () => {
     const s = store(); const tenant = randomUUID(); const id = generateWalkthroughId();
     await s.saveDraft(scope(tenant, "alice"), id, def(id, "First"), await appFor(tenant));
-    expect(await s.saveDraft(scope(tenant, "bob"), id, def(id, "Second"), await appFor(tenant))).toBe("updated");
+    expect(await s.saveDraft(scope(tenant, "bob"), id, def(id, "Second"), await appFor(tenant), undefined, 1)).toBe("updated");
     expect((await s.get(tenant, id))?.definition).toMatchObject({ title: "Second" });
     expect(await s.list(tenant)).toHaveLength(1);
     const stored = await withTenant(newPool(1), tenant, (c) => c.query("SELECT created_by, updated_by FROM public.walkthrough_definitions"));
@@ -136,7 +136,7 @@ describe("the store", () => {
     expect(await s.saveDraft(scope(tenant), id, def(id, "Overwrite attempt"), await appFor(tenant))).toBe("not_a_draft");
     expect((await s.get(tenant, id))).toMatchObject({ status: "published", definition: { title: "Original" } });
     expect(await s.setStatus(scope(tenant), id, "draft", alwaysValid)).toBe("changed");
-    expect(await s.saveDraft(scope(tenant), id, def(id, "Edited after unpublish"), await appFor(tenant))).toBe("updated");
+    expect(await s.saveDraft(scope(tenant), id, def(id, "Edited after unpublish"), await appFor(tenant), undefined, 3)).toBe("updated");
     expect((await s.get(tenant, id))).toMatchObject({ status: "draft", definition: { title: "Edited after unpublish" } });
   });
   it("publish runs the validator on the STORED definition, inside the transaction: a stale or invalid stored definition is refused and the status does not change", async () => {

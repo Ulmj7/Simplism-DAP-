@@ -51,7 +51,7 @@ describe("the V1A race, interleaved deterministically: a disable that commits be
     const appId = await t.createApplication(referenceConfig());
     disable = async () => { await t.applications.setEnabled({ tenantId: t.tenant, actor: "racer" }, appId, false); };
     const id = `wt-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    expect(await t.submit("saveWalkthroughDraft", { walkthroughId: id, applicationId: appId, definition: { ...profileDef(), id } })).toEqual(REJECTED);
+    expect(await t.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: id, applicationId: appId, definition: { ...profileDef(), id } })).toEqual(REJECTED);
     expect((await t.applications.get(t.tenant, appId))?.enabled).toBe(false); // the disable did commit in the window
     expect(await t.realStore.get(t.tenant, id)).toBeNull();
   });

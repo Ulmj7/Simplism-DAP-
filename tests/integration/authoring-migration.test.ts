@@ -47,6 +47,8 @@ describe("T401 migration 070: walkthrough_definitions", () => {
       { column_name: "updated_at", data_type: "timestamp with time zone", is_nullable: "NO" },
       // Studio V1A, migration 073: the application a guide belongs to. Nullable: guides written before Studio have none and resolve to the built-in reference application.
       { column_name: "application_id", data_type: "text", is_nullable: "YES" },
+      { column_name: "revision", data_type: "integer", is_nullable: "NO" },
+      { column_name: "live_version", data_type: "integer", is_nullable: "YES" },
     ]);
     expect((await app.query("SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='public.walkthrough_definitions'::regclass AND contype='p'")).rows).toEqual([{ definition: "PRIMARY KEY (tenant_id, walkthrough_id)" }]);
   });

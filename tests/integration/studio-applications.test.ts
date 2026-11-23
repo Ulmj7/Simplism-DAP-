@@ -283,7 +283,7 @@ describe("create application -> create workflow -> save -> publish -> published 
     expect(draft.res.status).toBe(201);
     expect(draft.res.body).toMatchObject({ id: draft.id, status: "draft", applicationId: appId, definition: { id: draft.id, title: "Save your name" } });
 
-    const edited = await t.call("PUT", `/api/admin/walkthroughs/${draft.id}`, "maintainer", { applicationId: appId, definition: profileDef({ title: "Edited title" }) });
+    const edited = await t.call("PUT", `/api/admin/walkthroughs/${draft.id}`, "maintainer", { expectedRevision: 1, applicationId: appId, definition: profileDef({ title: "Edited title" }) });
     expect(edited.status).toBe(200);
     expect(edited.body).toMatchObject({ applicationId: appId, definition: { title: "Edited title" } });
 
@@ -328,7 +328,7 @@ describe("tenant isolation", () => {
     // B cannot bind a workflow to A's application, and cannot touch A's workflow.
     const bind = await b.call("POST", "/api/admin/walkthroughs", "maintainer", { applicationId: appId, definition: profileDef() });
     expect([bind.status, bind.body.code]).toEqual([404, "APPLICATION_NOT_FOUND"]);
-    expect((await b.call("PUT", `/api/admin/walkthroughs/${wt.id}`, "maintainer", { applicationId: appId, definition: profileDef() })).status).toBe(404);
+    expect((await b.call("PUT", `/api/admin/walkthroughs/${wt.id}`, "maintainer", { expectedRevision: 1, applicationId: appId, definition: profileDef() })).status).toBe(404);
     expect((await b.call("POST", `/api/admin/walkthroughs/${wt.id}/status`, "maintainer", { status: "published" })).status).toBe(404);
     expect((await b.call("GET", `/api/admin/walkthroughs/${wt.id}`, "maintainer")).status).toBe(404);
     // A is untouched.
@@ -340,7 +340,7 @@ describe("tenant isolation", () => {
     const a = await start(); const b = await start();
     const appId = await a.createApplication();
     const id = `wt-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    expect(await b.submit("saveWalkthroughDraft", { walkthroughId: id, applicationId: appId, definition: { ...profileDef(), id } })).toEqual({ outcome: "ALLOWED", category: "try_later" });
+    expect(await b.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: id, applicationId: appId, definition: { ...profileDef(), id } })).toEqual({ outcome: "ALLOWED", category: "try_later" });
     expect(await b.store.list(b.tenant)).toEqual([]);
     expect(await a.store.list(a.tenant)).toEqual([]);
   });
@@ -351,15 +351,15 @@ describe("workflow <-> application binding", () => {
     const t = await start();
     const [one, two] = [await t.createApplication(referenceConfig({ name: "One" })), await t.createApplication(referenceConfig({ name: "Two" }))];
     const wt = await t.createWorkflow(one, profileDef({ title: "Bound to one" }));
-    const mismatch = await t.call("PUT", `/api/admin/walkthroughs/${wt.id}`, "maintainer", { applicationId: two, definition: profileDef({ title: "Moved" }) });
+    const mismatch = await t.call("PUT", `/api/admin/walkthroughs/${wt.id}`, "maintainer", { expectedRevision: 1, applicationId: two, definition: profileDef({ title: "Moved" }) });
     expect(mismatch.status).toBe(409);
     expect(mismatch.body).toEqual({ kind: "conflict", message: AUTHORING_MESSAGES.applicationMismatch, code: "APPLICATION_MISMATCH" });
     const before = t.trusted.executorCalls();
     expect(before).toBe(1);
-    expect(await t.submit("saveWalkthroughDraft", { walkthroughId: wt.id, applicationId: two, definition: { ...profileDef({ title: "Moved" }), id: wt.id } })).toEqual({ outcome: "ALLOWED", category: "try_later" });
+    expect(await t.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: wt.id, applicationId: two, definition: { ...profileDef({ title: "Moved" }), id: wt.id } })).toEqual({ outcome: "ALLOWED", category: "try_later" });
     expect(await t.store.get(t.tenant, wt.id)).toMatchObject({ applicationId: one, definition: { title: "Bound to one" } });
     // The same application keeps updating.
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${wt.id}`, "maintainer", { applicationId: one, definition: profileDef({ title: "Still one" }) })).status).toBe(200);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${wt.id}`, "maintainer", { expectedRevision: 1, applicationId: one, definition: profileDef({ title: "Still one" }) })).status).toBe(200);
     // The database refuses a raw change as well (the trigger).
     await expect(withTenant(t.pool, t.tenant, (c) => c.query("UPDATE public.walkthrough_definitions SET application_id=$2 WHERE walkthrough_id=$1", [wt.id, two]))).rejects.toThrow(/cannot be changed/);
   });
@@ -386,10 +386,10 @@ describe("workflow <-> application binding", () => {
     const ok = await t.createWorkflow(second, ordersDef());
     const refOk = await t.createWorkflow(reference, profileDef());
     expect([ok.res.status, refOk.res.status]).toEqual([201, 201]);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${ok.id}`, "maintainer", { applicationId: second, definition: profileDef() })).status).toBe(422);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${refOk.id}`, "maintainer", { applicationId: reference, definition: ordersDef() })).status).toBe(422);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${ok.id}`, "maintainer", { expectedRevision: 1, applicationId: second, definition: profileDef() })).status).toBe(422);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${refOk.id}`, "maintainer", { expectedRevision: 1, applicationId: reference, definition: ordersDef() })).status).toBe(422);
     // The Gateway-level executor applies the same rule (defence in depth): a wrong-registry save is ALLOWED by policy and FAILS.
-    expect(await t.submit("saveWalkthroughDraft", { walkthroughId: refOk.id, applicationId: reference, definition: { ...ordersDef(), id: refOk.id } })).toEqual({ outcome: "ALLOWED", category: "try_later" });
+    expect(await t.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: refOk.id, applicationId: reference, definition: { ...ordersDef(), id: refOk.id } })).toEqual({ outcome: "ALLOWED", category: "try_later" });
     expect((await t.store.get(t.tenant, refOk.id))?.definition).toMatchObject({ title: "Save your name" });
     for (const id of [ok.id, refOk.id]) expect((await t.call("POST", `/api/admin/walkthroughs/${id}/status`, "maintainer", { status: "published" })).status).toBe(200);
     const served = await t.call("GET", "/api/walkthroughs/published", "user");
@@ -419,24 +419,25 @@ describe("workflow <-> application binding", () => {
     expect(off.body).toMatchObject({ enabled: false });
     const disabled = { kind: "conflict", message: AUTHORING_MESSAGES.applicationDisabled, code: "APPLICATION_DISABLED" };
     expect((await t.call("POST", "/api/admin/walkthroughs", "maintainer", { applicationId: appId, definition: profileDef() })).body).toEqual(disabled);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${open.id}`, "maintainer", { applicationId: appId, definition: profileDef({ title: "Edit" }) })).body).toEqual(disabled);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${open.id}`, "maintainer", { expectedRevision: 1, applicationId: appId, definition: profileDef({ title: "Edit" }) })).body).toEqual(disabled);
     expect((await t.call("POST", `/api/admin/walkthroughs/${open.id}/status`, "maintainer", { status: "published" })).body).toEqual(disabled);
-    expect(await t.submit("saveWalkthroughDraft", { walkthroughId: open.id, applicationId: appId, definition: { ...profileDef({ title: "Edit" }), id: open.id } })).toEqual({ outcome: "ALLOWED", category: "try_later" });
+    expect(await t.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: open.id, applicationId: appId, definition: { ...profileDef({ title: "Edit" }), id: open.id } })).toEqual({ outcome: "ALLOWED", category: "try_later" });
     expect(await t.submit("setWalkthroughStatus", { walkthroughId: open.id, status: "published" })).toEqual({ outcome: "ALLOWED", category: "try_later" });
     expect((await t.store.get(t.tenant, open.id))).toMatchObject({ status: "draft", definition: { title: "Open draft" } });
     expect(((await t.call("GET", "/api/walkthroughs/published", "user")).body.walkthroughs as { id: string }[]).map((g) => g.id)).toEqual([published.id]);
     expect((await t.call("POST", `/api/admin/walkthroughs/${published.id}/status`, "maintainer", { status: "draft" })).status).toBe(200);
     expect((await t.call("POST", `/api/admin/applications/${appId}/status`, "maintainer", { enabled: true })).body).toMatchObject({ enabled: true });
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${open.id}`, "maintainer", { applicationId: appId, definition: profileDef({ title: "Edit" }) })).status).toBe(200);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${open.id}`, "maintainer", { expectedRevision: 1, applicationId: appId, definition: profileDef({ title: "Edit" }) })).status).toBe(200);
   });
   it("a LEGACY guide (written before Studio, application_id NULL) stays readable, takes an application on its first save, publishes as the reference application and is served", async () => {
     const t = await start();
     const legacyDraft = `wt-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const legacyLive = `wt-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    for (const [id, status, title] of [[legacyDraft, "draft", "Legacy draft"], [legacyLive, "published", "Legacy live"]] as const) {
+    for (const [id, title] of [[legacyDraft, "Legacy draft"], [legacyLive, "Legacy live"]] as const) {
       await withTenant(t.pool, t.tenant, (c) => c.query(
-        "INSERT INTO public.walkthrough_definitions (tenant_id, walkthrough_id, status, definition, created_by, updated_by) VALUES ($1::uuid,$2,$3,$4::jsonb,'old','old')", [t.tenant, id, status, JSON.stringify({ ...profileDef({ title }), id })]));
+        "INSERT INTO public.walkthrough_definitions (tenant_id, walkthrough_id, status, definition, created_by, updated_by) VALUES ($1::uuid,$2,'draft',$3::jsonb,'old','old')", [t.tenant, id, JSON.stringify({ ...profileDef({ title }), id })]));
     }
+    expect((await t.call("POST", `/api/admin/walkthroughs/${legacyLive}/status`, "maintainer", { status: "published" })).status).toBe(200);
     // No application exists at all, yet the legacy published guide is served (it resolves to the reference registry).
     expect(((await t.call("GET", "/api/walkthroughs/published", "user")).body.walkthroughs as { id: string }[]).map((g) => g.id)).toEqual([legacyLive]);
     expect((await t.call("GET", `/api/admin/walkthroughs/${legacyDraft}`, "maintainer")).body).toMatchObject({ id: legacyDraft, status: "draft", applicationId: null });
@@ -446,8 +447,8 @@ describe("workflow <-> application binding", () => {
     expect((await t.call("POST", `/api/admin/walkthroughs/${legacyLive}/status`, "maintainer", { status: "draft" })).status).toBe(200);
     // The first save assigns the application; afterwards it is bound.
     const [x, y] = [await t.createApplication(referenceConfig({ name: "X" })), await t.createApplication(referenceConfig({ name: "Y" }))];
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${legacyLive}`, "maintainer", { applicationId: x, definition: profileDef({ title: "Now bound" }) })).body).toMatchObject({ applicationId: x, definition: { title: "Now bound" } });
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${legacyLive}`, "maintainer", { applicationId: y, definition: profileDef() })).body).toMatchObject({ code: "APPLICATION_MISMATCH" });
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${legacyLive}`, "maintainer", { expectedRevision: 3, applicationId: x, definition: profileDef({ title: "Now bound" }) })).body).toMatchObject({ applicationId: x, definition: { title: "Now bound" } });
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${legacyLive}`, "maintainer", { expectedRevision: 1, applicationId: y, definition: profileDef() })).body).toMatchObject({ code: "APPLICATION_MISMATCH" });
   });
   it("an application's registry endpoint returns the public-eligible registry, and previewable only for the reference registry", async () => {
     const t = await start();
@@ -499,14 +500,14 @@ describe("the executors' application checks are enforced by the executor itself 
     await a.call("POST", `/api/admin/applications/${disabled}/status`, "maintainer", { enabled: false });
     for (const [t, applicationId] of [[a, "app-ffffffffffff"], [b, appId], [a, disabled]] as const) {
       const id = wt();
-      expect(await t.submit("saveWalkthroughDraft", { walkthroughId: id, applicationId, definition: { ...profileDef(), id } }), applicationId).toEqual({ outcome: "ALLOWED", category: "try_later" });
+      expect(await t.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: id, applicationId, definition: { ...profileDef(), id } }), applicationId).toEqual({ outcome: "ALLOWED", category: "try_later" });
       expect(await t.store.get(t.tenant, id)).toBeNull();
     }
     expect(a.saveDraft).not.toHaveBeenCalled();
     expect(b.saveDraft).not.toHaveBeenCalled();
     // The positive control: the same call for an enabled application of the caller's own tenant does reach the store.
     const id = wt();
-    expect(await a.submit("saveWalkthroughDraft", { walkthroughId: id, applicationId: appId, definition: { ...profileDef(), id } })).toEqual({ outcome: "ALLOWED", category: "ok" });
+    expect(await a.submit("saveWalkthroughDraft", { expectedRevision: 0, walkthroughId: id, applicationId: appId, definition: { ...profileDef(), id } })).toEqual({ outcome: "ALLOWED", category: "ok" });
     expect(a.saveDraft).toHaveBeenCalledOnce();
   });
   it("publish re-checks, inside the transaction, that the guide still belongs to the application the executor resolved: a legacy guide that takes an application between the executor's read and the lock is NOT published", async () => {
@@ -514,7 +515,7 @@ describe("the executors' application checks are enforced by the executor itself 
     const t = await start({ wrapStore: (real) => ({ ...real, get: async (tenantId, id) => {
       const found = await real.get(tenantId, id);
       // Right after the executor's read of the (legacy, unbound) guide, another request assigns it an application whose registry is the same, so the definition would still validate.
-      if (x.applicationId !== "" && found !== null && found.applicationId === null) await real.saveDraft({ tenantId, actor: "other" }, id, { ...(found.definition as object) } as never, x.applicationId);
+      if (x.applicationId !== "" && found !== null && found.applicationId === null) await real.saveDraft({ tenantId, actor: "other" }, id, { ...(found.definition as object) } as never, x.applicationId, undefined, found.revision);
       return found;
     } }) });
     x.applicationId = "";

@@ -226,7 +226,7 @@ describe("inherited transport guards (an authoring route is on the C01 instance)
 describe("authentication and the maintainer gate", () => {
   const ADMIN: readonly [string, string, unknown?][] = [
     ["GET", "/api/admin/walkthroughs"], ["GET", `/api/admin/walkthroughs/${ID1}`], ["POST", "/api/admin/walkthroughs", { applicationId: APP_A, definition: defOf() }],
-    ["PUT", `/api/admin/walkthroughs/${ID1}`, { applicationId: APP_A, definition: defOf() }], ["POST", `/api/admin/walkthroughs/${ID1}/status`, { status: "published" }],
+    ["PUT", `/api/admin/walkthroughs/${ID1}`, { expectedRevision: 1, applicationId: APP_A, definition: defOf() }], ["POST", `/api/admin/walkthroughs/${ID1}/status`, { status: "published" }],
   ];
   const run = (t: ReturnType<typeof build>, method: string, url: string, who: Who, body?: unknown) => t.call(method as "GET", url, { who, ...(body === undefined ? {} : { body }) });
   it.each(ADMIN)("%s %s: no session is 401", async (method, url, body) => {
@@ -319,7 +319,7 @@ describe("POST /api/admin/walkthroughs (create)", () => {
     expect(res.body).toMatchObject({ id: ID1, status: "draft", definition: { id: ID1, title: "Save your name" } });
     expect(t.submitted).toHaveLength(1);
     expect(t.submitted[0]).toMatchObject({ who: "maintainer", action: "saveWalkthroughDraft" });
-    expect(Object.keys(t.submitted[0]!.params).sort()).toEqual(["applicationId", "definition", "walkthroughId"]);
+    expect(Object.keys(t.submitted[0]!.params).sort()).toEqual(["applicationId", "definition", "expectedRevision", "walkthroughId"]);
     expect(t.submitted[0]!.params.walkthroughId).toBe(ID1);
   });
   it("refuses every supplied create id and leaves server-generated ids to the host", async () => {
@@ -410,11 +410,11 @@ describe("PUT /api/admin/walkthroughs/:id (edit a draft)", () => {
   it("rejects mismatched edit ids without writing and accepts a matching id", async () => {
     const t = build({ newIds: [ID1] });
     await t.call("POST", "/api/admin/walkthroughs", { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "First" }) } });
-    const rejected = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Wrong", id: ID2 }) } });
+    const rejected = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ title: "Wrong", id: ID2 }) } });
     expect(rejected.status).toBe(422);
     expect(t.submitted).toHaveLength(1);
     expect(t.store.rows[0]?.definition).toMatchObject({ title: "First" });
-    const res = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Second", id: ID1 }) } });
+    const res = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ title: "Second", id: ID1 }) } });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ id: ID1, status: "draft", definition: { id: ID1, title: "Second" } });
     expect(t.store.rows).toHaveLength(1);
@@ -424,25 +424,25 @@ describe("PUT /api/admin/walkthroughs/:id (edit a draft)", () => {
     await t.call("POST", "/api/admin/walkthroughs", { who: "maintainer", body: { applicationId: APP_A, definition: defOf() } });
     await t.call("POST", `/api/admin/walkthroughs/${ID1}/status`, { who: "maintainer", body: { status: "published" } });
     const before = t.submitted.length;
-    const conflict = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Nope" }) } });
+    const conflict = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ title: "Nope" }) } });
     expect(conflict.status).toBe(409);
     expect(conflict.body).toEqual({ kind: "conflict", message: AUTHORING_MESSAGES.published });
     expect(t.submitted).toHaveLength(before);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID2}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf() } })).status).toBe(404);
-    expect((await t.call("PUT", "/api/admin/walkthroughs/profileUpdate", { who: "maintainer", body: { applicationId: APP_A, definition: defOf() } })).status).toBe(404);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainerB", body: { applicationId: APP_A, definition: defOf() } })).status).toBe(404);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID2}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf() } })).status).toBe(404);
+    expect((await t.call("PUT", "/api/admin/walkthroughs/profileUpdate", { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf() } })).status).toBe(404);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainerB", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf() } })).status).toBe(404);
   });
   it("an invalid edit is 422 and leaves the stored draft unchanged", async () => {
     const t = build({ newIds: [ID1] });
     await t.call("POST", "/api/admin/walkthroughs", { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Good" }) } });
-    const res = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ start: "nowhere" }) } });
+    const res = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ start: "nowhere" }) } });
     expect(res.status).toBe(422);
     expect((t.store.rows[0]!.definition as { title: string }).title).toBe("Good");
   });
   it("strict body: extra keys are 400", async () => {
     const t = build({ newIds: [ID1] });
     await t.call("POST", "/api/admin/walkthroughs", { who: "maintainer", body: { applicationId: APP_A, definition: defOf() } });
-    for (const key of ["tenantId", "permissions", "id", "status"]) expect((await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf(), [key]: "x" } })).status, key).toBe(400);
+    for (const key of ["tenantId", "permissions", "id", "status"]) expect((await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf(), [key]: "x" } })).status, key).toBe(400);
   });
   it("a guide published between the read and the write is still a 409 (the executor refused: re-read)", async () => {
     const t = build({ newIds: [ID1] });
@@ -450,7 +450,7 @@ describe("PUT /api/admin/walkthroughs/:id (edit a draft)", () => {
     const realGet = t.store.get.bind(t.store);
     let reads = 0;
     t.store.get = async (tenant, id) => { const row = await realGet(tenant, id); reads += 1; if (reads === 1 && row !== null) { t.store.rows[0]!.status = "published"; return { ...row, status: "draft" }; } return row; };
-    const res = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Late" }) } });
+    const res = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ title: "Late" }) } });
     expect(res.status).toBe(409);
   });
 });
@@ -582,7 +582,7 @@ describe("closed replies: the Gateway's answers and failures never leak", () => 
   it("a store that throws (SQL text in the error) is a 503 on every route, with no leak", async () => {
     const t = build();
     t.store.failWith = new Error(SECRET);
-    for (const [method, url, body] of [["GET", "/api/admin/walkthroughs"], ["GET", `/api/admin/walkthroughs/${ID1}`], ["GET", "/api/walkthroughs/published"], ["PUT", `/api/admin/walkthroughs/${ID1}`, { applicationId: APP_A, definition: defOf() }], ["POST", `/api/admin/walkthroughs/${ID1}/status`, { status: "published" }]] as const) {
+    for (const [method, url, body] of [["GET", "/api/admin/walkthroughs"], ["GET", `/api/admin/walkthroughs/${ID1}`], ["GET", "/api/walkthroughs/published"], ["PUT", `/api/admin/walkthroughs/${ID1}`, { expectedRevision: 1, applicationId: APP_A, definition: defOf() }], ["POST", `/api/admin/walkthroughs/${ID1}/status`, { status: "published" }]] as const) {
       const res = await t.call(method, url, { who: "maintainer", ...(body === undefined ? {} : { body }) });
       expect(res.status, `${method} ${url}`).toBe(503);
       expect(res.body).toEqual({ kind: "unavailable", message: AUTHORING_MESSAGES.unavailable });
@@ -706,7 +706,7 @@ describe("a draft belongs to one application", () => {
     }
     await t.call("POST", "/api/admin/walkthroughs", { who: "maintainer", body: { applicationId: APP_A, definition: defOf() } });
     t.submitted.length = 0;
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_B, definition: defOf() } })).body).toMatchObject({ kind: "conflict", code: "APPLICATION_MISMATCH" });
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_B, definition: defOf() } })).body).toMatchObject({ kind: "conflict", code: "APPLICATION_MISMATCH" });
     expect(t.submitted).toEqual([]);
   });
   it("a DISABLED application refuses create, update and publish with 409 APPLICATION_DISABLED, but unpublishing stays possible and published guides are still served", async () => {
@@ -718,7 +718,7 @@ describe("a draft belongs to one application", () => {
     t.submitted.length = 0;
     const disabled = { kind: "conflict", message: AUTHORING_MESSAGES.applicationDisabled, code: "APPLICATION_DISABLED" };
     expect((await t.call("POST", "/api/admin/walkthroughs", { who: "maintainer", body: { applicationId: APP_A, definition: defOf() } })).body).toEqual(disabled);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID2}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Edit" }) } })).body).toEqual(disabled);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID2}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ title: "Edit" }) } })).body).toEqual(disabled);
     expect((await t.call("POST", `/api/admin/walkthroughs/${ID2}/status`, { who: "maintainer", body: { status: "published" } })).body).toEqual(disabled);
     expect(t.submitted).toEqual([]);
     // Published guides keep running, and unpublishing is always allowed.
@@ -726,7 +726,7 @@ describe("a draft belongs to one application", () => {
     expect((await t.call("POST", `/api/admin/walkthroughs/${ID1}/status`, { who: "maintainer", body: { status: "draft" } })).status).toBe(200);
     // Re-enabling makes it usable again.
     await t.applications.setEnabled({ tenantId: TENANT_A, actor: "seed" }, APP_A, true);
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID2}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Edit" }) } })).status).toBe(200);
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID2}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ title: "Edit" }) } })).status).toBe(200);
   });
   it("create validates against the APPLICATION's registry: a target of the second registry is valid for it and refused (422) for the reference application, and vice versa", async () => {
     const t = build({ newIds: ["wt-0000000000a8", "wt-0000000000a9", ID1, ID2], extraRegistries: [FIXTURE_ENTRY] }); // the two refused attempts still draw an id
@@ -747,13 +747,13 @@ describe("a draft belongs to one application", () => {
     const t = withSecond();
     await t.call("POST", "/api/admin/walkthroughs", { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "First" }) } });
     t.submitted.length = 0;
-    const mismatch = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: FIXTURE_APP, definition: defOf({ title: "Moved" }) } });
+    const mismatch = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: FIXTURE_APP, definition: defOf({ title: "Moved" }) } });
     expect(mismatch.status).toBe(409);
     expect(mismatch.body).toEqual({ kind: "conflict", message: AUTHORING_MESSAGES.applicationMismatch, code: "APPLICATION_MISMATCH" });
     expectNoLeak(mismatch.raw);
     expect(t.submitted).toEqual([]);
     expect(t.store.rows[0]).toMatchObject({ applicationId: APP_A, definition: { title: "First" } });
-    const same = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Second" }) } });
+    const same = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ title: "Second" }) } });
     expect(same.status).toBe(200);
     expect(same.body).toMatchObject({ applicationId: APP_A, definition: { title: "Second" } });
   });
@@ -762,10 +762,10 @@ describe("a draft belongs to one application", () => {
     t.store.rows.push({ tenantId: TENANT_A, id: ID1, status: "draft", definition: { ...defOf(), id: ID1 }, updatedAt: "2026-01-01T00:00:00.000Z" });
     expect((await t.call("GET", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer" })).body).toMatchObject({ id: ID1, applicationId: null });
     expect(((await t.call("GET", "/api/admin/walkthroughs", { who: "maintainer" })).body.authored as { applicationId: unknown }[])[0]?.applicationId).toBeNull();
-    const assigned = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: APP_A, definition: defOf({ title: "Assigned" }) } });
+    const assigned = await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: APP_A, definition: defOf({ title: "Assigned" }) } });
     expect(assigned.status).toBe(200);
     expect(assigned.body).toMatchObject({ applicationId: APP_A });
-    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { applicationId: FIXTURE_APP, definition: ordersDef() } })).body).toMatchObject({ code: "APPLICATION_MISMATCH" });
+    expect((await t.call("PUT", `/api/admin/walkthroughs/${ID1}`, { who: "maintainer", body: { expectedRevision: 1, applicationId: FIXTURE_APP, definition: ordersDef() } })).body).toMatchObject({ code: "APPLICATION_MISMATCH" });
   });
   it("a LEGACY draft publishes against the reference registry with no application record to disable", async () => {
     const t = withSecond();
