@@ -254,6 +254,9 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     // The eligibility rules are RE-RUN on the live data and the fresh registry (the cached candidate is not trusted).
     const registry = await registryView(principal.tenantId, session.applicationId);
     if (registry.targets.some((target) => target.id === liveMarker)) return deny(409, "TARGET_EXISTS");
+    // The caps are answered as such (not as "not registrable"): the registry is full, or the live page needs a new route and no route is left.
+    const livePage = pageOfUrl(snapshot.url);
+    if (registry.targets.length >= MAX_TARGETS_PER_APPLICATION || (livePage !== null && routeOfPage(livePage, registry.routes) === null && registry.routes.length >= MAX_ROUTES_PER_APPLICATION)) return deny(409, "REGISTRY_FULL");
     const live = classifyControl({ snapshot, ids: new Map([[element.ref, liveMarker]]), facts: new Map([[element.ref, liveFacts]]), registry }, element);
     if (live === null || live.status !== "registrable") return deny(409, "TARGET_NOT_REGISTRABLE");
     const { proposal } = live;
@@ -265,7 +268,6 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     });
     if (!checked.ok) return deny(422, "INVALID_TARGET", { issues: checked.issues });
     if (proposal.routeIsNew && registry.routes.some((entry) => entry.route === checked.value.route)) return deny(409, "ROUTE_MISMATCH");
-    if (registry.targets.length >= MAX_TARGETS_PER_APPLICATION || (proposal.routeIsNew && registry.routes.length >= MAX_ROUTES_PER_APPLICATION)) return deny(409, "REGISTRY_FULL");
     const value = checked.value;
     const result = await submitGatewayWrite(principal, REGISTER_TARGET_ACTION_ID, {
       applicationId: record.id, targetId: value.targetId, route: value.route, page: value.page, elementRole: value.role, label: value.label, description: value.description, operations: [...value.operations], privacy: value.privacy,
