@@ -21,7 +21,7 @@ if (process.argv.includes("--plan")) {
 }
 
 async function run() {
-  const { browserCommand, browserSession, elapsed, historyApp, inventory, launchOperator, originA, originB, standaloneOrigin, startStandaloneHistory, request, requests, runStudioAcceptance, trackProcesses, until } =
+  const { browserCommand, browserSession, elapsed, historyApp, hostOrigin, inventory, launchOperator, originA, originB, standaloneOrigin, startStandaloneHistory, request, requests, runStudioAcceptance, trackProcesses, until } =
     await import("./studio-acceptance-support.mjs");
   const applications = "/api/admin/applications";
   const workflows = "/api/admin/walkthroughs";
@@ -323,17 +323,37 @@ async function run() {
       operator = await launchOperator(fixture.origin + "/");
       assert.equal(await read("window.opener === null"), true);
       assert.ok((await ui("tab")).tabs.every(tab => !tab.url.startsWith(originA)), "Studio must stay closed during delivery");
+      const runtimeReads = () => requests.slice(from).filter(item => item.path.startsWith("/api/runtime/") && item.method === "GET");
+      await until(() => runtimeReads().length > 0, "Ordinary page did not request a guide list");
+      assert.equal(runtimeReads()[0].status, 200, "Runtime refused the ordinary page's guide list");
       await click("Guides");
       await click(`Start guide: ${changedTitle}`);
+      await until(() => runtimeReads().length === 2, "Ordinary page did not request the selected guide");
+      assert.equal(runtimeReads()[1].status, 200, "Runtime refused the ordinary page's selected guide");
+      assert.equal(runtimeReads()[1].response.version, 2, "Ordinary page must receive the live snapshot");
+      assert.equal(runtimeReads()[1].response.application.origin, fixture.origin, "Bundle must bind to the allowed fixture origin");
       await text(steps[0]); await ui("click", '[data-ai-id="nav.profile"]');
       await text(steps[1]); await ui("click", "#display-name"); await ui("press", "A");
       await text(steps[2]); await ui("click", '[data-ai-id="profile.submit"]');
       await text(finished);
       assert.equal(await read('document.querySelector("#saved-status").textContent'), "Saved");
       assert.deepEqual(await read("window.cspViolations"), []);
-      const served = requests.slice(from).filter(item => item.path.startsWith("/api/runtime/") && item.method === "GET");
+      assert.equal(await read('Boolean(document.querySelector("link[data-dap-embed]")?.sheet)'), true);
+      const served = runtimeReads();
       assert.equal(served.length, 2);
-      assert.ok(served.every(item => item.status === 200 && item.origin === fixture.origin && !item.role && !item.hasCookie));
+      assert.ok(served.every(item => item.status === 200 && item.origin === fixture.origin && !item.role && !item.hasCookie && !item.hasAuthorization));
+
+      async function refused(key, origin, status) {
+        const reply = await fetch(`${hostOrigin}/api/runtime/${key}/guides`, { headers: { origin }, signal: AbortSignal.timeout(2000) });
+        assert.equal(reply.status, status);
+        assert.equal(reply.headers.get("access-control-allow-origin"), null);
+        return reply.json();
+      }
+      await refused(application.runtimeKey, originB, 403);
+      const wrongKey = application.runtimeKey.replace(/.$/u, ending => ending === "0" ? "1" : "0");
+      const unknown = await refused(wrongKey, fixture.origin, 404);
+      await request("POST", `${applications}/${historyId}/status`, 200, { enabled: false });
+      assert.deepEqual(await refused(application.runtimeKey, fixture.origin, 404), unknown);
     });
   });
 }

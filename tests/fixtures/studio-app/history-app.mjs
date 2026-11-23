@@ -7,7 +7,7 @@
 //
 // It is test infrastructure, never product code, holds no secrets, serves only loopback and needs no build step: the page script and style are EXTERNAL files, so a strict Content-Security-Policy
 // (`csp: true`) works. Embedding (all optional): `embedScriptPath` + `dapOrigin` serve the built embed and its stylesheet from the application itself and add the window-handshake script tag;
-// `dapOrigin` + `dapKey` add the STANDALONE script tag that loads `dap-embed.js` from the Studio/runtime origin.
+// `dapOrigin` + `dapKey` add the STANDALONE script tag. Add `embedScriptPath` to serve the assets from this app while fetching guides from the runtime origin.
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 
@@ -137,11 +137,16 @@ export async function startHistoryApp({ host = "127.0.0.1", port = 0, name = "Pr
   if (dapOrigin !== undefined && !validOrigin(dapOrigin)) throw new TypeError("dapOrigin must be a normalized http or https origin.");
   if (dapKey !== undefined && !/^rk-[A-Za-z0-9_-]{1,77}$/u.test(dapKey)) throw new TypeError("dapKey must be an opaque runtime key: rk- and up to 77 URL-safe characters.");
   if ((embedScriptPath !== undefined || dapKey !== undefined) && dapOrigin === undefined) throw new TypeError("embedScriptPath and dapKey need dapOrigin.");
-  if (embedScriptPath !== undefined && dapKey !== undefined) throw new TypeError("Use either embedScriptPath (window handshake) or dapKey (standalone), not both.");
   const embed = embedScriptPath === undefined ? undefined : await readFile(embedScriptPath);
   const embedCss = embedScriptPath === undefined ? undefined : await readFile(new URL("dap-embed.css", new URL(`file://${embedScriptPath}`))).catch(() => undefined);
-  const embedTag = embedScriptPath !== undefined ? `\n<script src="/dap-embed.js" data-dap-origin="${escape(dapOrigin)}"></script>`
-    : dapKey !== undefined ? `\n<script src="${escape(dapOrigin)}/dap-embed.js" data-dap-key="${dapKey}"></script>` : "";
+  let embedTag = "";
+  if (dapKey !== undefined && embedScriptPath !== undefined) {
+    embedTag = `\n<script src="/dap-embed.js" data-dap-key="${dapKey}" data-dap-api="${escape(dapOrigin)}"></script>`;
+  } else if (dapKey !== undefined) {
+    embedTag = `\n<script src="${escape(dapOrigin)}/dap-embed.js" data-dap-key="${dapKey}"></script>`;
+  } else if (embedScriptPath !== undefined) {
+    embedTag = `\n<script src="/dap-embed.js" data-dap-origin="${escape(dapOrigin)}"></script>`;
+  }
   // The strict policy of the brief: nothing inline, scripts and styles only from this origin and the Studio/runtime origin, fetches only to the runtime origin.
   const policy = () => (csp
     ? `default-src 'none'; script-src 'self'${dapOrigin ? ` ${dapOrigin}` : ""}; style-src 'self'${dapOrigin ? ` ${dapOrigin}` : ""}; connect-src ${dapOrigin ?? "'none'"}; img-src 'self'; base-uri 'none'; form-action 'none'`

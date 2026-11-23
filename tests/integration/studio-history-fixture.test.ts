@@ -99,7 +99,7 @@ describe("history fixture server", () => {
     expect((await fetch(alone.origin + "/")).headers.get("content-security-policy")).toBe("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self'; base-uri 'none'; form-action 'none'");
   });
 
-  it("adds the standalone script tag (loaded from the runtime origin) or serves the built embed for the window handshake, never both", async () => {
+  it("adds a standalone script tag for either asset origin, or serves the embed for the window handshake", async () => {
     const dapOrigin = "http://127.0.0.1:5186";
     const key = "rk-0123456789abcdef0123456789abcdef";
     const standalone = await start({ dapOrigin, dapKey: key });
@@ -107,6 +107,9 @@ describe("history fixture server", () => {
     expect((await fetch(standalone.origin + "/dap-embed.js")).status).toBe(200); // the fallback shell, not a script
     expect((await fetch(standalone.origin + "/dap-embed.js")).headers.get("content-type")).toBe("text/html; charset=utf-8");
     const source = new URL("../fixtures/studio-app/history-app.mjs", import.meta.url).pathname;
+    const selfHosted = await start({ dapOrigin, dapKey: key, embedScriptPath: source });
+    expect((await text(selfHosted.origin + "/profile")).body).toContain(`<script src="/dap-embed.js" data-dap-key="${key}" data-dap-api="${dapOrigin}"></script>`);
+    expect((await fetch(selfHosted.origin + "/dap-embed.js")).headers.get("content-type")).toBe("text/javascript; charset=utf-8");
     const handshake = await start({ dapOrigin, embedScriptPath: source });
     expect((await text(handshake.origin + "/profile")).body).toContain(`<script src="/dap-embed.js" data-dap-origin="${dapOrigin}"></script>`);
     expect((await fetch(handshake.origin + "/dap-embed.js")).headers.get("content-type")).toBe("text/javascript; charset=utf-8");
@@ -123,7 +126,6 @@ describe("history fixture server", () => {
     await expect(startHistoryApp({ dapKey: "key-1" })).rejects.toThrow(TypeError);
     await expect(startHistoryApp({ dapKey: "rk-" + "a".repeat(78) })).rejects.toThrow(TypeError);
     await expect(startHistoryApp({ dapKey: "rk-0123456789abcdef0123456789abcdef" })).rejects.toThrow(/dapOrigin/u);
-    await expect(startHistoryApp({ dapOrigin: "http://127.0.0.1:5186", dapKey: "rk-0123456789abcdef0123456789abcdef", embedScriptPath: "/x" })).rejects.toThrow(/not both/u);
   });
 });
 
