@@ -11,7 +11,7 @@ import { button, card, statusMessage } from "../../ui/pieces.js";
 import type { ApplicationList, ApplicationView } from "../applications.js";
 import type { AdminResult, GuideRecord } from "../client.js";
 import { browserWorkspace } from "../browser-workspace.js";
-import { definitionToDraft, emptyStep, MAX_EDITOR_STEPS, validateDraft } from "../draft.js";
+import { definitionToDraft, draftToDefinition, emptyStep, MAX_EDITOR_STEPS, validateDraft } from "../draft.js";
 import { addStep, deleteStep, duplicateStep, hasRecoveryReference, moveStep, saveStateText, stepSummary, stepValidity, validityText } from "../editor-model.js";
 import type { SaveState } from "../editor-model.js";
 import { conditionLabels, conditionSupport, checkInputOf, describeCheck, DO_NOT_ENTER_SECRETS, fieldsOf, MANAGED_CONDITIONS } from "../verification.js";
@@ -24,7 +24,9 @@ import { requestRepair } from "../session.js";
 import type { DraftProblem, EditorStep } from "../draft.js";
 import { getEditSession, newEditSession, requestEdit, setEditSession, takeRequestedEdit } from "../session.js";
 import type { EditSession } from "../session.js";
-import { adminPage, backLink, confirmAction, confirmPublish, readError, writeError } from "./shared.js";
+import { adminPage, backLink, confirmAction, readError, writeError } from "./shared.js";
+import { openPublishReview } from "./publish-review.js";
+import { openVersions } from "./versions.js";
 import type { AdminPageOptions } from "./shared.js";
 
 const c = copy.admin;
@@ -95,6 +97,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   const showPreview = button(c.preview);
   let previewRunning = false;
   const publish = button(c.publish);
+  const history = button("Version history");
   const errors = h("ul", { id: "editor-problems", class: "error" });
   const saveIndicator = h("p", { class: "save-state", id: "editor-save-state" });
   const conflictBox = h("div", { id: "editor-conflict", class: "error state-error", role: "alert", hidden: true });
@@ -111,7 +114,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   right.append(metadata, inspector);
   const panes = h("div", { class: "editor-panes" }, left, right);
   const applicationBox = h("div", { class: "editor-application" });
-  page.append(applicationBox, h("div", { class: "admin-toolbar" }, h("div", { class: "admin-actions" }, save, showPreview, publish)), previewHint, publishHint, h("div", { "aria-live": "polite" }, errors), conflictBox, saveIndicator, previewPanel, panes);
+  page.append(applicationBox, h("div", { class: "admin-toolbar" }, h("div", { class: "admin-actions" }, save, showPreview, publish, history)), previewHint, publishHint, h("div", { "aria-live": "polite" }, errors), conflictBox, saveIndicator, previewPanel, panes);
 
   let busy = false;
   const fields = new Map<string, { control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement; hint: HTMLElement }>();
@@ -394,6 +397,8 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
       line.setAttribute("data-validity", own.level);
     }
     publishHint.hidden = !session.dirty && session.id !== undefined;
+    history.hidden = session.id === undefined;
+    history.disabled = !canEdit();
     return validation;
   }
   function setBusy(value: boolean) { busy = value; stepControls(); update(); renderApplication(); }
@@ -543,6 +548,8 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     mode = next;
     previewPanel.hidden = next === "edit";
     panes.hidden = next !== "edit";
+    const versions = page.querySelector<HTMLElement>(".workflow-versions");
+    if (versions) versions.hidden = next !== "edit";
     renderPreviewPanel();
     update();
     if (next !== "edit") previewPanel.querySelector<HTMLElement>("h2")?.focus();
@@ -673,7 +680,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   publish.addEventListener("click", () => {
     const id = session.id;
     if (!canEdit() || publish.disabled || id === undefined || session.dirty || !update().ok) return;
-    confirmPublish(publish, page, () => {
+    openPublishReview({ page, trigger: publish, client, id, signal, applicationId: session.applicationId, submit() {
       if (!canEdit() || session.dirty || !update().ok) return;
       setBusy(true); notice.textContent = c.saving;
       void client.setStatus(id, "published").then(result => {
@@ -683,6 +690,16 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
           refresh(!signal.aborted);
         } else if (!signal.aborted) { setBusy(false); notice.textContent = writeError(result); publish.focus(); }
       });
+    } });
+  });
+  history.addEventListener("click", () => {
+    const id = session.id;
+    if (!canEdit() || id === undefined) return;
+    openVersions({
+      page, trigger: history, client, id, signal, hasDraft: true,
+      getDraft: () => draftToDefinition(draft, registry, id),
+      canRestore: canEdit, setBusy, draftChanged: hasUnsaved,
+      onRestore() { setEditSession(); requestEdit(id); refresh(true); },
     });
   });
 

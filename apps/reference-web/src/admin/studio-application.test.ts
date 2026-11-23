@@ -127,6 +127,16 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
       const record = guide(savedId, "draft", { ...definition, id: savedId }, applicationId);
       rows.set(savedId, record); return json(record, 201);
     }
+    const review = /^\/api\/admin\/walkthroughs\/(wt-[a-f0-9]{12})\/review$/u.exec(path);
+    if (review && method === "POST") {
+      const stored = rows.get(review[1]!);
+      const owner = stored?.applicationId ? apps.get(stored.applicationId) : undefined;
+      if (!stored || !owner) return json({}, 404);
+      return json({ ok: owner.enabled, blockers: owner.enabled ? [] : [{ code: "APPLICATION_DISABLED", message: c.application.failures.APPLICATION_DISABLED }], warnings: [],
+        summary: { application: { id: owner.id, name: owner.name }, title: stored.definition.title, steps: stored.definition.steps.length,
+          targets: { healthy: 0, unverified: 1, broken: 0, disabled: 0 }, verification: { steps: 1, withVerify: 0 }, currentVersion: null, nextVersion: 1 },
+      });
+    }
     const walkthrough = /^\/api\/admin\/walkthroughs\/(wt-[a-f0-9]{12})(\/status)?$/u.exec(path);
     const stored = walkthrough ? rows.get(walkthrough[1]!) : undefined;
     if (!walkthrough || !stored) return json({}, 404);
@@ -474,9 +484,12 @@ it("answers a disabled application on Publish and on opening a draft whose appli
   await click(root, "Edit: Orders tour");
   host.apps.get(ORD)!.enabled = false;
   await click(root, c.publish);
-  await click(control(root, "dialog"), c.publish);
-  expect(notice(root)).toBe(c.application.failures.APPLICATION_DISABLED);
+  const review = control(root, "dialog");
+  expect(review.textContent).toContain(c.application.failures.APPLICATION_DISABLED);
+  expect(button(review, c.publish).disabled).toBe(true);
+  expect(host.requests.some(request => request.path.endsWith("/status") && request.path.includes(savedId))).toBe(false);
   expect(host.rows.get(savedId)?.status).toBe("draft");
+  await click(review, c.cancel);
   host.apps.delete(ORD);
   await navigate("walkthroughs");
   await click(root, "Edit: Orders tour");

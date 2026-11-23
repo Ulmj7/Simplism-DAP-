@@ -6,6 +6,7 @@ import type { FetchLike } from "../help/client.js";
 import { POSTCONDITION_NAMES } from "../postconditions.js";
 import { createDemoRegistry } from "../semantic-ui.js";
 import { WALKTHROUGHS } from "../walkthroughs/index.js";
+import type { GuideVersion } from "./publishing.js";
 import type { GuideRecord, GuideStatus } from "./client.js";
 import { draftToDefinition } from "./draft.js";
 import { requestEdit, setEditSession, takeRequestedEdit, writeRole } from "./session.js";
@@ -37,11 +38,12 @@ const guide = (id: string, status: GuideStatus, definition: WalkthroughDef, appl
 
 function fakeHost(seed: GuideRecord[] = []) {
   const rows = new Map(seed.map(row => [row.id, row]));
+  const versions = new Map<string, (GuideVersion & { definition: WalkthroughDef })[]>();
   const requests: { path: string; method: string; role: string | null; body: unknown }[] = [];
   const host = {
-    rows, requests,
+    rows, requests, versions,
     overrides: new Map<string, () => Response | Promise<Response>>(),
-    writes: () => requests.filter(request => request.method !== "GET"),
+    writes: () => requests.filter(request => request.method !== "GET" && !request.path.endsWith("/review")),
   };
   const fetch: FetchLike = async (path, init) => {
     const method = init.method!;
@@ -50,7 +52,10 @@ function fakeHost(seed: GuideRecord[] = []) {
     requests.push({ path, method, role, body });
     const override = host.overrides.get(`${method} ${path}`);
     if (override) return override();
-    if (path === published) return json({ walkthroughs: [...rows.values()].filter(row => row.status === "published").map(row => row.definition) });
+    if (path === published) return json({ walkthroughs: [...rows.values()].flatMap(row => {
+      const live = versions.get(row.id)?.find(item => item.version === row.liveVersion);
+      return live ? [live.definition] : row.status === "published" ? [row.definition] : [];
+    }) });
     if (role !== "maintainer") return json({ message: "FAKE-HOST-PRIVATE" }, 403);
     if (path === "/api/admin/analytics" && method === "GET") return json({
       totals: { started: 0, completed: 0, cancelled: 0, completionRate: null }, guides: [],
@@ -58,8 +63,8 @@ function fakeHost(seed: GuideRecord[] = []) {
     if (path === "/api/admin/applications" && method === "GET") return json({ applications: [referenceApplication], registries: [{ id: "reference", label: "Reference application", source: "built-in" }] });
     if (path === `/api/admin/applications/${appId}/registry` && method === "GET") return json(referenceRegistry());
     if (path === admin && method === "GET") return json({
-      builtIn: builtinList, authored: [...rows.values()].map(({ id, status, applicationId, definition }) => ({
-        id, status, applicationId, title: definition.title, description: definition.description, stepCount: definition.steps.length, updatedAt: "2026-11-20T00:00:00.000Z",
+      builtIn: builtinList, authored: [...rows.values()].map(({ id, status, applicationId, definition, liveVersion, latestVersion }) => ({
+        id, status, applicationId, liveVersion, latestVersion, title: definition.title, description: definition.description, stepCount: definition.steps.length, updatedAt: "2026-11-20T00:00:00.000Z",
       })),
     });
     if (path === admin && method === "POST") {
@@ -70,10 +75,43 @@ function fakeHost(seed: GuideRecord[] = []) {
     const id = path.split("/")[4]!;
     const stored = rows.get(id);
     if (!stored) return json({}, 404);
+    const action = path.split("/")[5];
+    const history = versions.get(id) ?? [];
+    if (action === "versions" && method === "GET") {
+      const wanted = path.split("/")[6];
+      if (!wanted) return json({ versions: history.map(({ definition: snapshot, ...item }) => ({ ...item, live: item.version === stored.liveVersion, stepCount: snapshot.steps.length })) });
+      const item = history.find(item => String(item.version) === wanted);
+      return item ? json({ ...item, live: item.version === stored.liveVersion }) : json({}, 404);
+    }
+    if (action === "review" && method === "POST") return json({
+      ok: true, blockers: [], warnings: [],
+      summary: { application: { id: appId, name: referenceApplication.name }, title: stored.definition.title, steps: stored.definition.steps.length,
+        targets: { healthy: 0, unverified: 1, broken: 0, disabled: 0 }, verification: { steps: 1, withVerify: 0 },
+        currentVersion: stored.liveVersion ?? null, nextVersion: (stored.latestVersion ?? 0) + 1 },
+    });
     if (method === "GET") return json(stored);
     if (method === "PUT" && stored.status === "published") return json({}, 409);
-    const result = method === "PUT" ? { ...stored, definition: (body as { definition: WalkthroughDef }).definition } : { ...stored, status: (body as { status: GuideStatus }).status };
-    rows.set(id, result); return json(result);
+    let result = { ...stored };
+    let version: number | undefined;
+    if (method === "PUT") {
+      const { definition, expectedRevision } = body as { definition: WalkthroughDef; expectedRevision?: number };
+      if (stored.revision !== undefined && stored.revision !== expectedRevision) return json({ kind: "conflict", code: "REVISION_CONFLICT", currentRevision: stored.revision }, 409);
+      result = { ...result, definition, ...(stored.revision === undefined ? {} : { revision: stored.revision + 1 }) };
+    } else if (action === "revise" || action === "restore") {
+      const selected = action === "revise" ? stored.liveVersion : (body as { version: number }).version;
+      const snapshot = history.find(item => item.version === selected);
+      if (!snapshot) return json({}, 404);
+      result = { ...result, definition: structuredClone(snapshot.definition), status: "draft", revision: (stored.revision ?? 1) + 1 };
+    } else {
+      const { status } = body as { status: GuideStatus };
+      version = status === "published" ? (stored.latestVersion ?? 0) + 1 : undefined;
+      if (version !== undefined) {
+        versions.set(id, [...history, { version, definition: structuredClone(stored.definition), publishedAt: "2026-11-20T00:00:00.000Z",
+          publishedBy: "Demo maintainer", stepCount: stored.definition.steps.length, live: true }]);
+      }
+      result = { ...result, status, revision: (stored.revision ?? 1) + 1, liveVersion: version ?? null, latestVersion: version ?? stored.latestVersion ?? 0 };
+    }
+    rows.set(id, result); return json({ ...result, ...(version === undefined ? {} : { version }) });
   };
   return { ...host, fetch };
 }
@@ -126,7 +164,9 @@ it("lists three read-only built-ins and both authored statuses, with text-only d
   expect(root.querySelectorAll("tbody tr")).toHaveLength(5);
   for (const def of WALKTHROUGHS) {
     const row = rowFor(root, def.title);
-    expect([...row.querySelectorAll("td")].slice(2, 4).map(cell => cell.textContent)).toEqual([String(def.steps.filter(step => step.kind === "guide").length), c.builtIn]);
+    expect(row.querySelector('[data-label="Application"]')?.textContent).toBe("Reference application");
+    expect(row.querySelector(`[data-label="${c.status}"]`)?.textContent).toBe(c.builtIn);
+    expect(row.querySelector(`[data-label="${c.steps}"]`)?.textContent).toBe(String(def.steps.filter(step => step.kind === "guide").length));
     expect([...row.querySelectorAll("button")].map(item => item.textContent)).toEqual([c.preview]);
   }
   expect(rowFor(root, "A draft").textContent).toContain(c.draft);
@@ -442,4 +482,113 @@ it("ignores the stored demo role outside development and omits the role selector
   expect(host.requests.map(request => request.role)).toEqual([null, null]);
   await navigate("walkthroughs");
   expect(root.textContent).toContain(c.denied);
+});
+
+it("shows review loading and retry, blocks publication, and renders warnings as text", async () => {
+  const host = fakeHost([guide(savedId, "draft", authored(savedId, "Release candidate"))]);
+  const path = `${admin}/${savedId}/review`;
+  const summary = { application: { id: appId, name: "Reference application" }, title: "Release candidate", steps: 3,
+    targets: { healthy: 0, broken: 1, unverified: 0, disabled: 0 }, verification: { steps: 1, withVerify: 0 }, currentVersion: 1, nextVersion: 2 };
+  let finish!: (value: Response) => void;
+  const pending = new Promise<Response>(resolve => { finish = resolve; });
+  host.overrides.set(`POST ${path}`, () => pending);
+  const { root } = await setup("walkthroughs", host);
+  const trigger = button(root, "Publish: Release candidate");
+  trigger.click();
+  const dialog = control(root, "dialog");
+  expect(dialog.querySelector('[role="status"]')?.textContent).toContain("Validating");
+  expect(document.activeElement).toBe(button(dialog, c.cancel));
+  expect(button(dialog, c.publish).disabled).toBe(true);
+  finish(json({}, 503)); await turn();
+  expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("Could not review");
+  expect(button(dialog, "Retry review").hidden).toBe(false);
+  host.overrides.set(`POST ${path}`, () => json({ ok: false, blockers: [{ code: "TARGET_DISABLED", message: "Target disabled." }], warnings: [], summary }));
+  button(dialog, "Retry review").click(); await turn();
+  expect(dialog.textContent).toContain("Target disabled.");
+  expect(button(dialog, c.publish).disabled).toBe(true);
+  expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("Resolve the blockers");
+  expect(host.writes()).toEqual([]);
+  button(dialog, c.cancel).click();
+  expect(document.activeElement).toBe(trigger);
+  host.overrides.set(`POST ${path}`, () => json({
+    ok: true, blockers: [], warnings: [{ code: "TARGET_BROKEN", message: "<strong>Repair it</strong>", stepIndex: 1, targetId: "settings.securityPanel" }], summary,
+  }));
+  trigger.click(); await turn();
+  const warning = control(root, "dialog");
+  expect(warning.textContent).toContain("1 broken");
+  expect(warning.textContent).toContain("0 of 1 steps have verification");
+  expect(warning.textContent).toContain("Next versionv2");
+  expect(warning.textContent).toContain("Step 2. <strong>Repair it</strong> (settings.securityPanel)");
+  expect(warning.querySelector("strong")).toBeNull();
+  expect([...warning.querySelectorAll("button")].filter(item => !item.hidden && !item.disabled).map(item => item.textContent)).toEqual([c.cancel, c.publish]);
+  expect(host.requests.filter(request => request.path === path).map(request => request.body)).toEqual([{}, {}, {}]);
+  expect(host.writes()).toEqual([]);
+});
+
+it("publishes immutable versions, revises while v1 remains live, compares v1 with v2 and creates a draft from v1", async () => {
+  const host = fakeHost([guide(savedId, "draft", authored(savedId, "Original workflow"))]);
+  const { root } = await setup("walkthroughs", host);
+  button(root, "Publish: Original workflow").click(); await turn();
+  button(control(root, "dialog"), c.publish).click(); await turn();
+  expect(rowFor(root, "Original workflow").querySelector('[data-label="Version"]')?.textContent).toBe("Live v1 · Latest v1");
+  button(root, "Create draft from published: Original workflow").click(); await turn();
+  expect(location.hash).toBe("#/editor");
+  expect(host.rows.get(savedId)).toMatchObject({ status: "draft", liveVersion: 1 });
+  fill(root, "editor-title", "Updated workflow");
+  button(root, c.save).click(); await turn();
+  expect(host.writes().at(-1)).toMatchObject({ method: "PUT", body: { expectedRevision: 3 } });
+  expect(host.versions.get(savedId)?.[0]?.definition.title).toBe("Original workflow");
+
+  button(root, "Version history").click(); await turn();
+  let panel = control(root, ".workflow-versions");
+  expect(document.activeElement?.id).toBe("workflow-versions-title");
+  expect(control<HTMLSelectElement>(panel, "#workflow-compare-before").value).toBe("1");
+  expect(control<HTMLSelectElement>(panel, "#workflow-compare-after").value).toBe("draft");
+  button(panel, "Compare").click(); await turn();
+  expect(panel.textContent).toContain("Title: Original workflow → Updated workflow");
+  button(panel, "Close version history").click();
+  expect(document.activeElement).toBe(button(root, "Version history"));
+  button(root, c.publish).click(); await turn();
+  button(control(root, "dialog"), c.publish).click(); await turn();
+
+  expect(host.rows.get(savedId)).toMatchObject({ status: "published", liveVersion: 2, latestVersion: 2 });
+  button(root, "Version history: Updated workflow").click(); await turn();
+  panel = control(root, ".workflow-versions");
+  expect([...panel.querySelectorAll("strong")].map(item => item.textContent)).toEqual(["v2 (Live)", "v1"]);
+  button(panel, "Compare").click(); await turn();
+  expect(panel.textContent).toContain("Original workflow → Updated workflow");
+  button(panel, "Create draft from version 1").click();
+  let confirm = control(root, "dialog");
+  expect(document.activeElement).toBe(button(confirm, c.cancel));
+  button(confirm, c.cancel).click();
+  expect(host.writes().some(request => request.path.endsWith("/restore"))).toBe(false);
+  button(panel, "Create draft from version 1").click();
+  confirm = control(root, "dialog");
+  button(confirm, "Create draft").click(); await turn();
+  expect(control<HTMLInputElement>(root, "#editor-title").value).toBe("Original workflow");
+  expect(host.rows.get(savedId)).toMatchObject({ status: "draft", liveVersion: 2, latestVersion: 2 });
+  expect(host.versions.get(savedId)?.map(item => item.definition.title)).toEqual(["Original workflow", "Updated workflow"]);
+
+  fill(root, "editor-title", "Unsaved local change");
+  button(root, "Version history").click(); await turn();
+  panel = control(root, ".workflow-versions");
+  button(panel, "Create draft from version 2").click();
+  confirm = control(root, "dialog");
+  expect(confirm.textContent).toContain("discard unsaved changes");
+  button(confirm, c.cancel).click();
+  expect(control<HTMLInputElement>(root, "#editor-title").value).toBe("Unsaved local change");
+  expect(host.writes().filter(request => request.path.endsWith("/restore"))).toHaveLength(1);
+});
+
+it("announces a version-history read failure, retries, and shows the empty state", async () => {
+  const host = fakeHost([guide(savedId, "draft", authored(savedId, "Unpublished workflow"))]);
+  const path = `GET ${admin}/${savedId}/versions`;
+  host.overrides.set(path, () => json({}, 503));
+  const { root } = await setup("walkthroughs", host);
+  button(root, "Version history: Unpublished workflow").click(); await turn();
+  const panel = control(root, ".workflow-versions");
+  expect(panel.querySelector('[role="alert"]')?.textContent).toContain("Could not load version history");
+  host.overrides.delete(path);
+  button(panel, "Retry versions").click(); await turn();
+  expect(panel.querySelector('[role="status"]')?.textContent).toContain("No versions have been published yet.");
 });

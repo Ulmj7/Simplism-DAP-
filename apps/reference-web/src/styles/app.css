@@ -139,3 +139,10 @@ input { min-height: var(--touch); width: var(--full); min-width: var(--zero); bo
 .preview-status p { margin: var(--space-1) var(--zero); }
 #editor-conflict { margin: var(--space-3) var(--zero); }
 .editor-panes[hidden] { display: none; }
+
+/* Workflow review and history share the responsive admin layout. */
+.publish-review, .workflow-versions { overflow-wrap: anywhere; min-width: var(--zero); }
+.publish-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(var(--full), 10rem), 1fr)); gap: var(--space-2); }
+.publish-summary dd { margin: var(--zero); }
+.workflow-history > li { margin-block: var(--space-3); }
+.workflow-versions .admin-toolbar select { max-width: var(--full); }

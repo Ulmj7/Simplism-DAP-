@@ -34,7 +34,7 @@ export const copy = {
   save: "Save draft", saving: "Saving…", saved: "Saved", saveFailed: "Could not save", conflict: "This workflow was changed somewhere else. Load the saved version to continue.",
   writeFailed: "This change could not be saved. Please wait a moment and try again.",
   oversize: "This walkthrough is too large to save. Shorten the instructions and try again.",
-  readOnly: "A published walkthrough cannot be edited. Unpublish it first.", foreign: "This guide uses features the editor cannot edit.",
+  readOnly: "Create a draft from the published workflow to edit it. The live version stays available.", foreign: "This guide uses features the editor cannot edit.",
   previewFailed: "This walkthrough cannot be previewed. Check its definition and try again.",
   publishInvalid: "This walkthrough has problems. Fix them before publishing.",
   saveBeforePublish: "Save the draft before publishing.",

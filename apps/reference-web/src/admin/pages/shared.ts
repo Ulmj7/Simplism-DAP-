@@ -26,10 +26,6 @@ export const writeError = (result: AdminResult<unknown>) => result.kind === "ove
   : result.kind === "application" ? c.application.failures[result.code] : result.kind === "limit" ? c.application.limit : result.kind === "conflict" ? c.conflict : c.writeFailed;
 export const backLink = () => h("a", { class: "button", href: "#/walkthroughs" }, c.listBack);
 
-export function confirmPublish(trigger: HTMLButtonElement, page: HTMLElement, publish: () => void) {
-  confirmAction(trigger, page, c.publishTitle, c.publishMessage, c.publish, publish);
-}
-
 export function confirmAction(trigger: HTMLElement, page: HTMLElement, title: string, message: string, action: string, submit: () => void, cancelled?: () => void) {
   if (page.querySelector("dialog[open]")) return;
   const dialog = h("dialog", { class: "dap-result", "aria-labelledby": "dap-publish-title", "aria-describedby": "dap-publish-message", "aria-modal": "true", "data-ai-ignore": true }) as HTMLDialogElement;

@@ -8,7 +8,9 @@ import type { GuideStatus } from "../client.js";
 import { breadcrumb } from "../../ui/breadcrumb.js";
 import { errorState } from "../../ui/states.js";
 import { focusApplication, getEditSession, getFocusedApplication, newEditSession, requestEdit, setEditSession } from "../session.js";
-import { adminPage, confirmPublish, readError, writeError } from "./shared.js";
+import { adminPage, readError, writeError } from "./shared.js";
+import { openPublishReview } from "./publish-review.js";
+import { openVersions } from "./versions.js";
 import type { AdminPageOptions } from "./shared.js";
 
 const c = copy.admin;
@@ -34,8 +36,8 @@ export function walkthroughsPage(options: AdminPageOptions) {
     crumb();
     const search = field("walkthrough-search", c.search, { type: "search" });
     const add = button(c.newGuide, true);
-    add.addEventListener("click", () => { newEditSession(); navigate("editor"); });
-    const columns = [c.title, c.description, c.steps, c.status, c.updated, c.actions];
+    add.addEventListener("click", () => { newEditSession(owner.value || undefined); navigate("editor"); });
+    const columns = [c.title, c.description, "Application", c.status, "Version", c.updated, c.steps, c.actions];
     const body = h("tbody", { role: "rowgroup" });
     const table = h("table", { class: "admin-table", role: "table", "aria-label": c.walkthroughs },
       h("thead", { role: "rowgroup" }, h("tr", { role: "row" }, ...columns.map(title => h("th", { scope: "col", role: "columnheader" }, title)))), body);
@@ -45,7 +47,7 @@ export function walkthroughsPage(options: AdminPageOptions) {
     let busy = false;
     const rows = [...WALKTHROUGHS.map(def => ({
       id: def.id, title: def.title, description: def.description, stepCount: def.steps.filter(step => step.kind === "guide").length,
-      status: "builtIn" as const, updatedAt: "", applicationId: null as string | null,
+      status: "builtIn" as const, updatedAt: "", applicationId: null as string | null, liveVersion: undefined, latestVersion: undefined,
     })), ...result.value.authored].map(row => {
       const controls = h("div", { class: "admin-actions" });
       function action(label: string, run: (trigger: HTMLButtonElement) => void) {
@@ -54,7 +56,7 @@ export function walkthroughsPage(options: AdminPageOptions) {
         trigger.addEventListener("click", () => { if (!busy && !signal.aborted && !trigger.disabled) run(trigger); });
         controls.append(trigger);
       }
-      const readValid = async (invalid: string, forPreview = false) => {
+      const readValid = async () => {
         const loaded = await client.get(row.id);
         if (signal.aborted) return null;
         if (loaded.kind !== "ok") { notice.textContent = readError(loaded); return null; }
@@ -62,10 +64,10 @@ export function walkthroughsPage(options: AdminPageOptions) {
         if (signal.aborted) return null;
         if (owner !== undefined && owner.kind !== "ok") { notice.textContent = readError(owner); return null; }
         const data = owner?.value;
-        if (forPreview && data?.previewMode === "application-window") { notice.textContent = c.application.windowPreviewFromEditor; return null; }
-        if (forPreview && data?.previewable === false) { notice.textContent = c.application.noPreview; return null; }
+        if (data?.previewMode === "application-window") { notice.textContent = c.application.windowPreviewFromEditor; return null; }
+        if (data?.previewable === false) { notice.textContent = c.application.noPreview; return null; }
         try { return createWalkthroughCatalog(data?.registry ?? registry, data?.postconditionNames ?? POSTCONDITION_NAMES, [loaded.value.definition]).get(row.id) ?? null; }
-        catch { notice.textContent = invalid; return null; }
+        catch { notice.textContent = c.previewFailed; return null; }
       };
       async function setStatus(wanted: GuideStatus) {
         busy = true; notice.textContent = c.saving;
@@ -82,24 +84,42 @@ export function walkthroughsPage(options: AdminPageOptions) {
         if (builtIn) { preview(builtIn); return; }
         busy = true; notice.textContent = c.loading;
         void (async () => {
-          const def = await readValid(c.previewFailed, true);
+          const def = await readValid();
           busy = false;
           if (def && !signal.aborted) { notice.textContent = ""; preview(def); }
         })();
       });
+      const openDraft = () => {
+        if (getEditSession()?.id === row.id) setEditSession();
+        requestEdit(row.id);
+        navigate("editor");
+      };
       if (row.status === "draft") action(c.publish, trigger => {
-        busy = true; notice.textContent = c.loading;
-        void readValid(c.publishInvalid).then(def => {
+        openPublishReview({ page, trigger, client, id: row.id, signal, applicationId: row.applicationId, submit: () => { void setStatus("published"); } });
+      });
+      if (row.status !== "builtIn") action("Version history", trigger => {
+        openVersions({ page, trigger, client, id: row.id, signal, hasDraft: row.status === "draft",
+          canRestore: () => !busy, setBusy(value) { busy = value; }, onRestore: openDraft });
+      });
+      if (row.status === "published") action("Create draft from published", () => {
+        busy = true;
+        notice.textContent = "Creating a draft from the live version…";
+        void client.revise(row.id).then(result => {
           busy = false;
-          if (def && !signal.aborted && trigger.isConnected) { notice.textContent = ""; confirmPublish(trigger, page, () => { void setStatus("published"); }); }
+          if (signal.aborted) return;
+          if (result.kind === "ok") openDraft();
+          else notice.textContent = writeError(result);
         });
       });
-      if (row.status === "published") action(c.unpublish, () => { void setStatus("draft"); });
+      if (row.status === "published" || typeof row.liveVersion === "number") action(c.unpublish, () => { void setStatus("draft"); });
       const cell = (index: number, content: string | Node) => h("td", { role: "cell", "data-label": columns[index]! }, content);
       const date = row.updatedAt ? new Date(row.updatedAt).toLocaleDateString() : "";
       const description = h("span", { class: "admin-description", title: row.description }, row.description);
-      return { applicationId: row.applicationId, haystack: `${row.title} ${row.description}`.toLowerCase(), element: h("tr", { role: "row" },
-        cell(0, row.title), cell(1, description), cell(2, String(row.stepCount)), cell(3, h("span", { class: "admin-status" }, c[row.status])), cell(4, date), cell(5, controls)) };
+      const application = row.status === "builtIn" ? "Reference application" : (nameOf(row.applicationId) || (row.applicationId === null ? "Unassigned" : "Application unavailable"));
+      const version = row.status === "builtIn" ? "—" : `${row.liveVersion == null ? "No live version" : `Live v${row.liveVersion}`}${row.latestVersion ? ` · Latest v${row.latestVersion}` : ""}`;
+      return { applicationId: row.applicationId, haystack: `${row.title} ${row.description} ${application}`.toLowerCase(), element: h("tr", { role: "row" },
+        cell(0, row.title), cell(1, description), cell(2, application), cell(3, h("span", { class: "admin-status" }, c[row.status])),
+        cell(4, version), cell(5, date || "—"), cell(6, String(row.stepCount)), cell(7, controls)) };
     });
     function filter() {
       const query = search.input.value.trim().toLowerCase();
