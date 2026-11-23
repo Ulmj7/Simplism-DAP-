@@ -31,6 +31,19 @@ export const registrySourceOf = (registryId: string): RegistrySource => (registr
 /** The registry keys an application may name: the built-in catalog's and the reserved Studio-managed key. */
 export const registryIdsOf = (catalog: { ids(): readonly string[] }): readonly string[] => Object.freeze([...catalog.ids(), STUDIO_MANAGED_REGISTRY_ID]);
 export const REGISTRY_SWITCH_PHRASE = "registryId: cannot switch between built-in and Studio-managed registries";
+/** How an application's pages are addressed (Studio COMPLETION, S1): `hash` pages are `/` or `/#/segments`, `history` pages are static pathnames. Built-in applications are always `hash`. */
+export const ROUTINGS = ["hash", "history"] as const;
+export type ApplicationRouting = (typeof ROUTINGS)[number];
+export const ROUTING_BUILT_IN_PHRASE = "routing: built-in applications use hash routing";
+export const RUNTIME_BUILT_IN_PHRASE = "runtimeAccess: only Studio-managed applications can serve guides to their own pages";
+/** The runtime key (S7): `rk-` + 32 lower-case hex. A PUBLIC identifier (it names the application to the runtime endpoints, the Origin check authorises), rotated by replacing it. */
+export const RUNTIME_KEY = /^rk-[a-f0-9]{32}$/;
+export const isRuntimeKey = (value: unknown): value is string => typeof value === "string" && RUNTIME_KEY.test(value);
+export function generateRuntimeKey(random: (size: number) => Buffer = randomBytes): string {
+  const key = `rk-${random(16).toString("hex")}`;
+  if (!isRuntimeKey(key)) throw new Error("The key source did not produce a runtime key");
+  return key;
+}
 export const MAX_APPLICATIONS_PER_TENANT = 20;
 export const MAX_ALLOWED_ORIGINS = 5;
 export const MAX_NAME_CHARS = 80;
@@ -58,10 +71,22 @@ export interface ApplicationConfig {
   readonly allowedOrigins: readonly string[];
   readonly environment: ApplicationEnvironment;
   readonly registryId: string;
+  /** How pages are addressed (default `hash`). Locked once the application has registered routes. */
+  readonly routing?: ApplicationRouting;
+  /** Whether the application's own pages may fetch its live guides through the key-addressed runtime endpoints (default false; Studio-managed applications only). */
+  readonly runtimeAccess?: boolean;
 }
+/** What the overview shows beside an application: how many targets it has and how many workflows are drafts or published (one tenant-scoped aggregate, never a loop). */
+export interface ApplicationCounts { readonly targets: number; readonly drafts: number; readonly published: number }
+export const NO_COUNTS: ApplicationCounts = Object.freeze({ targets: 0, drafts: 0, published: 0 });
 /** A stored application. */
 export interface ApplicationRecord extends ApplicationConfig {
   readonly id: string;
+  readonly routing: ApplicationRouting;
+  readonly runtimeAccess: boolean;
+  /** `null` until runtime access was first turned on (managed applications only); stable until rotated. */
+  readonly runtimeKey: string | null;
+  readonly counts: ApplicationCounts;
   readonly enabled: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -76,13 +101,19 @@ export interface ApplicationView {
   readonly registryId: string;
   /** Where the registry lives: a host-code catalog entry (`built-in`) or PostgreSQL targets registered from Studio (`studio-managed`). Derived from `registryId`. */
   readonly source: RegistrySource;
+  readonly routing: ApplicationRouting;
   readonly enabled: boolean;
+  readonly runtimeAccess: boolean;
+  readonly runtimeKey: string | null;
+  readonly counts: ApplicationCounts;
   readonly updatedAt: string;
 }
-export function toApplicationView(record: ApplicationRecord): ApplicationView {
+export function toApplicationView(record: ApplicationRecord, counts?: ApplicationCounts): ApplicationView {
+  const used = counts ?? record.counts;
   return Object.freeze({
     id: record.id, name: record.name, origin: record.origin, allowedOrigins: Object.freeze([...record.allowedOrigins]), environment: record.environment,
-    registryId: record.registryId, source: registrySourceOf(record.registryId), enabled: record.enabled, updatedAt: record.updatedAt,
+    registryId: record.registryId, source: registrySourceOf(record.registryId), routing: record.routing, enabled: record.enabled, runtimeAccess: record.runtimeAccess,
+    runtimeKey: record.runtimeKey, counts: Object.freeze({ targets: used.targets, drafts: used.drafts, published: used.published }), updatedAt: record.updatedAt,
   });
 }
 
@@ -95,12 +126,17 @@ export const applicationConfigSchema = z.strictObject({
   allowedOrigins: z.array(boundedString(MAX_ORIGIN_CHARS)).min(1).max(MAX_ALLOWED_ORIGINS),
   environment: boundedString(16),
   registryId: boundedString(MAX_REGISTRY_ID_CHARS),
+  routing: boundedString(16).optional(),
+  runtimeAccess: z.boolean().optional(),
 });
 /** `saveStudioApplication` input: the generated id plus the configuration. */
 export const saveApplicationInputSchema = z.strictObject({
   applicationId: z.string().max(16).regex(APPLICATION_ID),
   ...applicationConfigSchema.shape,
 });
+/** `rotateStudioRuntimeKey` input: the application only (the new key is generated by the executor, never supplied). */
+export const rotateKeyInputSchema = z.strictObject({ applicationId: z.string().max(16).regex(APPLICATION_ID) });
+export type RotateKeyInput = z.infer<typeof rotateKeyInputSchema>;
 /** `setStudioApplicationEnabled` input. */
 export const enabledInputSchema = z.strictObject({ applicationId: z.string().max(16).regex(APPLICATION_ID), enabled: z.boolean() });
 export type SaveApplicationInput = z.infer<typeof saveApplicationInputSchema>;
@@ -168,7 +204,7 @@ export type ApplicationValidation =
   | { readonly ok: true; readonly config: ApplicationConfig }
   | { readonly ok: false; readonly issues: readonly string[] };
 
-const CONFIG_KEYS: readonly string[] = ["name", "origin", "allowedOrigins", "environment", "registryId"];
+const CONFIG_KEYS: readonly string[] = ["name", "origin", "allowedOrigins", "environment", "registryId", "routing", "runtimeAccess"];
 
 /**
  * The enrollment validator. `knownRegistryIds` is the host-trusted catalog's keys. The result is the NORMALISED configuration (a fresh frozen object holding the known
@@ -204,6 +240,22 @@ export function validateApplicationConfig(input: unknown, knownRegistryIds: read
   if (typeof bag.registryId !== "string" || !REGISTRY_ID.test(bag.registryId) || !knownRegistryIds.includes(bag.registryId)) issues.push("registryId: must be one of the available registries");
   else registryId = bag.registryId;
 
+  // routing (default hash) and runtimeAccess (default false); a built-in application has neither a history routing nor runtime access.
+  let routing: ApplicationRouting = "hash";
+  if (bag.routing !== undefined) {
+    if (typeof bag.routing !== "string" || !(ROUTINGS as readonly string[]).includes(bag.routing)) issues.push("routing: must be hash or history");
+    else routing = bag.routing as ApplicationRouting;
+  }
+  let runtimeAccess = false;
+  if (bag.runtimeAccess !== undefined) {
+    if (typeof bag.runtimeAccess !== "boolean") issues.push("runtimeAccess: must be true or false");
+    else runtimeAccess = bag.runtimeAccess;
+  }
+  if (registryId !== "" && registrySourceOf(registryId) === "built-in") {
+    if (routing !== "hash") issues.push(ROUTING_BUILT_IN_PHRASE);
+    if (runtimeAccess) issues.push(RUNTIME_BUILT_IN_PHRASE);
+  }
+
   // origin
   let origin = "";
   const primary = normalizeOrigin(bag.origin);
@@ -228,5 +280,5 @@ export function validateApplicationConfig(input: unknown, knownRegistryIds: read
     if (primary.ok && issues.length === 0 && !seen.has(primary.origin)) issues.push("allowedOrigins: must include the application origin");
   }
   if (issues.length > 0) return refuse();
-  return Object.freeze({ ok: true, config: Object.freeze({ name, origin, allowedOrigins: Object.freeze(allowed), environment, registryId }) });
+  return Object.freeze({ ok: true, config: Object.freeze({ name, origin, allowedOrigins: Object.freeze(allowed), environment, registryId, routing, runtimeAccess }) });
 }

@@ -19,8 +19,10 @@ import { createRegistryCatalog } from "./registries.js";
 const TENANT_A = "1111aaaa-2222-4333-8444-5555bbbb5555";
 const TENANT_B = "2222bbbb-3333-4444-8555-6666cccc6666";
 const SECRET = "SECRET-SQL-select-from-studio_applications";
+/** The seven-field body PUT must carry (POST may omit the last two). */
+const full = (over: Record<string, unknown> = {}) => ({ ...config(), routing: "hash", runtimeAccess: false, ...over });
 const config = (over: Record<string, unknown> = {}) => ({ name: "Reference application", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "development", registryId: "reference", ...over });
-const VIEW_KEYS = ["allowedOrigins", "enabled", "environment", "id", "name", "origin", "registryId", "source", "updatedAt"];
+const VIEW_KEYS = ["allowedOrigins", "counts", "enabled", "environment", "id", "name", "origin", "registryId", "routing", "runtimeAccess", "runtimeKey", "source", "updatedAt"];
 
 type Who = "maintainer" | "user" | "maintainerB" | "none" | "throws";
 interface Submitted { who: Who; action: string; params: Record<string, unknown> }
@@ -123,7 +125,7 @@ describe("create", () => {
     expect(res.body).toMatchObject({ id: A1, name: "Reference application", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "development", registryId: "reference", enabled: true });
     expect(t.submitted).toHaveLength(1);
     expect(t.submitted[0]).toMatchObject({ who: "maintainer", action: "saveStudioApplication", params: { applicationId: A1, origin: "http://localhost:5184" } });
-    expect(Object.keys(t.submitted[0]!.params).sort()).toEqual(["allowedOrigins", "applicationId", "environment", "name", "origin", "registryId"]);
+    expect(Object.keys(t.submitted[0]!.params).sort()).toEqual(["allowedOrigins", "applicationId", "environment", "name", "origin", "registryId", "routing", "runtimeAccess"]);
     expect(t.store.rows[0]).toMatchObject({ tenantId: TENANT_A });
     expectNoLeak(res.raw);
   });
@@ -283,7 +285,7 @@ describe("update and enable/disable", () => {
     const t = build({ newIds: [A1] });
     await t.call("POST", "/api/admin/applications", { who: "maintainer", body: config() });
     await t.call("POST", `/api/admin/applications/${A1}/status`, { who: "maintainer", body: { enabled: false } });
-    const res = await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: config({ name: "Renamed" }) });
+    const res = await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: full({ name: "Renamed" }) });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ id: A1, name: "Renamed", enabled: false });
     expect(t.submitted.at(-1)).toMatchObject({ action: "saveStudioApplication", params: { applicationId: A1, name: "Renamed" } });
@@ -293,11 +295,11 @@ describe("update and enable/disable", () => {
     await t.call("POST", "/api/admin/applications", { who: "maintainer", body: config() });
     t.submitted.length = 0;
     for (const [who, id] of [["maintainer", A2], ["maintainer", "nope"], ["maintainerB", A1]] as const) {
-      const res = await t.call("PUT", `/api/admin/applications/${id}`, { who, body: config() });
+      const res = await t.call("PUT", `/api/admin/applications/${id}`, { who, body: full() });
       expect([who, id, res.status, res.body.code]).toEqual([who, id, 404, "APPLICATION_NOT_FOUND"]);
     }
-    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: config({ origin: "ftp://x" }) })).status).toBe(422);
-    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: { ...config(), enabled: true } })).status).toBe(400);
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: full({ origin: "ftp://x" }) })).status).toBe(422);
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: { ...full(), enabled: true } })).status).toBe(400);
     expect(t.submitted).toEqual([]);
     expect(t.store.rows[0]).toMatchObject({ name: "Reference application" });
   });

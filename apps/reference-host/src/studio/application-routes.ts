@@ -4,9 +4,12 @@
  *
  *   GET  /api/admin/applications              Maintainer   { applications: ApplicationView[], registries: { id, label }[] }   the tenant's applications and the selectable registries
  *   GET  /api/admin/applications/:id          Maintainer   ApplicationView   (another tenant's id or a malformed one is 404 APPLICATION_NOT_FOUND)
- *   POST /api/admin/applications              Maintainer   body EXACTLY { name, origin, allowedOrigins, environment, registryId }: validate (422), generate the id,
- *                                                          Gateway save, read back (201); the 21st application of a tenant is 409
- *   PUT  /api/admin/applications/:id          Maintainer   the same body: update the configuration (the enabled flag is untouched)
+ *   POST /api/admin/applications              Maintainer   body { name, origin, allowedOrigins, environment, registryId } plus the optional { routing, runtimeAccess } (defaults hash / false):
+ *                                                          validate (422), generate the id, Gateway save, read back (201); the 21st application of a tenant is 409
+ *   PUT  /api/admin/applications/:id          Maintainer   body EXACTLY the seven fields above: update the configuration (the enabled flag is untouched); a routing change after routes exist is
+ *                                                          409 ROUTING_LOCKED
+ *   POST /api/admin/applications/:id/runtime-key Maintainer   (Studio-managed only, 409 REGISTRY_NOT_MANAGED otherwise) replace the runtime key through the Gateway: ApplicationView
+ *   GET  /api/admin/applications/:id/overview Maintainer   { application, targets: { total, active, disabled, healthy, unverified, broken }, workflows: { draft, published } }
  *   POST /api/admin/applications/:id/status   Maintainer   body EXACTLY { enabled: boolean }: Gateway enable/disable
  *   GET  /api/admin/applications/:id/registry Maintainer   { routes, elements (public only), postconditionNames, previewable }: the application's public-eligible registry
  *
@@ -21,7 +24,7 @@ import { AUTHORING_MESSAGES, submitGatewayWrite } from "../authoring/routes.js";
 import type { AuthoringRouteDeps } from "../authoring/routes.js";
 import { MAINTAIN_PERMISSION } from "../authoring/capabilities.js";
 import { exactBody } from "../http/transport.js";
-import { ENABLE_APPLICATION_ACTION_ID, SAVE_APPLICATION_ACTION_ID } from "./application-capabilities.js";
+import { ENABLE_APPLICATION_ACTION_ID, ROTATE_KEY_ACTION_ID, SAVE_APPLICATION_ACTION_ID } from "./application-capabilities.js";
 import type { ApplicationStore } from "./application-store.js";
 import { MAX_APPLICATIONS_PER_TENANT, REGISTRY_SWITCH_PHRASE, STUDIO_MANAGED_REGISTRY_ID, capApplicationIssues, generateApplicationId, isApplicationId, registryIdsOf, registrySourceOf, toApplicationView, validateApplicationConfig } from "./applications.js";
 import type { ApplicationRecord } from "./applications.js";
@@ -53,9 +56,10 @@ export const APPLICATION_MESSAGES = Object.freeze({
   targetNotFound: "That target was not found.",
   notManaged: "That application does not use a Studio-managed registry.",
   applicationDisabled: "That application is disabled. Enable it first.",
+  routingLocked: "This application already has registered pages, so its routing can no longer change.",
   limit: `The limit of ${MAX_APPLICATIONS_PER_TENANT} applications has been reached. Disable an application you no longer use; applications are never deleted.`,
 });
-type Fail = { kind: "unauthenticated" | "forbidden" | "not_found" | "malformed" | "conflict" | "unavailable"; message: string; code?: "APPLICATION_NOT_FOUND" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED" | "APPLICATION_DISABLED" };
+type Fail = { kind: "unauthenticated" | "forbidden" | "not_found" | "malformed" | "conflict" | "unavailable"; message: string; code?: "APPLICATION_NOT_FOUND" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED" | "APPLICATION_DISABLED" | "ROUTING_LOCKED" };
 const failure = (kind: Fail["kind"], message: string, code?: Fail["code"]): Fail => (code === undefined ? { kind, message } : { kind, message, code });
 
 export function registerApplicationRoutes(app: FastifyInstance, deps: ApplicationRouteDeps): void {
@@ -82,7 +86,22 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
     const id = (request.params as { id?: unknown } | undefined)?.id;
     return isApplicationId(id) ? id : null;
   };
-  const view = (record: ApplicationRecord) => toApplicationView(record);
+  /** The view of an application. A built-in application's `targets` count is the number of public elements of its catalog registry (there is no database row for them). */
+  const view = (record: ApplicationRecord) => {
+    if (registrySourceOf(record.registryId) !== "built-in") return toApplicationView(record);
+    const elements = catalog.get(record.registryId)?.registry.elements.filter((element) => element.privacy === "public").length ?? 0;
+    return toApplicationView(record, { targets: elements, drafts: record.counts.drafts, published: record.counts.published });
+  };
+  const hasRoutes = async (tenantId: string, id: string): Promise<boolean> => (await targets.list(tenantId, id)).routes.length > 0;
+  /** A body with every key of `required` and any subset of `optional`, and nothing else. */
+  const bodyWith = (body: unknown, required: readonly string[], optional: readonly string[]): Record<string, unknown> | null => {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+    const own = Object.keys(body);
+    if (!required.every((key) => Object.hasOwn(body, key)) || own.some((key) => !required.includes(key) && !optional.includes(key))) return null;
+    return body as Record<string, unknown>;
+  };
+  const CONFIG_REQUIRED = ["name", "origin", "allowedOrigins", "environment", "registryId"] as const;
+  const CONFIG_OPTIONAL = ["routing", "runtimeAccess"] as const;
   /** The built-in catalog entries plus the Studio-managed one; every choice says where its registry lives. */
   const registryChoices = () => [...catalog.choices().map((choice) => ({ id: choice.id, label: choice.label, source: "built-in" as const })),
     { id: STUDIO_MANAGED_REGISTRY_ID, label: "Studio-managed (register targets from the browser)", source: "studio-managed" as const }];
@@ -131,7 +150,7 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
   app.post("/api/admin/applications", async (request, reply) => {
     const principal = await gate(request, reply);
     if (principal === null) return;
-    const body = exactBody(request.body, ["name", "origin", "allowedOrigins", "environment", "registryId"]);
+    const body = bodyWith(request.body, CONFIG_REQUIRED, CONFIG_OPTIONAL);
     if (body === null) return malformed(reply);
     const checked = validateApplicationConfig(body, knownRegistryIds);
     if (!checked.ok) return invalid(reply, checked.issues);
@@ -152,7 +171,7 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
     if (principal === null) return;
     const id = idParam(request);
     if (id === null) return notFound(reply);
-    const body = exactBody(request.body, ["name", "origin", "allowedOrigins", "environment", "registryId"]);
+    const body = exactBody(request.body, [...CONFIG_REQUIRED, ...CONFIG_OPTIONAL]);
     if (body === null) return malformed(reply);
     let existing: ApplicationRecord | null;
     try { existing = await applications.get(principal.tenantId, id); } catch { return unavailable(reply); }
@@ -161,8 +180,12 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
     if (!checked.ok) return invalid(reply, checked.issues);
     // The registry source never changes: a built-in application cannot become Studio-managed or the other way round (the store and the database refuse it as well).
     if (registrySourceOf(existing.registryId) !== registrySourceOf(checked.config.registryId)) return invalid(reply, [REGISTRY_SWITCH_PHRASE]);
+    const routingLocked = () => send(reply, 409, failure("conflict", APPLICATION_MESSAGES.routingLocked, "ROUTING_LOCKED"));
+    const routingChanged = checked.config.routing !== existing.routing;
+    try { if (routingChanged && await hasRoutes(principal.tenantId, id)) return routingLocked(); } catch { return unavailable(reply); }
     const result = await submitGatewayWrite(principal, SAVE_APPLICATION_ACTION_ID, { applicationId: id, ...checked.config });
     if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
+    try { if (result === "failed" && routingChanged && await hasRoutes(principal.tenantId, id)) return routingLocked(); } catch { return unavailable(reply); }
     if (result !== "ok") return unavailable(reply);
     try {
       const record = await applications.get(principal.tenantId, id);
@@ -184,6 +207,48 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
     try {
       const record = await applications.get(principal.tenantId, id);
       return record === null ? unavailable(reply) : send(reply, 200, view(record));
+    } catch { return unavailable(reply); }
+  });
+
+  app.get("/api/admin/applications/:id/overview", async (request, reply) => {
+    const principal = await gate(request, reply);
+    if (principal === null) return;
+    const id = idParam(request);
+    if (id === null) return notFound(reply);
+    try {
+      const record = await applications.get(principal.tenantId, id);
+      if (record === null) return notFound(reply);
+      let total: number; let active: number;
+      if (registrySourceOf(record.registryId) === "studio-managed") {
+        const listing = await targets.list(principal.tenantId, record.id);
+        total = listing.targets.length; active = listing.targets.filter((target) => target.status === "active").length;
+      } else { total = view(record).counts.targets; active = total; }
+      // Health arrives with a later order: nothing is verified yet, so every active target is `unverified` and none is `healthy` or `broken`.
+      return send(reply, 200, {
+        application: view(record),
+        targets: { total, active, disabled: total - active, healthy: 0, unverified: active, broken: 0 },
+        workflows: { draft: record.counts.drafts, published: record.counts.published },
+      });
+    } catch { return unavailable(reply); }
+  });
+
+  app.post("/api/admin/applications/:id/runtime-key", async (request, reply) => {
+    const principal = await gate(request, reply);
+    if (principal === null) return;
+    const id = idParam(request);
+    if (id === null) return notFound(reply);
+    const body = request.body;
+    if (body !== undefined && body !== null && exactBody(body, []) === null) return malformed(reply);
+    let record: ApplicationRecord | null;
+    try { record = await applications.get(principal.tenantId, id); } catch { return unavailable(reply); }
+    if (record === null) return notFound(reply);
+    if (registrySourceOf(record.registryId) !== "studio-managed") return send(reply, 409, failure("conflict", APPLICATION_MESSAGES.notManaged, "REGISTRY_NOT_MANAGED"));
+    const result = await submitGatewayWrite(principal, ROTATE_KEY_ACTION_ID, { applicationId: id });
+    if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
+    if (result !== "ok") return unavailable(reply);
+    try {
+      const rotated = await applications.get(principal.tenantId, id);
+      return rotated === null ? unavailable(reply) : send(reply, 200, view(rotated));
     } catch { return unavailable(reply); }
   });
 

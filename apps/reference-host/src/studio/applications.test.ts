@@ -19,13 +19,13 @@ const issuesOf = (input: unknown, known: readonly string[] = KNOWN): readonly st
 describe("a valid enrollment", () => {
   it("accepts the reference application on loopback and returns the normalised configuration", () => {
     const result = validateApplicationConfig(valid(), KNOWN);
-    expect(result).toEqual({ ok: true, config: { name: "Reference application", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "development", registryId: "reference" } });
+    expect(result).toEqual({ ok: true, config: { name: "Reference application", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "development", registryId: "reference", routing: "hash", runtimeAccess: false } });
   });
   it("accepts an https production-like host, several allowed origins and the test environment", () => {
     const result = validateApplicationConfig(valid({
       name: "  Billing  ", origin: "https://app.example.com", allowedOrigins: ["https://app.example.com", "https://auth.example.com:8443", "http://127.0.0.1:5185"], environment: "test", registryId: "fixture",
     }), KNOWN);
-    expect(result).toEqual({ ok: true, config: { name: "Billing", origin: "https://app.example.com", allowedOrigins: ["https://app.example.com", "https://auth.example.com:8443", "http://127.0.0.1:5185"], environment: "test", registryId: "fixture" } });
+    expect(result).toEqual({ ok: true, config: { name: "Billing", origin: "https://app.example.com", allowedOrigins: ["https://app.example.com", "https://auth.example.com:8443", "http://127.0.0.1:5185"], environment: "test", registryId: "fixture", routing: "hash", runtimeAccess: false } });
   });
   it("returns a frozen, fresh object holding the known fields only", () => {
     const input = valid();
@@ -221,8 +221,8 @@ describe("ids and views", () => {
     for (const bad of ["app-0123456789AB", "app-0123456789a", "app-0123456789abc", "wt-0123456789ab", "", "app-", 5, null, undefined]) expect(isApplicationId(bad)).toBe(false);
   });
   it("the view exposes the contract fields only", () => {
-    const record: ApplicationRecord = { id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "reference", enabled: false, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z" };
-    expect(toApplicationView(record)).toEqual({ id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "reference", source: "built-in", enabled: false, updatedAt: "2026-01-02T00:00:00.000Z" });
+    const record: ApplicationRecord = { id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "reference", routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 }, enabled: false, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z" };
+    expect(toApplicationView(record)).toEqual({ id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "reference", source: "built-in", routing: "hash", enabled: false, runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 }, updatedAt: "2026-01-02T00:00:00.000Z" });
   });
 });
 

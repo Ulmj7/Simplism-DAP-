@@ -3,12 +3,13 @@
  * capabilities, registered exactly like the Feature 004 authoring extension: a request goes through the Gateway (strict schema, permission, risk, rate/replay, durable
  * audit) and only then does a trusted executor run.
  *
- *   saveStudioApplication        { applicationId, name, origin, allowedOrigins, environment, registryId }   create an application or update its configuration
+ *   saveStudioApplication        { applicationId, name, origin, allowedOrigins, environment, registryId, routing, runtimeAccess }   create an application or update its configuration
  *   setStudioApplicationEnabled  { applicationId, enabled }                                                  enable or disable (there is no delete)
+ *   rotateStudioRuntimeKey       { applicationId }                                                           replace the runtime key of a Studio-managed application (the executor generates it)
  *
  * Both are MEDIUM, `changesState`, permission EXACTLY `perm.walkthrough.maintain`, `allowedPages: "any"`, a `studioApplication` resource (rule R9) and a written
  * justification in place of a confirmation (HIGH is impossible until the confirmation service exists). Audit records `/applicationId` (and `/enabled`, a boolean, on the
- * second capability) as plain values and NOTHING else: never a name, an origin or a registry id. Each capability stays OFF unless `DAP_ENABLED_ACTIONS` lists it
+ * second capability) as plain values and NOTHING else: never a name, an origin, a registry id, a routing or a runtime key. Each capability stays OFF unless `DAP_ENABLED_ACTIONS` lists it
  * (default deny).
  *
  * Trust: the executors take tenant and actor ONLY from `call.security` (the Gateway's trusted context), never from the parameters; the input schema is strict, so a
@@ -19,8 +20,8 @@ import { defineAction, defineExecutor } from "@dap/contracts";
 import type { ActionDefinition, ActionExecutor, ActionId, ExecutorId, PermissionId, ResourceRef } from "@dap/contracts";
 import type { HostExtension } from "../compose.js";
 import { MAINTAIN_PERMISSION, MEDIUM_JUSTIFICATION } from "../authoring/capabilities.js";
-import { enabledInputSchema, isApplicationId, registryIdsOf, saveApplicationInputSchema, validateApplicationConfig } from "./applications.js";
-import type { EnabledInput, SaveApplicationInput } from "./applications.js";
+import { enabledInputSchema, generateRuntimeKey, isApplicationId, registryIdsOf, rotateKeyInputSchema, saveApplicationInputSchema, validateApplicationConfig } from "./applications.js";
+import type { EnabledInput, RotateKeyInput, SaveApplicationInput } from "./applications.js";
 import type { ApplicationStore } from "./application-store.js";
 import type { RegistryCatalog } from "./registries.js";
 
@@ -29,7 +30,9 @@ export const ENABLE_APPLICATION_ACTION_ID = "setStudioApplicationEnabled";
 export const SAVE_APPLICATION_EXECUTOR_ID = "ex.studio-save-application";
 export const ENABLE_APPLICATION_EXECUTOR_ID = "ex.studio-set-application-enabled";
 export const APPLICATION_RESOURCE_TYPE = "studioApplication";
-export const APPLICATION_ACTION_IDS: readonly string[] = Object.freeze([SAVE_APPLICATION_ACTION_ID, ENABLE_APPLICATION_ACTION_ID]);
+export const ROTATE_KEY_ACTION_ID = "rotateStudioRuntimeKey";
+export const ROTATE_KEY_EXECUTOR_ID = "ex.studio-rotate-runtime-key";
+export const APPLICATION_ACTION_IDS: readonly string[] = Object.freeze([SAVE_APPLICATION_ACTION_ID, ENABLE_APPLICATION_ACTION_ID, ROTATE_KEY_ACTION_ID]);
 
 const resource = (params: { readonly applicationId: string }): ResourceRef | null => ({ type: APPLICATION_RESOURCE_TYPE, id: params.applicationId });
 
@@ -63,8 +66,23 @@ export const setStudioApplicationEnabled: ActionDefinition<EnabledInput> = defin
   executorId: ENABLE_APPLICATION_EXECUTOR_ID as ExecutorId,
 });
 
+export const rotateStudioRuntimeKey: ActionDefinition<RotateKeyInput> = defineAction({
+  id: ROTATE_KEY_ACTION_ID as ActionId,
+  version: 1,
+  description: "Replaces the runtime key of a Studio-managed application. The old key stops working at once; the application's pages must be given the new one. Maintainer only.",
+  inputSchema: rotateKeyInputSchema,
+  risk: "MEDIUM",
+  requiredPermission: MAINTAIN_PERMISSION as PermissionId,
+  allowedPages: "any",
+  confirmation: { kind: "not-required", justification: MEDIUM_JUSTIFICATION },
+  changesState: true,
+  audit: { params: [{ path: "/applicationId", mode: "plain" }] },
+  resource,
+  executorId: ROTATE_KEY_EXECUTOR_ID as ExecutorId,
+});
+
 /** The failure codes of the executors (short, fixed). */
-export type ApplicationFailureCode = "invalid_application" | "not_found" | "limit_reached" | "id_refused" | "store_unavailable";
+export type ApplicationFailureCode = "invalid_application" | "not_found" | "limit_reached" | "id_refused" | "store_unavailable" | "routing_locked" | "registry_not_managed";
 
 /** The host's own record of what the executors received (never reachable from an AI session). */
 export interface ApplicationTrustedHandle {
@@ -78,6 +96,8 @@ export interface ApplicationCapabilityDeps {
   readonly store: ApplicationStore;
   /** The host-trusted registry catalog whose keys an application may name. */
   readonly catalog: RegistryCatalog;
+  /** Runtime key source (default: 16 random bytes). Injectable for tests; the keys never appear in an audit record, a parameter or a log. */
+  readonly newKey?: () => string;
 }
 
 const MAX_RECORDED = 100;
@@ -85,6 +105,7 @@ const failure = (code: ApplicationFailureCode) => ({ status: "failure" as const,
 
 export function createApplicationExecutors(deps: ApplicationCapabilityDeps): { readonly executors: readonly ActionExecutor[]; readonly trusted: ApplicationTrustedHandle } {
   const { store, catalog } = deps;
+  const newKey = deps.newKey ?? (() => generateRuntimeKey());
   const received = new Map<string, unknown[]>();
   let total = 0;
   const record = (actionId: string, params: unknown): void => {
@@ -106,10 +127,11 @@ export function createApplicationExecutors(deps: ApplicationCapabilityDeps): { r
       const checked = validateApplicationConfig(candidate, registryIdsOf(catalog));
       if (!checked.ok) return failure("invalid_application");
       try {
-        const outcome = await store.save(scope, applicationId, checked.config);
+        const outcome = await store.save(scope, applicationId, checked.config, newKey());
         switch (outcome) {
           case "created": case "updated": return { status: "success", affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
           case "limit_reached": return failure("limit_reached");
+          case "routing_locked": return failure("routing_locked");
           case "registry_switch": return failure("invalid_application");
           default: return failure("id_refused");
         }
@@ -132,15 +154,30 @@ export function createApplicationExecutors(deps: ApplicationCapabilityDeps): { r
     },
   });
 
+  const rotate = defineExecutor<RotateKeyInput>({
+    id: ROTATE_KEY_EXECUTOR_ID,
+    run: async (call) => {
+      record(ROTATE_KEY_ACTION_ID, call.params);
+      const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
+      const { applicationId } = call.params;
+      if (!isApplicationId(applicationId)) return failure("id_refused");
+      try {
+        const outcome = await store.rotateRuntimeKey(scope, applicationId, newKey());
+        if (outcome === "rotated") return { status: "success", affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+        return failure(outcome === "not_found" ? "not_found" : outcome === "registry_not_managed" ? "registry_not_managed" : "id_refused");
+      } catch { return failure("store_unavailable"); }
+    },
+  });
+
   const trusted: ApplicationTrustedHandle = Object.freeze({
     receivedCalls: (actionId: string) => Object.freeze([...(received.get(actionId) ?? [])]),
     executorCalls: (actionId?: string) => (actionId === undefined ? total : (received.get(actionId)?.length ?? 0)),
   });
-  return { executors: Object.freeze([save, enable]), trusted };
+  return { executors: Object.freeze([save, enable, rotate]), trusted };
 }
 
 /** The host extension that adds both capabilities and their executors. Each is still OFF unless `DAP_ENABLED_ACTIONS` lists it (default deny). */
 export function createApplicationExtension(deps: ApplicationCapabilityDeps): { readonly extension: HostExtension; readonly trusted: ApplicationTrustedHandle } {
   const { executors, trusted } = createApplicationExecutors(deps);
-  return { extension: Object.freeze({ definitions: Object.freeze([saveStudioApplication, setStudioApplicationEnabled]), executors }), trusted };
+  return { extension: Object.freeze({ definitions: Object.freeze([saveStudioApplication, setStudioApplicationEnabled, rotateStudioRuntimeKey]), executors }), trusted };
 }

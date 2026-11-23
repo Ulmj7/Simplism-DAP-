@@ -10,7 +10,7 @@ import { createRegistryResolver, managedRegistryData } from "./registry-resolver
 const TENANT_A = "1111aaaa-2222-4333-8444-5555bbbb5555";
 const TENANT_B = "2222bbbb-3333-4444-8555-6666cccc6666";
 const APP = "app-0000000000a1";
-const record = (registryId: string, id = APP): ApplicationRecord => ({ id, name: "App", origin: "http://127.0.0.1:5173", allowedOrigins: ["http://127.0.0.1:5173"], environment: "development", registryId, enabled: true, createdAt: "x", updatedAt: "x" });
+const record = (registryId: string, id = APP): ApplicationRecord => ({ id, name: "App", origin: "http://127.0.0.1:5173", allowedOrigins: ["http://127.0.0.1:5173"], environment: "development", registryId, routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 }, enabled: true, createdAt: "x", updatedAt: "x" });
 const registration = (over: Record<string, unknown> = {}) => ({ targetId: "orders.submit", route: "orders", page: "/#/orders", role: "button" as const, label: "Submit", description: "Submits the order", operations: ["highlight", "click"] as const, privacy: "public" as const, ...over });
 
 async function setup() {

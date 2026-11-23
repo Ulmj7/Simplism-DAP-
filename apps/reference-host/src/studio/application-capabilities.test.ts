@@ -26,7 +26,7 @@ describe("the two capabilities", () => {
     }
     expect(saveStudioApplication.id).toBe("saveStudioApplication");
     expect(setStudioApplicationEnabled.id).toBe("setStudioApplicationEnabled");
-    expect(APPLICATION_ACTION_IDS).toEqual(["saveStudioApplication", "setStudioApplicationEnabled"]);
+    expect(APPLICATION_ACTION_IDS).toEqual(["saveStudioApplication", "setStudioApplicationEnabled", "rotateStudioRuntimeKey"]);
     expect(SAVE_APPLICATION_ACTION_ID).toBe("saveStudioApplication");
     expect(ENABLE_APPLICATION_ACTION_ID).toBe("setStudioApplicationEnabled");
   });
@@ -81,8 +81,8 @@ describe("the extension", () => {
   it("is exactly { definitions, executors } with both capabilities, frozen, and a trusted handle that has run nothing", () => {
     const { extension, trusted } = createApplicationExtension(deps());
     expect(Object.keys(extension).sort()).toEqual(["definitions", "executors"]);
-    expect(extension.definitions.map((d) => d.id)).toEqual(["saveStudioApplication", "setStudioApplicationEnabled"]);
-    expect(extension.executors.map((e) => e.id)).toEqual([SAVE_APPLICATION_EXECUTOR_ID, ENABLE_APPLICATION_EXECUTOR_ID]);
+    expect(extension.definitions.map((d) => d.id)).toEqual(["saveStudioApplication", "setStudioApplicationEnabled", "rotateStudioRuntimeKey"]);
+    expect(extension.executors.map((e) => e.id)).toEqual([SAVE_APPLICATION_EXECUTOR_ID, ENABLE_APPLICATION_EXECUTOR_ID, "ex.studio-rotate-runtime-key"]);
     expect(Object.isFrozen(extension)).toBe(true);
     expect(trusted.executorCalls()).toBe(0);
     expect(trusted.receivedCalls("saveStudioApplication")).toEqual([]);
