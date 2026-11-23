@@ -5,7 +5,7 @@ The Chromium extension lets a user run published Studio guides on a site they en
 ## Install locally
 
 1. From the repository root, use the Node version in `.nvmrc`, run `npm ci`, then run `npm run build:extension`.
-2. Open `chrome://extensions` in a current Chrome or Chromium browser. Turn on **Developer mode**, choose **Load unpacked**, and select `apps/browser-extension/dist`, the folder containing the generated `manifest.json`.
+2. Open `chrome://extensions` in Chrome or Chromium 116 or later. Turn on **Developer mode**, choose **Load unpacked**, and select `apps/browser-extension/dist`, the folder containing the generated `manifest.json`.
 3. Open the browser's Extensions menu and pin **Simplism**. After rebuilding locally, use the extension card's reload button and reload the application tab. [Chrome's unpacked installation instructions](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked)
 
 ## Enable an application
@@ -29,6 +29,10 @@ If a page already integrates the SDK directly, its runtime owns the page. Use th
 The Runtime key is a public application identifier. Store only public guide text, control metadata, and expected check values. The Runtime API serves published guides for that application, with the same public delivery rules as the direct SDK. Private application data, credentials, and per-user authorization belong in the host application. See the [Runtime SDK's delivery model](runtime-sdk.md).
 
 A missing guide control or failed verification stops progress. Check that the page is on the expected route and its public `data-ai-id` marker is unique and present. When guides are unavailable, check the exact allowed origin in Studio, Runtime access, the Application ID and Runtime key, the API origin, and the page's CSP. If Chrome withholds access, reopen the toolbar popup from the target page and check that site's permission.
+
+## Validate the extension build
+
+Run `npm run test:extension` for binding and worker tests. Run `npm run verify:extension` after building to check the manifest and bundle boundaries. Site bindings persist in the browser profile, including after extension restart. Disabling a binding stops playback and leaves its optional permission available for re-enabling.
 
 ## Run unpacked acceptance
 

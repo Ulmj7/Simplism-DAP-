@@ -44,7 +44,10 @@
     "verify:sdk-package": "node scripts/verify-runtime-sdk.mjs",
     "build:sdk": "tsc -b apps/reference-web && vite build --config apps/reference-web/vite.config.ts --mode sdk",
     "build:embed": "vite build --config apps/reference-web/vite.config.ts --mode embed",
-    "acceptance:studio-v1b-host": "tsc -b && npm run build:embed && node scripts/studio-v1b-host-acceptance.mjs --managed"
+    "acceptance:studio-v1b-host": "tsc -b && npm run build:embed && node scripts/studio-v1b-host-acceptance.mjs --managed",
+    "build:extension": "npm run build:sdk && tsc -p apps/browser-extension && node scripts/build-browser-extension.mjs",
+    "test:extension": "vitest run --project unit apps/browser-extension",
+    "verify:extension": "node scripts/verify-browser-extension.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
