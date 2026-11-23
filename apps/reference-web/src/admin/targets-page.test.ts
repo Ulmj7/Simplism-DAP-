@@ -9,7 +9,7 @@ import type { StudioCommand, StudioReply } from "./studio-client.js";
 import type { TargetDetail, TargetView } from "./targets.js";
 
 const stamp = "2026-11-23T10:00:00.000Z";
-const APP: ApplicationView = { id: "app-0123456789ab", name: "Profile", origin: "http://127.0.0.1:5188", allowedOrigins: ["http://127.0.0.1:5188"], environment: "test", registryId: "studio-managed", enabled: true, updatedAt: stamp, source: "studio-managed" } as ApplicationView;
+const APP: ApplicationView = { id: "app-0123456789ab", name: "Profile", origin: "http://127.0.0.1:5188", allowedOrigins: ["http://127.0.0.1:5188"], environment: "test", registryId: "studio-managed", enabled: true, updatedAt: stamp, source: "studio-managed", routing: "history", runtimeAccess: true, runtimeKey: null, counts: { targets: 3, drafts: 1, published: 1 } };
 const BUILT: ApplicationView = { ...APP, id: "app-0123456789ac", name: "Reference", registryId: "reference", source: "built-in" } as ApplicationView;
 const OFF: ApplicationView = { ...APP, id: "app-0123456789ad", name: "Paused", enabled: false } as ApplicationView;
 const target = (over: Partial<TargetView> = {}): TargetView => ({

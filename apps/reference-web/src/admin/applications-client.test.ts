@@ -9,7 +9,7 @@ const application = {
   id: appId, name: "Orders application", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185", "http://localhost:5185"],
   environment: "test", registryId: "fixture-b", source: "built-in", enabled: true, updatedAt: "2026-11-23T10:00:00.000Z", routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 },
 };
-const body = { name: application.name, origin: application.origin, allowedOrigins: application.allowedOrigins, environment: "test" as const, registryId: "fixture-b" };
+const body = { name: application.name, origin: application.origin, allowedOrigins: application.allowedOrigins, environment: "test" as const, registryId: "fixture-b", routing: "hash" as const, runtimeAccess: false };
 const list = { applications: [application], registries: [{ id: "reference", label: "Reference application", source: "built-in" }, { id: "fixture-b", label: "Fixture application B", source: "built-in" }] };
 const element = { id: "orders.submit", route: "orders", role: "button", label: "Submit order", description: "Submits the order", operations: ["highlight", "click"], privacy: "public" };
 const registry = { routes: ["home", "orders"], elements: [element], postconditionNames: ["order.submitted"], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" };
@@ -41,7 +41,7 @@ describe("applications requests", () => {
     ]);
     for (const [, init] of fetch.mock.calls) expect(init).toMatchObject({ credentials: "same-origin", redirect: "error", headers: { "X-Demo-Role": "maintainer", accept: "application/json" } });
     expect(JSON.parse(fetch.mock.calls[2]![1].body as string)).toEqual(body);
-    expect(Object.keys(JSON.parse(fetch.mock.calls[2]![1].body as string))).toEqual(["name", "origin", "allowedOrigins", "environment", "registryId"]);
+    expect(Object.keys(JSON.parse(fetch.mock.calls[2]![1].body as string))).toEqual(["name", "origin", "allowedOrigins", "environment", "registryId", "routing", "runtimeAccess"]);
     expect(JSON.parse(fetch.mock.calls[3]![1].body as string)).toEqual(body);
     expect(JSON.parse(fetch.mock.calls[4]![1].body as string)).toEqual({ enabled: false });
     expect(fetch.mock.calls[0]![1]).not.toHaveProperty("body");
