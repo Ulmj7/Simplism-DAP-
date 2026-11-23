@@ -28,6 +28,7 @@ import { createRegistryCatalog } from "../apps/reference-host/dist/studio/regist
 import { createAgentBrowserAdapter } from "../packages/browser-runtime/dist/index.js";
 import { localCli } from "../packages/browser-runtime/dist/cli.js";
 import { fixtureB } from "../tests/fixtures/studio-app/registry.mjs";
+import { startHistoryApp } from "../tests/fixtures/studio-app/history-app.mjs";
 import { startFixtureApp } from "../tests/fixtures/studio-app/server.mjs";
 
 const run = promisify(execFile);
@@ -37,8 +38,9 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const cli = fileURLToPath(new URL("../vendor/agent-browser/cli/target/release/agent-browser", import.meta.url));
 const config = fileURLToPath(new URL("../packages/browser-runtime/agent-browser.json", import.meta.url));
 const managed = process.argv.includes("--managed");
-const v1bPorts = managed || process.argv.includes("--v1b-ports");
-const ports = v1bPorts ? [8795, 5186, 5187] : [8794, 5184, 5185];
+const completion = process.argv.includes("--completion");
+const v1bPorts = completion || managed || process.argv.includes("--v1b-ports");
+const ports = completion ? [8795, 5186, 5187, 5188] : v1bPorts ? [8795, 5186, 5187] : [8794, 5184, 5185];
 const hostOrigin = `http://127.0.0.1:${ports[0]}`;
 export const originA = `http://127.0.0.1:${ports[1]}`;
 export const originB = `http://127.0.0.1:${ports[2]}`;
@@ -85,6 +87,8 @@ const ownedSessions = new Set();
 const ownedProcesses = new Map();
 let vite;
 let fixture;
+let historyFixture;
+export const historyApp = () => historyFixture;
 let host;
 let app;
 let pool;
@@ -173,7 +177,7 @@ async function startHost() {
   const requestStartedAt = new WeakMap();
   app.addHook("onRequest", async (request) => { requestStartedAt.set(request, performance.now()); });
   app.addHook("onSend", async (request, reply, payload) => {
-    const response = request.url === "/api/studio/browser" && typeof payload === "string" ? JSON.parse(payload) : undefined;
+    const response = (request.url === "/api/studio/browser" || (completion && request.url.startsWith("/api/admin/walkthroughs/"))) && typeof payload === "string" ? JSON.parse(payload) : undefined;
     requests.push({ method: request.method, path: request.url, role: request.headers["x-demo-role"],
       body: request.body, response, status: reply.statusCode, ms: elapsed(requestStartedAt.get(request)) });
     return payload;
@@ -242,13 +246,14 @@ async function finalManagedStep(name, operation) {
 export async function runStudioAcceptance(acceptance) {
   let failure;
   try {
-    await step("0 start isolated host, Vite and fixture B", async () => {
+    await step(completion ? "0 start isolated host, Vite and fixtures B/C" : "0 start isolated host, Vite and fixture B", async () => {
       for (const port of ports) assert.equal(await portOpen(port), false, `Port ${port} is already in use`);
       await startHost();
-      fixture = await startFixtureApp({ port: ports[2], name: "Second application", ...(managed ? {
+      fixture = await startFixtureApp({ port: ports[2], name: "Second application", ...((managed || completion) ? {
         embedScriptPath: fileURLToPath(new URL("../apps/reference-web/dist-embed/dap-embed.js", import.meta.url)), dapOrigin: originA, extras: true,
       } : {}) });
       assert.equal(fixture.origin, originB);
+      if (completion) historyFixture = await startHistoryApp({ port: ports[3], embedScriptPath: fileURLToPath(new URL("../apps/reference-web/dist-embed/dap-embed.js", import.meta.url)), dapOrigin: originA });
       vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "apps/reference-web", "--port", String(ports[1]), "--strictPort"], {
         cwd: root, env: { ...browserEnv, DAP_HTTP_PORT: String(ports[0]) }, stdio: ["ignore", "ignore", "inherit"],
       });
@@ -265,7 +270,7 @@ export async function runStudioAcceptance(acceptance) {
       await (managed ? finalManagedStep : step)("cleanup compare sessions, PIDs and ports", async () => {
         const tracking = trackProcesses().catch(error => { failure ??= error; });
         await tracking;
-        const results = await Promise.allSettled([app?.close(), fixture?.close()]);
+        const results = await Promise.allSettled([app?.close(), fixture?.close(), historyFixture?.close()]);
         results.push(...await Promise.allSettled([host?.close(), pool?.end()]));
         for (const session of await inventory()) {
           if (ownedSessions.has(session)) await cliJson(["--session", session, "close"]);
@@ -295,7 +300,7 @@ export async function runStudioAcceptance(acceptance) {
         if (failed) throw failed.reason;
         for (const port of ports) assert.equal(await portOpen(port), false, `Port ${port} is still listening`);
         assert.ok(ownedSessions.size === 0 || ownedProcesses.size > 1, "The Chromium process tree must be observed");
-        return `sessions ${baseline.size} → ${sessions.size}; ${ownedSessions.size} owned sessions closed; ${ownedProcesses.size} tracked live PIDs → 0; 0 of 3 ports listening`;
+        return `sessions ${baseline.size} → ${sessions.size}; ${ownedSessions.size} owned sessions closed; ${ownedProcesses.size} tracked live PIDs → 0; 0 of ${ports.length} ports listening`;
       });
     } catch (error) {
       failure ??= error;
