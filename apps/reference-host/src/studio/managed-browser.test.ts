@@ -627,19 +627,21 @@ describe("capture returns the STORED semantic role, the inspector keeps the live
     const captured = await h.command({ action: "capture", sessionId: "session-1", applicationId: MANAGED, ref: "@e1" });
     expect(captured.body).toEqual({ targetId: "orders.thing", route: "orders", name, role: stored, operations });
   });
-  it("register -> refresh -> capture end to end for a search box and a combobox: the candidate updated in place also carries the browser role while capture returns the stored one", async () => {
+  it("registered searchboxes and comboboxes remain usable when the workspace reopens", async () => {
     const h = await ready({ controls: [control("Find orders", "searchbox", "orders.search"), control("Status", "combobox", "orders.status")] });
     const a = await h.command(registerBody({ ref: "@e1", targetId: "orders.search", operations: ["highlight", "input"], label: "Find orders", description: "Searches." }));
     expect(a.body).toMatchObject({ target: { role: "textbox" } });
     const b = await h.command(registerBody({ ref: "@e2", targetId: "orders.status", operations: ["highlight", "click"], label: "Status", description: "Filters." }));
     expect(b.body).toMatchObject({ target: { role: "select" } });
-    const capture = (ref: string) => h.command({ action: "capture", sessionId: "session-1", applicationId: MANAGED, ref });
+    const capture = (ref: string, sessionId = "session-1") => h.command({ action: "capture", sessionId, applicationId: MANAGED, ref });
     expect((await capture("@e1")).body).toMatchObject({ role: "textbox", name: "Find orders" });
     expect((await capture("@e2")).body).toMatchObject({ role: "select", name: "Status" });
-    // reopen: a brand new refresh (a reopened editor) lists them trusted with the browser role and capture still answers the stored role
-    const again = await h.command(refresh());
+    expect((await h.command({ action: "disconnect", sessionId: "session-1", applicationId: MANAGED })).body).toEqual({ closed: true });
+    const reopened = await h.connect();
+    expect(reopened).not.toBe("session-1");
+    const again = await h.command(refresh(MANAGED, reopened));
     expect((again.body.elements as { role: string; status: string }[]).map((e) => [e.role, e.status])).toEqual([["searchbox", "trusted"], ["combobox", "trusted"]]);
-    expect((await capture("@e1")).body).toMatchObject({ role: "textbox" });
-    expect((await capture("@e2")).body).toMatchObject({ role: "select" });
+    expect((await capture("@e1", reopened)).body).toMatchObject({ role: "textbox" });
+    expect((await capture("@e2", reopened)).body).toMatchObject({ role: "select" });
   });
 });
