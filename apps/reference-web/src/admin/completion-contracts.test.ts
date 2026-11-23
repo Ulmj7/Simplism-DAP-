@@ -141,11 +141,11 @@ describe("check and repair replies (session commands)", () => {
     for (const bad of [{ ...element, proposal: {} }, { ...element, operations: ["highlight"] }, { ref: "@e4", name: "Save", role: "link", route: "profile", status: "mismatched" }]) expect(parseStudioReply("refresh", { ...snapshot, elements: [bad] })).toBeNull();
   });
   it("typed errors: the repair codes, REPAIR_INCOMPATIBLE with at most 20 problems, nothing else", () => {
-    for (const code of ["REPAIR_ROUTE_MISMATCH", "MARKER_IN_USE", "TARGET_NOT_FOUND"]) expect(parseStudioError(409, { error: code })).toEqual({ code });
+    for (const code of ["REPAIR_ROUTE_MISMATCH", "MARKER_IN_USE", "TARGET_NOT_FOUND", "REPAIR_UNCHANGED"]) expect(parseStudioError(409, { error: code })).toEqual({ code });
     expect(parseStudioError(409, { error: "REPAIR_INCOMPATIBLE" })).toEqual({ code: "REPAIR_INCOMPATIBLE" });
     expect(parseStudioError(409, { error: "REPAIR_INCOMPATIBLE", problems: ["a", "b"] })).toEqual({ code: "REPAIR_INCOMPATIBLE", issues: ["a", "b"] });
     for (const bad of [[409, { error: "REPAIR_INCOMPATIBLE", problems: Array.from({ length: 21 }, () => "p") }], [409, { error: "REPAIR_INCOMPATIBLE", problems: ["x".repeat(201)] }], [422, { error: "REPAIR_INCOMPATIBLE" }],
-      [409, { error: "REPAIR_INCOMPATIBLE", problems: ["a"], extra: 1 }], [409, { error: "MARKER_IN_USE", problems: ["a"] }], [409, { error: "SOMETHING_ELSE" }]] as const) expect(parseStudioError(bad[0], bad[1])).toBeNull();
+      [409, { error: "REPAIR_INCOMPATIBLE", problems: ["a"], extra: 1 }], [409, { error: "MARKER_IN_USE", problems: ["a"] }], [503, { error: "REPAIR_UNCHANGED" }], [409, { error: "REPAIR_UNCHANGED", message: "extra" }], [409, { error: "SOMETHING_ELSE" }]] as const) expect(parseStudioError(bad[0], bad[1])).toBeNull();
   });
 });
 

@@ -70,6 +70,7 @@ export const failures: Readonly<Record<string, string>> = Object.freeze({
   INVALID_TARGET: "The target was not registered. Fix these problems and try again.",
   REPAIR_ROUTE_MISMATCH: "That element is on another page than the target. A target keeps its page: open the target's page, inspect it and choose an element there.",
   MARKER_IN_USE: "That marker already belongs to another target of this application. Choose another element.",
+  REPAIR_UNCHANGED: "The replacement matches the current target. Change the repair or cancel.",
   REPAIR_INCOMPATIBLE: "The repair was not applied: a workflow that uses this target would no longer be valid. Review these problems.",
   TARGET_NOT_FOUND: "This target no longer exists. Reload the target list.",
 });
@@ -86,9 +87,9 @@ const reconnectBusy = "A browser session is already active and cannot be taken o
 const unavailable = failures.BROWSER_UNAVAILABLE!;
 // Failures that leave a usable session. The first group means the page, the marker or the route changed under the refs, so the list goes; the second keeps the list.
 const STALE = new Set(["REF_NOT_FOUND", "TARGET_NOT_REGISTRABLE", "TARGET_ID_MISMATCH", "TARGET_EXISTS", "ROUTE_MISMATCH"]);
-const SESSION_KEPT = new Set([...STALE, "TARGET_UNAVAILABLE", "REGISTRY_FULL", "REGISTRY_NOT_MANAGED", "INVALID_TARGET", "REPAIR_ROUTE_MISMATCH", "MARKER_IN_USE", "REPAIR_INCOMPATIBLE", "TARGET_NOT_FOUND"]);
+const SESSION_KEPT = new Set([...STALE, "TARGET_UNAVAILABLE", "REGISTRY_FULL", "REGISTRY_NOT_MANAGED", "INVALID_TARGET", "REPAIR_ROUTE_MISMATCH", "MARKER_IN_USE", "REPAIR_INCOMPATIBLE", "REPAIR_UNCHANGED", "TARGET_NOT_FOUND"]);
 // The confirmation stays open (so it can be corrected) only for these.
-const PANEL_KEPT = new Set(["INVALID_TARGET", "REGISTRY_FULL", "REPAIR_INCOMPATIBLE"]);
+const PANEL_KEPT = new Set(["INVALID_TARGET", "REGISTRY_FULL", "REPAIR_INCOMPATIBLE", "REPAIR_UNCHANGED"]);
 const statusText: Readonly<Record<WorkspaceState, string>> = Object.freeze({
   DISCONNECTED: "Disconnected", CONNECTING: "Connecting…", CONNECTED: "Connected", INSPECTING: "Inspecting…", ERROR: "Error",
 });

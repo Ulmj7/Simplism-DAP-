@@ -243,7 +243,7 @@ const STUDIO_ERRORS = new Set([
   "TARGET_UNAVAILABLE", "APPLICATION_DISABLED", "APPLICATION_MISMATCH", "TARGET_NOT_REGISTRABLE", "TARGET_ID_MISMATCH",
   "TARGET_EXISTS", "ROUTE_MISMATCH", "REGISTRY_NOT_MANAGED", "REGISTRY_FULL", "BROWSER_UNAVAILABLE",
   "BROWSER_NOT_STARTED", "BROWSER_TIMEOUT", "SNAPSHOT_FAILED", "HIGHLIGHT_FAILED", "NAVIGATION_FAILED", "DOMAIN_BLOCKED",
-  "CLOSE_FAILED", "INVALID_BROWSER_OUTPUT", "REPAIR_ROUTE_MISMATCH", "MARKER_IN_USE", "TARGET_NOT_FOUND",
+  "CLOSE_FAILED", "INVALID_BROWSER_OUTPUT", "REPAIR_ROUTE_MISMATCH", "MARKER_IN_USE", "REPAIR_UNCHANGED", "TARGET_NOT_FOUND",
 ]);
 
 export function parseStudioError(status: number, value: unknown): { code: string; issues?: readonly string[] } | null {
@@ -253,6 +253,7 @@ export function parseStudioError(status: number, value: unknown): { code: string
       || value.issues.length > LIMITS.issues || !value.issues.every(issue => bounded(issue, LIMITS.issueChars))) return null;
     return { code: value.error, issues: [...value.issues] };
   }
+  if (value.error === "REPAIR_UNCHANGED" && status !== 409) return null;
   if (value.error === "REPAIR_INCOMPATIBLE") {
     // 409 with the problems that make the repair incompatible (at most 20 fixed phrases), or with none.
     if (status !== 409 || !(exact(value, ["error"]) || (exact(value, ["error", "problems"]) && Array.isArray(value.problems) && value.problems.length <= LIMITS.problems && value.problems.every(problem => bounded(problem, LIMITS.issueChars))))) return null;
