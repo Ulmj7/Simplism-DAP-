@@ -1,12 +1,13 @@
 // Second-application fixture (Studio V1A, D9): a tiny, dependency-free, hash-routed page served from loopback.
 // It stands in for "application B" so tests and the real-browser probe can prove that one application's
 // navigation policy is not another's. It is test infrastructure, never product code, and holds no secrets.
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 
 const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
 const maxDelayMs = 30_000;
 
-function page(config) {
+function page(config, dapOrigin, extras) {
   // `<` is escaped so no configured string can close the script element.
   const json = JSON.stringify(config).replaceAll("<", "\\u003c");
   return `<!doctype html>
@@ -29,7 +30,12 @@ function page(config) {
   <label for="order-note">Order note</label>
   <input id="order-note" type="text" data-ai-id="orders.note">
   <button type="button" data-ai-id="orders.submit">Submit order</button>
-  <p id="order-status" role="status"></p>
+  <p id="order-status" role="status"></p>${extras ? `
+  <button type="button" data-ai-id="orders.nameless"></button>
+  <button type="button">Cancel</button>
+  <label>Password <input type="password" data-ai-id="orders.secret"></label>
+  <button type="button" data-ai-id="orders.private" data-ai-private>Private action</button>
+  <button type="button" data-ai-id="admin.reset">Reset</button>` : ""}
 </main>
 <main data-route="dense" hidden>
   <h2>Many approved links</h2>
@@ -45,7 +51,8 @@ function page(config) {
   var timer;
   var dense = document.querySelector('[data-route="dense"]');
   var ordersLink = document.querySelector('[data-ai-id="nav.orders"]');
-  for (var repeat = 0; repeat < 70; repeat += 1) dense.appendChild(ordersLink.cloneNode(true));
+  for (var repeat = 0; repeat < 70; repeat += 1) dense.appendChild(ordersLink.cloneNode(true));${dapOrigin ? `
+  for (var clone of dense.querySelectorAll("[data-ai-id]")) clone.removeAttribute("data-ai-id");` : ""}
   function show(kind) {
     var sections = document.querySelectorAll("[data-route]");
     for (var index = 0; index < sections.length; index += 1) sections[index].hidden = sections[index].dataset.route !== kind;
@@ -68,7 +75,8 @@ function page(config) {
   addEventListener("hashchange", route);
   route();
 })();
-</script>
+</script>${dapOrigin ? `
+<script src="/dap-embed.js" data-dap-origin="${dapOrigin.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;")}"></script>` : ""}
 </body>
 </html>
 `;
@@ -94,24 +102,34 @@ function validOrigin(value) {
  * @param {string} [options.name] shown in the page heading to tell two instances apart
  * @param {string} [options.leaveOrigin] normalized origin that `/#/leave-origin` redirects to
  * @param {number} [options.redirectDelayMs] delay before a leave route redirects (default 800)
+ * @param {string} [options.embedScriptPath] local built embed, read once at fixture startup
+ * @param {string} [options.dapOrigin] exact Studio origin for the window handshake
+ * @param {boolean} [options.extras] include controls for managed-registration demonstrations
  * @returns {Promise<{ origin: string, port: number, requestHosts: () => string[], close: () => Promise<void> }>}
  */
-export async function startFixtureApp({ host = "127.0.0.1", port = 0, name = "B", leaveOrigin, redirectDelayMs = 800 } = {}) {
+export async function startFixtureApp({ host = "127.0.0.1", port = 0, name = "B", leaveOrigin, redirectDelayMs = 800, embedScriptPath, dapOrigin, extras = false } = {}) {
   if (!loopbackHosts.has(host)) throw new TypeError("The fixture application only binds to loopback.");
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new TypeError("The fixture port must be 0 to 65535.");
   if (typeof name !== "string" || !/^[A-Za-z0-9 _-]{1,40}$/u.test(name)) throw new TypeError("The fixture name must be 1 to 40 plain characters.");
   if (leaveOrigin !== undefined && !validOrigin(leaveOrigin)) throw new TypeError("leaveOrigin must be a normalized http or https origin.");
   if (!Number.isInteger(redirectDelayMs) || redirectDelayMs < 0 || redirectDelayMs > maxDelayMs) throw new TypeError("redirectDelayMs must be 0 to 30000.");
 
+  if ((embedScriptPath === undefined) !== (dapOrigin === undefined) || (dapOrigin !== undefined && !validOrigin(dapOrigin))) {
+    throw new TypeError("Set both embedScriptPath and a normalized http or https dapOrigin.");
+  }
+  const embed = embedScriptPath === undefined ? undefined : await readFile(embedScriptPath);
   const seen = [];
   const server = createServer((request, response) => {
     seen.push(String(request.headers.host ?? ""));
     const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" };
     const path = (request.url ?? "").split("?", 1)[0];
-    if (request.method !== "GET" && request.method !== "HEAD") {
+    if (path === "/dap-embed.js" && embed !== undefined) {
+      if (request.method === "GET") response.writeHead(200, { ...headers, "content-type": "text/javascript; charset=utf-8" }).end(embed);
+      else response.writeHead(405, { ...headers, allow: "GET" }).end();
+    } else if (request.method !== "GET" && request.method !== "HEAD") {
       response.writeHead(405, { ...headers, allow: "GET, HEAD" }).end();
     } else if (path === "/" || path === "/index.html") {
-      const body = page({ name, leaveOrigin: leaveOrigin ?? null, leaveHost: aliasOrigin(request.headers.host), redirectDelayMs });
+      const body = page({ name, leaveOrigin: leaveOrigin ?? null, leaveHost: aliasOrigin(request.headers.host), redirectDelayMs }, dapOrigin, extras);
       response.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(body) });
       response.end(request.method === "HEAD" ? undefined : body);
     } else if (path === "/favicon.ico") {

@@ -1,5 +1,7 @@
 // The second-application fixture (tests/fixtures/studio-app) is test infrastructure: prove it serves what the
 // probe and later Studio tests rely on, stays on loopback, closes cleanly and carries nothing sensitive.
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 import { request } from "node:http";
 import { JSDOM } from "jsdom";
@@ -225,4 +227,26 @@ describe("fixture application registry data", () => {
       typeof value !== "object" || value === null || (Object.isFrozen(value) && Object.values(value).every(frozen));
     expect(frozen(fixtureB)).toBe(true);
   });
+});
+
+it("serves only an explicitly configured embed and keeps optional registration fixtures out of the default page", async () => {
+  const defaultApp = await start();
+  const defaultPage = await text(defaultApp.origin);
+  expect(defaultPage.body).not.toContain("/dap-embed.js");
+  expect(defaultPage.body).not.toContain("orders.secret");
+  expect((await fetch(defaultApp.origin + "/dap-embed.js")).status).toBe(404);
+  const dapOrigin = "http://127.0.0.1:5186";
+  const source = new URL("../fixtures/studio-app/server.mjs", import.meta.url);
+  const app = await start({ dapOrigin, embedScriptPath: fileURLToPath(source), extras: true });
+  const page = await text(app.origin);
+  expect(page.body).toContain(`<script src="/dap-embed.js" data-dap-origin="${dapOrigin}"></script>`);
+  expect(page.body).toContain('type="password" data-ai-id="orders.secret"');
+  expect(page.body).toContain('data-ai-id="orders.private" data-ai-private');
+  expect(page.body).toContain('data-ai-id="admin.reset"');
+  const script = await text(app.origin + "/dap-embed.js");
+  expect(script.response.headers.get("cache-control")).toBe("no-store");
+  expect(script.response.headers.get("content-type")).toContain("text/javascript");
+  expect(script.body).toBe(await readFile(source, "utf8"));
+  for (const method of ["HEAD", "POST"]) expect((await fetch(app.origin + "/dap-embed.js", { method })).status).toBe(405);
+  await expect(start({ dapOrigin })).rejects.toThrow(/both embedScriptPath/);
 });

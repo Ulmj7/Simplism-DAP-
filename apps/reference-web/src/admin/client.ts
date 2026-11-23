@@ -1,3 +1,5 @@
+import { parseBundle } from "../embed/protocol.js";
+import type { ManagedBundle } from "../embed/protocol.js";
 import { MAX_DESCRIPTION as MAX_TEXT, MAX_LABEL as MAX_TITLE } from "@dap/walkthrough";
 import type { WalkthroughDef } from "@dap/walkthrough";
 import { readReply } from "../help/client.js";
@@ -20,7 +22,7 @@ import type { StudioCommand, StudioReply } from "./studio-client.js";
 export interface GuideRecord { id: string; status: GuideStatus; applicationId: string | null; definition: WalkthroughDef }
 export type ApplicationFailureCode = "APPLICATION_NOT_FOUND" | "APPLICATION_DISABLED" | "APPLICATION_MISMATCH" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED";
 /** `browser-error` carries the host's closed `{error: CODE}`; only a 422 INVALID_TARGET adds `issues` (at most 20 fixed phrases of at most 200 characters). */
-export type AdminResult<T> = { kind: "ok"; value: T } | { kind: "denied" | "failed" | "oversize" | "published" | "limit" } | { kind: "invalid"; issues: readonly string[] }
+export type AdminResult<T> = { kind: "ok"; value: T } | { kind: "denied" | "failed" | "oversize" | "published" | "limit" | "not-found" } | { kind: "invalid"; issues: readonly string[] }
   | { kind: "browser-error"; code: string; issues?: readonly string[] } | { kind: "application"; code: ApplicationFailureCode };
 /** Metadata of a published guide of a Studio-managed application (its definition is delivered by the bundle route, a later step). */
 export interface ExternalGuide { id: string; title: string; description: string; application: { id: string; name: string; origin: string } }
@@ -39,6 +41,7 @@ export interface UsageSummary {
 export interface AdminClient {
   studio?(command: StudioCommand): Promise<AdminResult<StudioReply>>;
   analytics(): Promise<AdminResult<UsageSummary>>;
+  publishedCatalog(): Promise<AdminResult<{ walkthroughs: readonly WalkthroughDef[]; external: readonly ExternalGuide[] }>>;
   published(): Promise<AdminResult<readonly WalkthroughDef[]>>;
   list(): Promise<AdminResult<GuideList>>;
   get(id: string): Promise<AdminResult<GuideRecord>>;
@@ -53,6 +56,7 @@ export interface AdminClient {
   applicationRegistry(id: string): Promise<AdminResult<ApplicationRegistry>>;
   targets(applicationId: string): Promise<AdminResult<TargetList>>;
   setTargetStatus(applicationId: string, targetId: string, status: "active" | "disabled"): Promise<AdminResult<TargetView>>;
+  publishedBundle(id: string): Promise<AdminResult<ManagedBundle>>;
   externalGuides(): Promise<AdminResult<readonly ExternalGuide[]>>;
 }
 
@@ -163,6 +167,7 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
       }
       if (method === "GET" && (response.status === 401 || response.status === 403)) return { kind: "denied" };
       if (method !== "GET" && response.status === 413) return { kind: "oversize" };
+      if (response.status === 404 && url.startsWith("/api/walkthroughs/published/")) return { kind: "not-found" };
       if (response.status === 404 || response.status === 409) {
         const code = applicationFailure(await readReply(response, controller.signal, 512));
         if (code !== null) return { kind: "application", code };
@@ -189,6 +194,10 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
   return {
     studio: command => request(studioPath, value => parseStudioReply(command.action, value), "POST", { ...command }),
     analytics: () => request("/api/admin/analytics", analytics),
+    publishedCatalog: () => request("/api/walkthroughs/published", value => {
+      const guides = published(value); const entries = external(value);
+      return guides && entries ? { walkthroughs: guides, external: entries } : null;
+    }),
     published: () => request("/api/walkthroughs/published", published),
     list: () => request(ADMIN, list),
     get: id => authoredId(id) ? request(`${ADMIN}/${id}`, value => record(value, id)) : Promise.resolve(FAILED),
@@ -212,6 +221,10 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
     setTargetStatus: (id, targetId, wanted) => applicationId(id) && targetIdOf(targetId) && (wanted === "active" || wanted === "disabled")
       ? request(`${APPLICATIONS}/${id}/targets/${targetId}/status`, value => { const parsed = parseTargetView(value, targetId); return parsed?.status === wanted ? parsed : null; }, "POST", { status: wanted })
       : Promise.resolve(FAILED),
+    publishedBundle: id => authoredId(id) ? request(`/api/walkthroughs/published/${id}/bundle`, value => {
+      const parsed = parseBundle(value);
+      return parsed.ok && parsed.bundle.definition.id === id ? parsed.bundle : null;
+    }) : Promise.resolve(FAILED),
     externalGuides: () => request("/api/walkthroughs/published", external),
   };
 }

@@ -1,3 +1,4 @@
+import { applicationRunResult, applicationRunStatus, runInApplicationWindow } from "../application-window.js";
 import { createSemanticRegistry, MAX_DESCRIPTION as MAX_TEXT, MAX_LABEL as MAX_TITLE } from "@dap/walkthrough";
 import type { SemanticRegistry, WaitKind } from "@dap/walkthrough";
 import { copy } from "../../copy.js";
@@ -16,7 +17,7 @@ import type { AdminPageOptions } from "./shared.js";
 
 const c = copy.admin;
 /** What an application contributes to the editor: its targets, the checks it declares, and whether Preview can run it. */
-export interface RegistryData { registry: SemanticRegistry; postconditions: readonly string[]; previewable: boolean; previewMode: "in-app" | "application-window" }
+export interface RegistryData { registry: SemanticRegistry; postconditions: readonly string[]; previewable: boolean; pages?: Readonly<Record<string, string>>; previewMode: "in-app" | "application-window" }
 const EMPTY: RegistryData = { registry: createSemanticRegistry({ routes: [], elements: [] }), postconditions: [], previewable: false, previewMode: "in-app" };
 
 export function editorPage(options: AdminPageOptions) {
@@ -32,7 +33,7 @@ export function editorPage(options: AdminPageOptions) {
   async function registryFor(applicationId: string | undefined, legacy: boolean): Promise<RegistryData | AdminResult<never>> {
     if (applicationId === undefined) return legacy ? reference : EMPTY;
     const loaded = await client.applicationRegistry(applicationId);
-    return loaded.kind === "ok" ? { registry: loaded.value.registry, postconditions: loaded.value.postconditionNames, previewable: loaded.value.previewable, previewMode: loaded.value.previewMode } : loaded;
+    return loaded.kind === "ok" ? { registry: loaded.value.registry, postconditions: loaded.value.postconditionNames, previewable: loaded.value.previewable, previewMode: loaded.value.previewMode, pages: loaded.value.pages } : loaded;
   }
   const resumed = requested !== undefined && current?.id === requested && current.saving !== undefined;
   void Promise.all([client.list(), client.applications(), requested === undefined || resumed ? undefined : client.get(requested)]).then(async ([access, applications, loaded]) => {
@@ -76,9 +77,10 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   const { client, signal, preview, navigate, refresh } = options;
   const { draft } = session;
   // The registry belongs to the SELECTED application and is replaced when a new draft selects another one.
-  let { registry, postconditions, previewable, previewMode } = initial;
+  let { registry, postconditions, previewable, previewMode, pages } = initial;
   const save = button(c.save, true);
   const showPreview = button(c.preview);
+  let previewRunning = false;
   const publish = button(c.publish);
   const errors = h("ul", { id: "editor-problems", class: "error" });
   const publishHint = h("p", { id: "editor-publish-hint", class: "hint" }, c.saveBeforePublish);
@@ -217,11 +219,11 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
       hint.hidden = hint.textContent === "";
     }
     // Preview runs the reference application's own runtime, so only its registry can be previewed in this release.
-    const inAppPreview = previewable && previewMode === "in-app";
-    previewHint.textContent = previewMode === "application-window" ? c.application.windowPreviewPending : c.application.noPreview;
-    previewHint.hidden = inAppPreview || unassigned;
+    const canPreview = previewable && (previewMode === "in-app" || (registry.routes.length > 0 && applicationNamed(session.applicationId)?.enabled === true));
+    previewHint.textContent = previewMode === "application-window" ? "Add a route and select an enabled application to preview in its window." : c.application.noPreview;
+    previewHint.hidden = canPreview || unassigned;
     save.disabled = busy || !validation.ok || unassigned;
-    showPreview.disabled = busy || !validation.ok || !inAppPreview;
+    showPreview.disabled = busy || !validation.ok || !canPreview || previewRunning;
     publish.disabled = busy || !validation.ok || session.dirty || session.id === undefined;
     publishHint.hidden = !session.dirty && session.id !== undefined;
     return validation;
@@ -245,7 +247,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
       const loaded = await client.applicationRegistry(id);
       if (signal.aborted || session.applicationId !== id) return;
       if (loaded.kind === "ok") {
-        ({ registry, postconditionNames: postconditions, previewable, previewMode } = loaded.value);
+        ({ registry, postconditionNames: postconditions, previewable, previewMode, pages } = loaded.value);
         renderInspector(); update();
       } else {
         notice.textContent = c.application.registryFailed;
@@ -277,14 +279,14 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     const attempt = ++loads;
     if (id === "") delete session.applicationId; else session.applicationId = id;
     workspace?.setApplication(workspaceApplication());
-    ({ registry, postconditions, previewable, previewMode } = EMPTY);
+    ({ registry, postconditions, previewable, previewMode, pages } = EMPTY);
     changed();
     if (id === "") { stepControls(); update(); return; }
     setBusy(true); notice.textContent = c.application.loadingRegistry;
     const loaded = await client.applicationRegistry(id);
     if (signal.aborted || attempt !== loads) return;
     busy = false;
-    if (loaded.kind === "ok") ({ registry, postconditions, previewable, previewMode } = { registry: loaded.value.registry, postconditions: loaded.value.postconditionNames, previewable: loaded.value.previewable, previewMode: loaded.value.previewMode });
+    if (loaded.kind === "ok") ({ registry, postconditions, previewable, previewMode, pages } = { registry: loaded.value.registry, postconditions: loaded.value.postconditionNames, previewable: loaded.value.previewable, previewMode: loaded.value.previewMode, pages: loaded.value.pages });
     else {
       // A failed load leaves NO application selected (the selector shows its placeholder), so choosing the same application again is a real change and retries the load.
       delete session.applicationId;
@@ -336,7 +338,25 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   showPreview.addEventListener("click", () => {
     if (!canEdit() || showPreview.disabled) return;
     const check = update();
-    if (check.ok) preview(check.definition);
+    if (!check.ok) return;
+    if (previewMode === "in-app") { preview(check.definition); return; }
+    const application = applicationNamed(session.applicationId);
+    const win = page.ownerDocument.defaultView;
+    if (!win || !application || !pages) return;
+    previewRunning = true;
+    notice.textContent = "Opening the application window…";
+    update();
+    void runInApplicationWindow({ window: win, application, bundle: {
+      application: { id: application.id, name: application.name, origin: application.origin },
+      definition: check.definition, registry: { routes: registry.routes, elements: registry.list(), postconditionNames: postconditions, pages },
+    }, onStatus(status) {
+      if (!signal.aborted) notice.textContent = applicationRunStatus(status);
+    } }).then(result => {
+      if (signal.aborted) return;
+      previewRunning = false;
+      if (result.kind !== "started") notice.textContent = applicationRunResult(result);
+      update();
+    });
   });
   publish.addEventListener("click", () => {
     const id = session.id;

@@ -71,6 +71,7 @@ export function mountApp(root: HTMLElement, options: { readonly window?: Window;
   readonly autoStart?: string;
   readonly usage?: UsageClient | false;
   readonly onPreviewEnd?: () => void;
+  readonly externalGuides?: () => HTMLElement;
 } = {}): MountedApp {
   const doc = root.ownerDocument;
   const win = options.window ?? doc.defaultView;
@@ -163,7 +164,7 @@ export function mountApp(root: HTMLElement, options: { readonly window?: Window;
         main.replaceChildren(admin ? page({ ...admin, registry, signal: pageScope.signal, navigate: router.navigate })
           : adminPage(copy.admin[state.route])); updatePage = () => {};
         if (!admin) main.firstElementChild?.append(h("p", { role: "status" }, copy.admin.denied));
-      } else { launcher=createLauncher(guides,start,options.hideFromLauncher);launcher.update();main.replaceChildren(dashboardPage(launcher.element)); updatePage = () => {launcher?.update();}; if(revealGuides){revealGuides=false;launcher.reveal();} }
+      } else { launcher=createLauncher(guides,start,options.hideFromLauncher);launcher.update();main.replaceChildren(dashboardPage(launcher.element)); if(options.externalGuides) main.append(options.externalGuides()); updatePage = () => {launcher?.update();}; if(revealGuides){revealGuides=false;launcher.reveal();} }
     }
     root.querySelector("h1")?.setAttribute("tabindex","-1");
     updatePage(state);

@@ -726,8 +726,13 @@ it("registers, refreshes the editor registry, and saves only the durable target 
   await click(root, "Use: Submit order");
   fill(root, "editor-title", "Orders tour"); fill(root, "editor-description", "Submit orders."); fill(root, "editor-completion", "Done.");
   fill(root, "editor-text", "Press Submit order."); fill(root, "editor-wait", "click", "change");
-  expect(button(root, c.preview).disabled).toBe(true);
-  expect(root.querySelector("#editor-preview-hint")?.textContent).toBe("Preview in the application window is added in the next step.");
+  expect(button(root, c.preview).disabled).toBe(false);
+  const open = vi.spyOn(window, "open").mockReturnValue(null);
+  try {
+    await click(root, c.preview);
+    expect(open).toHaveBeenCalledExactlyOnceWith(managed.origin + "/", "_blank");
+    expect(notice(root)).toContain("The application window was blocked.");
+  } finally { open.mockRestore(); }
   await click(root, c.save);
   const body = JSON.stringify(host.writes().at(-1)?.body);
   expect(body).toContain("orders.submit");
@@ -767,7 +772,7 @@ it("uses the managed registry for list Publish and defers list Preview to the ap
   host.overrides.set(`GET /api/admin/applications/${ORD}/registry`, () => json(registryForOrders));
   const { root } = await setup("walkthroughs", host);
   await click(root, "Preview: Orders tour");
-  expect(notice(root)).toBe(c.application.windowPreviewPending);
+  expect(notice(root)).toBe(c.application.windowPreviewFromEditor);
   expect(document.querySelector("[data-ai-overlay]")).toBeNull();
   await click(root, "Publish: Orders tour");
   expect(root.querySelector("dialog[open]")).not.toBeNull();

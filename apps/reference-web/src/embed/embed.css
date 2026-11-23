@@ -14,3 +14,6 @@
   color: var(--dap-surface);
 }
 .dap-result button:focus-visible, .dap-guide-card button:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
+@media (prefers-reduced-motion: reduce) {
+  .dap-guide-card, .dap-guide-ring, .dap-result { transition: none; animation: none; }
+}

@@ -25,8 +25,11 @@ type Bag = Record<string, unknown>;
 function plain(value: unknown): value is Bag {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
-  return (prototype === Object.prototype || prototype === null) && Reflect.ownKeys(value).every(key => typeof key === "string"
-    && key !== "__proto__" && key !== "constructor" && key !== "prototype" && "value" in Object.getOwnPropertyDescriptor(value, key)!);
+  return (prototype === Object.prototype || prototype === null) && Reflect.ownKeys(value).every(key => {
+    if (typeof key !== "string" || key === "__proto__" || key === "constructor" || key === "prototype") return false;
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    return field?.enumerable === true && "value" in field;
+  });
 }
 function shape(value: unknown, required: readonly string[], optional: readonly string[] = []): value is Bag {
   return plain(value) && required.every(key => Object.hasOwn(value, key))
@@ -34,7 +37,7 @@ function shape(value: unknown, required: readonly string[], optional: readonly s
 }
 function array<T>(value: unknown, max: number, guard: (item: unknown) => item is T): value is T[] {
   return Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && value.length <= max && Reflect.ownKeys(value).length === value.length + 1
-    && Array.from({ length: value.length }, (_, index) => Object.getOwnPropertyDescriptor(value, index)).every(desc => desc && "value" in desc && guard(desc.value));
+    && Array.from({ length: value.length }, (_, index) => Object.getOwnPropertyDescriptor(value, index)).every(desc => desc?.enumerable === true && "value" in desc && guard(desc.value));
 }
 const isValidId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(value);
 const optional = (value: Bag, key: string, check: (field: unknown) => boolean) => !Object.hasOwn(value, key) || check(value[key]);

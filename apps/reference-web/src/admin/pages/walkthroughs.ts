@@ -50,7 +50,7 @@ export function walkthroughsPage(options: AdminPageOptions) {
         if (signal.aborted) return null;
         if (owner !== undefined && owner.kind !== "ok") { notice.textContent = readError(owner); return null; }
         const data = owner?.value;
-        if (forPreview && data?.previewMode === "application-window") { notice.textContent = c.application.windowPreviewPending; return null; }
+        if (forPreview && data?.previewMode === "application-window") { notice.textContent = c.application.windowPreviewFromEditor; return null; }
         if (forPreview && data?.previewable === false) { notice.textContent = c.application.noPreview; return null; }
         try { return createWalkthroughCatalog(data?.registry ?? registry, data?.postconditionNames ?? POSTCONDITION_NAMES, [loaded.value.definition]).get(row.id) ?? null; }
         catch { notice.textContent = invalid; return null; }

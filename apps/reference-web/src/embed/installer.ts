@@ -17,13 +17,13 @@ export function installEmbed(win: Window, dapOrigin: unknown, stylesheet: string
     if (accepted) { send({ status: "refused", reason: "already_running" }); return; }
     if (!run.ok) { send({ status: "refused", reason: run.reason }); return; }
     if (run.bundle.application.origin !== win.location.origin) { send({ status: "refused", reason: "invalid_bundle" }); return; }
-    accepted = true;
     style = win.document.createElement("style");
     style.textContent = stylesheet;
     win.document.head.append(style);
     mounted = mountManagedRuntime({ window: win, bundle: run.bundle, trustedEventsOnly,
       onStatus: ({ status }) => { if (status !== "IDLE") send({ status }); } });
-    if (!mounted.ok) { style.remove(); send({ status: "refused", reason: mounted.reason }); }
+    if (mounted.ok) accepted = true;
+    else { style.remove(); send({ status: "refused", reason: mounted.reason }); }
   };
   const destroy = () => {
     win.removeEventListener("message", listen);
