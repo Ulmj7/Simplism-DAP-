@@ -121,6 +121,8 @@ export async function startFixtureApp({ host = "127.0.0.1", port = 0, name = "B"
     throw new TypeError("Set both embedScriptPath and a normalized http or https dapOrigin.");
   }
   const embed = embedScriptPath === undefined ? undefined : await readFile(embedScriptPath);
+  // The embed's stylesheet is an external file next to the script (`dap-embed.css`): the application serves it from its own origin, exactly like the script.
+  const embedCss = embedScriptPath === undefined ? undefined : await readFile(new URL("dap-embed.css", new URL(`file://${embedScriptPath}`))).catch(() => undefined);
   const seen = [];
   const server = createServer((request, response) => {
     seen.push(String(request.headers.host ?? ""));
@@ -128,6 +130,9 @@ export async function startFixtureApp({ host = "127.0.0.1", port = 0, name = "B"
     const path = (request.url ?? "").split("?", 1)[0];
     if (path === "/dap-embed.js" && embed !== undefined) {
       if (request.method === "GET") response.writeHead(200, { ...headers, "content-type": "text/javascript; charset=utf-8" }).end(embed);
+      else response.writeHead(405, { ...headers, allow: "GET" }).end();
+    } else if (path === "/dap-embed.css" && embedCss !== undefined) {
+      if (request.method === "GET") response.writeHead(200, { ...headers, "content-type": "text/css; charset=utf-8" }).end(embedCss);
       else response.writeHead(405, { ...headers, allow: "GET" }).end();
     } else if (request.method !== "GET" && request.method !== "HEAD") {
       response.writeHead(405, { ...headers, allow: "GET, HEAD" }).end();

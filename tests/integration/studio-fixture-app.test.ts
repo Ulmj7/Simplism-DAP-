@@ -1,6 +1,8 @@
 // The second-application fixture (tests/fixtures/studio-app) is test infrastructure: prove it serves what the
 // probe and later Studio tests rely on, stays on loopback, closes cleanly and carries nothing sensitive.
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 import { request } from "node:http";
@@ -251,4 +253,23 @@ it("serves only an explicitly configured embed and keeps optional registration f
   expect(script.body).toBe(await readFile(source, "utf8"));
   for (const method of ["HEAD", "POST"]) expect((await fetch(app.origin + "/dap-embed.js", { method })).status).toBe(405);
   await expect(start({ dapOrigin })).rejects.toThrow(/both embedScriptPath/);
+});
+
+it("serves the embed's stylesheet from next to the script (an external file, so no inline style is needed), only when it exists", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "dap-embed-fixture-"));
+  try {
+    await writeFile(join(directory, "dap-embed.js"), "// script");
+    const dapOrigin = "http://127.0.0.1:5186";
+    const without = await start({ dapOrigin, embedScriptPath: join(directory, "dap-embed.js") });
+    expect((await fetch(without.origin + "/dap-embed.css")).status).toBe(404);
+    await writeFile(join(directory, "dap-embed.css"), ".dap-result { color: red; }");
+    const app = await start({ dapOrigin, embedScriptPath: join(directory, "dap-embed.js") });
+    const sheet = await text(app.origin + "/dap-embed.css");
+    expect(sheet.response.status).toBe(200);
+    expect(sheet.response.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(sheet.response.headers.get("cache-control")).toBe("no-store");
+    expect(sheet.body).toBe(".dap-result { color: red; }");
+    expect((await fetch(app.origin + "/dap-embed.css", { method: "POST" })).status).toBe(405);
+    expect((await text((await start()).origin + "/dap-embed.css")).response.status).toBe(404);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
