@@ -11,7 +11,9 @@ import type { ApplicationScope } from "./application-store.js";
 import { STUDIO_MANAGED_REGISTRY_ID, isApplicationId } from "./applications.js";
 import { MAX_ROUTES_PER_APPLICATION, MAX_TARGETS_PER_APPLICATION, isPageFor, isTargetId } from "./registry-targets.js";
 import type { RegistryRouteRecord, TargetHealth, TargetRecord, TargetRegistration, TargetRepair, TargetStatus, TargetView } from "./registry-targets.js";
-import type { DefinitionUsing, HealthOutcome, ManagedRegistry, RegisterOutcome, RepairFields, RepairOutcome, RepairVerify, TargetChange, TargetListing, TargetStatusOutcome, TargetStore } from "./target-store.js";
+import { MAX_CHECKS_PER_APPLICATION, VALUE_CHECK_ROLES, isCheckName } from "./registry-checks.js";
+import type { CheckContent, CheckRecord, CheckStatus, CheckView } from "./registry-checks.js";
+import type { CheckRegisterOutcome, CheckStatusOutcome, DefinitionUsing, HealthOutcome, ManagedRegistry, RegisterOutcome, RepairFields, RepairOutcome, RepairVerify, TargetChange, TargetListing, TargetStatusOutcome, TargetStore } from "./target-store.js";
 import { impactOf } from "./repair-impact.js";
 
 interface Row { readonly tenantId: string; readonly applicationId: string; readonly record: TargetRecord }
@@ -25,6 +27,7 @@ export class FakeTargetStore implements TargetStore {
   private readonly changeRows: { tenantId: string; applicationId: string; targetId: string; change: TargetChange }[] = [];
   /** How many stored definitions of an application name a target (drafts, published); tests set it directly. */
   readonly references = new Map<string, { drafts: number; published: number }>();
+  private readonly checkRows: { tenantId: string; applicationId: string; record: CheckRecord }[] = [];
   private tick = 0;
   constructor(private readonly applications: ApplicationStore) {}
   private check(): void { if (this.failWith !== null) throw this.failWith; }
@@ -43,9 +46,16 @@ export class FakeTargetStore implements TargetStore {
     const row = this.targets.find((candidate) => candidate.tenantId === tenantId && candidate.applicationId === applicationId && candidate.record.id === targetId);
     return row === undefined ? null : this.view(row);
   }
+  /** The ACTIVE checks whose target (if any) is ACTIVE in `targets`. */
+  private activeChecks(tenantId: string, applicationId: string, targets: readonly Row[] = this.targets): CheckRecord[] {
+    return this.checkRows.filter((row) => row.tenantId === tenantId && row.applicationId === applicationId && row.record.status === "active"
+      && (row.record.targetId === null || targets.some((target) => target.tenantId === tenantId && target.applicationId === applicationId && target.record.id === row.record.targetId && target.record.status === "active")))
+      .map((row) => row.record);
+  }
   async registry(tenantId: string, applicationId: string): Promise<ManagedRegistry> {
     this.check();
     return {
+      checks: this.activeChecks(tenantId, applicationId),
       routes: this.routesOf(tenantId, applicationId),
       elements: this.targets.filter((row) => row.tenantId === tenantId && row.applicationId === applicationId && row.record.status === "active").map(({ record }) => ({
         id: record.id, route: record.route, role: record.role, label: record.label, description: record.description, operations: [...record.operations], privacy: "public",
@@ -100,6 +110,44 @@ export class FakeTargetStore implements TargetStore {
     return "changed";
   }
 
+  async checks(tenantId: string, applicationId: string): Promise<readonly CheckView[]> {
+    this.check();
+    return this.checkRows.filter((row) => row.tenantId === tenantId && row.applicationId === applicationId).map((row) => Object.freeze({ ...row.record, references: this.references.get(`${tenantId}/${applicationId}/${row.record.name}`) ?? { drafts: 0, published: 0 } }));
+  }
+  async registerCheck(scope: ApplicationScope, applicationId: string, value: CheckContent & { readonly name: string }): Promise<CheckRegisterOutcome> {
+    this.check();
+    if (!isApplicationId(applicationId) || !isCheckName(value.name)) return { kind: "id_refused" };
+    const application = await this.applications.get(scope.tenantId, applicationId);
+    if (application === null) return { kind: "application_not_found" };
+    if (!application.enabled) return { kind: "application_disabled" };
+    if (application.registryId !== STUDIO_MANAGED_REGISTRY_ID) return { kind: "registry_not_managed" };
+    if (this.checkRows.some((row) => row.tenantId === scope.tenantId && row.applicationId === applicationId && row.record.name === value.name)) return { kind: "existing" };
+    if (value.targetId !== null) {
+      const target = this.targets.find((row) => row.tenantId === scope.tenantId && row.applicationId === applicationId && row.record.id === value.targetId);
+      if (target === undefined) return { kind: "target_not_found" };
+      if (target.record.status !== "active") return { kind: "target_disabled" };
+      if (value.kind === "element.value.equals" && !VALUE_CHECK_ROLES.includes(target.record.role)) return { kind: "role_refused" };
+    }
+    if (value.route !== null && !this.routes.some((route) => route.tenantId === scope.tenantId && route.applicationId === applicationId && route.route === value.route)) return { kind: "route_not_found" };
+    if (this.checkRows.filter((row) => row.tenantId === scope.tenantId && row.applicationId === applicationId).length >= MAX_CHECKS_PER_APPLICATION) return { kind: "registry_full" };
+    this.checkRows.push({ tenantId: scope.tenantId, applicationId, record: Object.freeze({ name: value.name, kind: value.kind, targetId: value.targetId, route: value.route, attribute: value.attribute, expected: value.expected, status: "active" as const }) });
+    return { kind: "created" };
+  }
+  async setCheckStatus(scope: ApplicationScope, applicationId: string, name: string, status: CheckStatus): Promise<CheckStatusOutcome> {
+    this.check();
+    if (!isApplicationId(applicationId) || !isCheckName(name)) return "id_refused";
+    const application = await this.applications.get(scope.tenantId, applicationId);
+    if (application === null) return "application_not_found";
+    if (application.registryId !== STUDIO_MANAGED_REGISTRY_ID) return "registry_not_managed";
+    if (status === "active" && !application.enabled) return "application_disabled";
+    const index = this.checkRows.findIndex((row) => row.tenantId === scope.tenantId && row.applicationId === applicationId && row.record.name === name);
+    if (index < 0) return "check_not_found";
+    const row = this.checkRows[index]!;
+    if (row.record.status === status) return "unchanged";
+    this.checkRows[index] = { ...row, record: Object.freeze({ ...row.record, status }) };
+    return "changed";
+  }
+
   async definitionsUsing(tenantId: string, applicationId: string, targetId: string): Promise<readonly DefinitionUsing[]> {
     this.check();
     return this.definitions.filter((item) => item.tenantId === tenantId && item.applicationId === applicationId
@@ -144,6 +192,7 @@ export class FakeTargetStore implements TargetStore {
       elements: next.filter((item) => item.tenantId === scope.tenantId && item.applicationId === applicationId && item.record.status === "active").map(({ record }) => ({
         id: record.id, route: record.route, role: record.role, label: record.label, description: record.description, operations: [...record.operations], privacy: "public",
       })) as unknown as TrustedRegistryData["elements"],
+      checks: this.activeChecks(scope.tenantId, applicationId, next),
       markers: Object.fromEntries(next.filter((item) => item.tenantId === scope.tenantId && item.applicationId === applicationId && item.record.status === "active").map(({ record }) => [record.id, record.marker])),
     };
     const definitions = await this.definitionsUsing(scope.tenantId, applicationId, targetId);

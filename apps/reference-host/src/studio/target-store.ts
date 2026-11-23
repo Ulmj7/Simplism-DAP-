@@ -8,6 +8,7 @@
 import type { TenantClient } from "../authoring/tenant-tx.js";
 import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import type { ApplicationScope } from "./application-store.js";
+import type { CheckContent, CheckRecord, CheckStatus, CheckView } from "./registry-checks.js";
 import type { RegistryRouteRecord, TargetHealth, TargetRecord, TargetRegistration, TargetRepair, TargetStatus, TargetView } from "./registry-targets.js";
 
 
@@ -18,6 +19,8 @@ export interface ManagedRegistry {
   readonly elements: TrustedRegistryData["elements"];
   /** Target id -> the `data-ai-id` marker the page carries for it (the runtime and the embed resolve the DOM by it). */
   readonly markers: Readonly<Record<string, string>>;
+  /** The ACTIVE verification checks (S4) whose target, when they have one, is ACTIVE: a check whose target is disabled drops out of the registry, so a guide that names it stops validating. */
+  readonly checks: readonly CheckRecord[];
 }
 export interface TargetListing {
   readonly targets: readonly TargetView[];
@@ -42,6 +45,10 @@ export type RepairOutcome =
   | { readonly kind: "repaired"; readonly target: TargetView; readonly before: RepairFields; readonly after: RepairFields; readonly impact: RepairImpact }
   | { readonly kind: "incompatible"; readonly problems: readonly string[] }
   | { readonly kind: "application_not_found" | "application_disabled" | "registry_not_managed" | "target_not_found" | "marker_in_use" | "unchanged" | "id_refused" };
+export type CheckRegisterOutcome =
+  | { readonly kind: "created" | "existing" }
+  | { readonly kind: "application_not_found" | "application_disabled" | "registry_not_managed" | "target_not_found" | "target_disabled" | "route_not_found" | "role_refused" | "registry_full" | "id_refused" };
+export type CheckStatusOutcome = "changed" | "unchanged" | "check_not_found" | "application_not_found" | "application_disabled" | "registry_not_managed" | "id_refused";
 export type TargetStatusOutcome = "changed" | "unchanged" | "target_not_found" | "application_not_found" | "application_disabled" | "registry_not_managed" | "id_refused";
 
 export interface TargetChange { readonly revision: number; readonly changedAt: string; readonly changedBy: string; readonly before: RepairFields; readonly after: RepairFields }
@@ -71,6 +78,15 @@ export interface TargetStore {
    * holds the application row FOR SHARE and the target row FOR UPDATE. `verify` runs inside it after the change is applied; any problem rolls everything back (`incompatible`).
    */
   repair(scope: ApplicationScope, applicationId: string, targetId: string, value: TargetRepair, verify: RepairVerify): Promise<RepairOutcome>;
+  /** Every check of the application (active and disabled) with the number of stored guides that name it, oldest first. */
+  checks(tenantId: string, applicationId: string): Promise<readonly CheckView[]>;
+  /**
+   * Registers one check (the NAME is derived by the caller from the content and re-derived by the database). Create-or-get: a check that already exists (same name) is `existing` and is left exactly as it is.
+   * The application must exist, be enabled and be Studio-managed; an element check needs an ACTIVE target (`target_disabled`), `element.value.equals` a textbox, select or checkbox (`role_refused`), `route.equals` a registered route.
+   */
+  registerCheck(scope: ApplicationScope, applicationId: string, value: CheckContent & { readonly name: string }): Promise<CheckRegisterOutcome>;
+  /** Disables (always allowed) or re-enables (needs the application enabled) a check. Nothing but the status ever changes. */
+  setCheckStatus(scope: ApplicationScope, applicationId: string, name: string, status: CheckStatus): Promise<CheckStatusOutcome>;
   /** Disables (always allowed) or re-enables (needs the application enabled) a target. Nothing but the status ever changes. */
   setStatus(scope: ApplicationScope, applicationId: string, targetId: string, status: TargetStatus): Promise<TargetStatusOutcome>;
 }

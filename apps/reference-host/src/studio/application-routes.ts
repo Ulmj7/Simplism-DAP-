@@ -12,6 +12,11 @@
  *   GET  /api/admin/applications/:id/overview Maintainer   { application, targets: { total, active, disabled, healthy, unverified, broken }, workflows: { draft, published } } (the health counts are of the ACTIVE targets)
  *   GET  /api/admin/applications/:id/targets/:targetId        Maintainer   TargetView + usage { drafts: [{ id, title }], published: [{ id, title, version }] } + changes (<= 50, newest first)
  *   POST /api/admin/applications/:id/targets/:targetId/health Maintainer   body EXACTLY { state: "broken" | "unverified" } (`healthy` is written by the session check and by a repair only: 400): TargetView
+ *   GET  /api/admin/applications/:id/checks  Maintainer   { checks: CheckView[] }: every verification check (active and disabled) with the number of guides that name it
+ *   POST /api/admin/applications/:id/checks  Maintainer   body { kind, ...the fields of that kind } (route.equals {route}; element.visible|hidden {targetId}; element.text|value.equals {targetId, expected};
+ *                                                          element.attribute.equals {targetId, attribute, expected}): create-or-get through the Gateway, 200 CheckView. The NAME is derived by the host.
+ *                                                          Never enter secrets in an expected value. 422 invalid (fixed phrases), 404 TARGET_NOT_FOUND | ROUTE_NOT_FOUND, 409 TARGET_DISABLED | CHECK_ROLE_REFUSED | CHECK_LIMIT
+ *   POST /api/admin/applications/:id/checks/:name/status Maintainer   body EXACTLY { status: "active" | "disabled" }: CheckView (404 CHECK_NOT_FOUND)
  *   POST /api/admin/applications/:id/status   Maintainer   body EXACTLY { enabled: boolean }: Gateway enable/disable
  *   GET  /api/admin/applications/:id/registry Maintainer   { routes, elements (public only), postconditionNames, previewable }: the application's public-eligible registry
  *
@@ -36,7 +41,9 @@ import type { TargetStatus } from "./registry-targets.js";
 import { createRegistryResolver } from "./registry-resolver.js";
 import type { RegistryResolver } from "./registry-resolver.js";
 import type { RegistryCatalog } from "./registries.js";
-import { TARGET_HEALTH_ACTION_ID, TARGET_STATUS_ACTION_ID } from "./target-capabilities.js";
+import { CHECK_STATUS_ACTION_ID, REGISTER_CHECK_ACTION_ID, TARGET_HEALTH_ACTION_ID, TARGET_STATUS_ACTION_ID } from "./target-capabilities.js";
+import { CHECK_STATUSES, MAX_CHECKS_PER_APPLICATION, VALUE_CHECK_ROLES, isCheckName, validateCheckRegistration } from "./registry-checks.js";
+import type { CheckStatus } from "./registry-checks.js";
 import type { TargetStore } from "./target-store.js";
 import { impactOf } from "./repair-impact.js";
 
@@ -57,12 +64,17 @@ export const APPLICATION_MESSAGES = Object.freeze({
   invalid: "That application has problems. Please fix them and try again.",
   notFound: "That application was not found.",
   targetNotFound: "That target was not found.",
+  checkNotFound: "That check was not found.",
+  routeNotFound: "That route is not registered for this application.",
+  targetDisabled: "That target is disabled. Enable it first.",
+  checkRole: "A value check needs a textbox, select or checkbox target.",
+  checkLimit: `The limit of ${MAX_CHECKS_PER_APPLICATION} checks has been reached. Disable a check you no longer use; checks are never deleted.`,
   notManaged: "That application does not use a Studio-managed registry.",
   applicationDisabled: "That application is disabled. Enable it first.",
   routingLocked: "This application already has registered pages, so its routing can no longer change.",
   limit: `The limit of ${MAX_APPLICATIONS_PER_TENANT} applications has been reached. Disable an application you no longer use; applications are never deleted.`,
 });
-type Fail = { kind: "unauthenticated" | "forbidden" | "not_found" | "malformed" | "conflict" | "unavailable"; message: string; code?: "APPLICATION_NOT_FOUND" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED" | "APPLICATION_DISABLED" | "ROUTING_LOCKED" };
+type Fail = { kind: "unauthenticated" | "forbidden" | "not_found" | "malformed" | "conflict" | "unavailable"; message: string; code?: "APPLICATION_NOT_FOUND" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED" | "APPLICATION_DISABLED" | "ROUTING_LOCKED" | "CHECK_NOT_FOUND" | "ROUTE_NOT_FOUND" | "TARGET_DISABLED" | "CHECK_ROLE_REFUSED" | "CHECK_LIMIT" };
 const failure = (kind: Fail["kind"], message: string, code?: Fail["code"]): Fail => (code === undefined ? { kind, message } : { kind, message, code });
 
 export function registerApplicationRoutes(app: FastifyInstance, deps: ApplicationRouteDeps): void {
@@ -143,6 +155,7 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
       return send(reply, 200, {
         routes: resolved.registry.routes, elements, postconditionNames: resolved.registry.postconditionNames, previewable: resolved.previewable,
         source: resolved.source, pages: resolved.pages, previewMode: resolved.previewMode,
+        ...(resolved.source === "studio-managed" ? { checks: await targets.checks(principal.tenantId, record.id) } : {}),
       });
     } catch { return unavailable(reply); }
   });
@@ -229,7 +242,7 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
         healthy = live.filter((target) => target.health === "healthy").length; broken = live.filter((target) => target.health === "broken").length;
       } else { total = view(record).counts.targets; active = total; }
       return send(reply, 200, {
-        application: view(record),
+        application: toApplicationView(record, { ...record.counts, targets: total }),
         targets: { total, active, disabled: total - active, healthy, unverified: active - healthy - broken, broken },
         workflows: { draft: record.counts.drafts, published: record.counts.published },
       });
@@ -311,7 +324,7 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
     if (result !== "ok") return unavailable(reply);
     try {
       const target = await targets.get(principal.tenantId, record.id, targetId);
-      return target === null ? unavailable(reply) : send(reply, 200, target);
+      return target?.health !== body.state ? unavailable(reply) : send(reply, 200, target);
     } catch { return unavailable(reply); }
   });
 
@@ -341,6 +354,74 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
       if (result !== "ok") return unavailable(reply);
       const target = await targets.get(principal.tenantId, record.id, targetId);
       return target === null ? unavailable(reply) : send(reply, 200, target);
+    } catch { return unavailable(reply); }
+  });
+  // --- Studio verification checks (Studio COMPLETION, S4): closed, read-only observations a guide step may name as its `verify`. Created only through the Gateway; never deleted. -----------------------
+  const checkNotFound = (reply: FastifyReply) => send(reply, 404, failure("not_found", APPLICATION_MESSAGES.checkNotFound, "CHECK_NOT_FOUND"));
+
+  app.get("/api/admin/applications/:id/checks", async (request, reply) => {
+    const principal = await gate(request, reply);
+    if (principal === null) return;
+    const record = await managed(principal, reply, request);
+    if (record === null) return;
+    try { return send(reply, 200, { checks: await targets.checks(principal.tenantId, record.id) }); } catch { return unavailable(reply); }
+  });
+
+  app.post("/api/admin/applications/:id/checks", async (request, reply) => {
+    const principal = await gate(request, reply);
+    if (principal === null) return;
+    const body = request.body;
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return malformed(reply);
+    const record = await managed(principal, reply, request);
+    if (record === null) return;
+    const checked = validateCheckRegistration(body); // fixed phrases: nothing the maintainer typed (the expected value included) is ever repeated
+    if (!checked.ok) return invalid(reply, checked.issues);
+    const wanted = checked.value;
+    try {
+      const existing = (await targets.checks(principal.tenantId, record.id));
+      if (!existing.some((check) => check.name === wanted.name)) {
+        if (!record.enabled) return send(reply, 409, failure("conflict", APPLICATION_MESSAGES.applicationDisabled, "APPLICATION_DISABLED"));
+        if (wanted.targetId !== null) {
+          const target = await targets.get(principal.tenantId, record.id, wanted.targetId);
+          if (target === null) return send(reply, 404, failure("not_found", APPLICATION_MESSAGES.targetNotFound, "TARGET_NOT_FOUND"));
+          if (target.status !== "active") return send(reply, 409, failure("conflict", APPLICATION_MESSAGES.targetDisabled, "TARGET_DISABLED"));
+          if (wanted.kind === "element.value.equals" && !(VALUE_CHECK_ROLES as readonly string[]).includes(target.role)) return send(reply, 409, failure("conflict", APPLICATION_MESSAGES.checkRole, "CHECK_ROLE_REFUSED"));
+        }
+        if (wanted.route !== null && !(await targets.list(principal.tenantId, record.id)).routes.some((route) => route.route === wanted.route)) return send(reply, 404, failure("not_found", APPLICATION_MESSAGES.routeNotFound, "ROUTE_NOT_FOUND"));
+        if (existing.length >= MAX_CHECKS_PER_APPLICATION) return send(reply, 409, failure("conflict", APPLICATION_MESSAGES.checkLimit, "CHECK_LIMIT"));
+      }
+    } catch { return unavailable(reply); }
+    const params: Record<string, unknown> = { applicationId: record.id, kind: wanted.kind };
+    for (const key of ["targetId", "route", "attribute", "expected"] as const) if (wanted[key] !== null) params[key] = wanted[key];
+    const result = await submitGatewayWrite(principal, REGISTER_CHECK_ACTION_ID, params);
+    if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
+    if (result !== "ok") return unavailable(reply);
+    try {
+      const created = (await targets.checks(principal.tenantId, record.id)).find((check) => check.name === wanted.name);
+      return created === undefined ? unavailable(reply) : send(reply, 200, created);
+    } catch { return unavailable(reply); }
+  });
+
+  app.post("/api/admin/applications/:id/checks/:name/status", async (request, reply) => {
+    const principal = await gate(request, reply);
+    if (principal === null) return;
+    const body = exactBody(request.body, ["status"]);
+    if (body === null || typeof body.status !== "string" || !(CHECK_STATUSES as readonly string[]).includes(body.status)) return malformed(reply);
+    const record = await managed(principal, reply, request);
+    if (record === null) return;
+    const name = (request.params as { name?: unknown } | undefined)?.name;
+    if (!isCheckName(name)) return checkNotFound(reply);
+    const wanted = body.status as CheckStatus;
+    try {
+      if (!(await targets.checks(principal.tenantId, record.id)).some((check) => check.name === name)) return checkNotFound(reply);
+      if (wanted === "active" && !record.enabled) return send(reply, 409, failure("conflict", APPLICATION_MESSAGES.applicationDisabled, "APPLICATION_DISABLED"));
+    } catch { return unavailable(reply); }
+    const result = await submitGatewayWrite(principal, CHECK_STATUS_ACTION_ID, { applicationId: record.id, name, status: wanted });
+    if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
+    if (result !== "ok") return unavailable(reply);
+    try {
+      const check = (await targets.checks(principal.tenantId, record.id)).find((candidate) => candidate.name === name);
+      return check === undefined ? unavailable(reply) : send(reply, 200, check);
     } catch { return unavailable(reply); }
   });
 }

@@ -2,7 +2,7 @@
  * The async registry resolver (Studio V1B, D1): one answer to "which trusted registry does this application use?", for both sources.
  *
  *   built-in        the host-code catalog entry named by `registryId` (V1A, unchanged; `referenceOverride` is the Feature 004 test seam for the `reference` entry only)
- *   studio-managed  the application's ACTIVE targets and its routes from PostgreSQL (`TargetStore`), with the managed postconditions `route.<route>` (D10)
+ *   studio-managed  the application's ACTIVE targets and its routes from PostgreSQL (`TargetStore`), with the managed postconditions `route.<route>` (D10) and the names of its ACTIVE verification checks (S4)
  *
  * A guide written before Studio has no application and resolves to `reference`. Resolution is always tenant-scoped. `resolveIn` runs the managed read inside a transaction the caller already
  * holds (a capability executor validating inside its own write transaction); the built-in path needs no database. `undefined` means the application's registry cannot be found (a catalog no
@@ -13,6 +13,7 @@ import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import type { ApplicationRecord, RegistrySource } from "./applications.js";
 import { STUDIO_MANAGED_REGISTRY_ID, registrySourceOf } from "./applications.js";
 import { managedPostconditionName } from "./registry-targets.js";
+import type { CheckRecord } from "./registry-checks.js";
 import { REFERENCE_REGISTRY_ID } from "./registries.js";
 import type { RegistryCatalog } from "./registries.js";
 import type { ManagedRegistry, TargetStore } from "./target-store.js";
@@ -27,6 +28,8 @@ export interface ResolvedRegistry {
   readonly previewable: boolean;
   /** Studio-managed registries only: target id -> the `data-ai-id` marker of its element in the page. Built-in registries have none (the marker is the id). */
   readonly markers?: Readonly<Record<string, string>>;
+  /** Studio-managed registries only: the ACTIVE verification checks (of active targets). Their names are registry postconditions, so a guide step may name one as its `verify`. */
+  readonly checks?: readonly CheckRecord[];
 }
 export interface RegistryResolver {
   resolve(tenantId: string, application: ApplicationRecord | null): Promise<ResolvedRegistry | undefined>;
@@ -39,8 +42,8 @@ export function managedRegistryData(managed: ManagedRegistry): ResolvedRegistry 
   const pages = Object.freeze(Object.fromEntries(managed.routes.map((entry) => [entry.page, entry.route])));
   return Object.freeze({
     source: "studio-managed" as const,
-    registry: Object.freeze({ routes: Object.freeze(routes), elements: managed.elements, postconditionNames: Object.freeze(routes.map(managedPostconditionName)) }),
-    pages, previewMode: "application-window" as const, previewable: routes.length > 0, markers: managed.markers,
+    registry: Object.freeze({ routes: Object.freeze(routes), elements: managed.elements, postconditionNames: Object.freeze([...routes.map(managedPostconditionName), ...managed.checks.map((check) => check.name)]) }),
+    pages, previewMode: "application-window" as const, previewable: routes.length > 0, markers: managed.markers, checks: managed.checks,
   });
 }
 

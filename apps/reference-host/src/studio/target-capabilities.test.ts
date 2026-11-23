@@ -8,9 +8,10 @@ import type { WalkthroughStore } from "../authoring/store.js";
 import { createApplicationExtension } from "./application-capabilities.js";
 import { FakeApplicationStore } from "./fake-application-store.js";
 import { FakeTargetStore } from "./fake-target-store.js";
+import { checkName } from "./registry-checks.js";
 import { createRegistryCatalog } from "./registries.js";
 import {
-  REGISTER_TARGET_ACTION_ID, REGISTER_TARGET_EXECUTOR_ID, TARGET_ACTION_IDS, TARGET_STATUS_ACTION_ID, TARGET_STATUS_EXECUTOR_ID, createTargetExtension, runRegisterTarget, runRepairTarget, runSetTargetHealth, runSetTargetStatus, withRepairReceipt, registerStudioTarget, setStudioTargetStatus,
+  REGISTER_TARGET_ACTION_ID, REGISTER_TARGET_EXECUTOR_ID, TARGET_ACTION_IDS, TARGET_STATUS_ACTION_ID, TARGET_STATUS_EXECUTOR_ID, createTargetExecutors, createTargetExtension, runRegisterCheck, runRegisterTarget, runRepairTarget, runSetCheckStatus, runSetTargetHealth, runSetTargetStatus, registerStudioCheck, setStudioCheckStatus, withRepairReceipt, registerStudioTarget, setStudioTargetStatus,
 } from "./target-capabilities.js";
 
 const APP = "app-0123456789ab";
@@ -27,7 +28,7 @@ describe("the two capabilities", () => {
     }
     expect(registerStudioTarget.id).toBe("registerStudioTarget");
     expect(setStudioTargetStatus.id).toBe("setStudioTargetStatus");
-    expect(TARGET_ACTION_IDS).toEqual(["registerStudioTarget", "setStudioTargetStatus", "setStudioTargetHealth", "repairStudioTarget"]);
+    expect(TARGET_ACTION_IDS).toEqual(["registerStudioTarget", "setStudioTargetStatus", "setStudioTargetHealth", "repairStudioTarget", "registerStudioCheck", "setStudioCheckStatus"]);
     expect([REGISTER_TARGET_ACTION_ID, TARGET_STATUS_ACTION_ID]).toEqual(["registerStudioTarget", "setStudioTargetStatus"]);
   });
   it("audit ids and flags only: /applicationId and /targetId (and the closed /status); never a label, description, page, route or operations", () => {
@@ -56,8 +57,8 @@ describe("the extension", () => {
   it("is exactly { definitions, executors }, frozen, with a trusted handle that has run nothing", () => {
     const { extension, trusted } = createTargetExtension({ targets: targets() });
     expect(Object.keys(extension).sort()).toEqual(["definitions", "executors"]);
-    expect(extension.definitions.map((d) => d.id)).toEqual(["registerStudioTarget", "setStudioTargetStatus", "setStudioTargetHealth", "repairStudioTarget"]);
-    expect(extension.executors.map((e) => e.id)).toEqual([REGISTER_TARGET_EXECUTOR_ID, TARGET_STATUS_EXECUTOR_ID, "ex.studio-set-target-health", "ex.studio-repair-target"]);
+    expect(extension.definitions.map((d) => d.id)).toEqual(["registerStudioTarget", "setStudioTargetStatus", "setStudioTargetHealth", "repairStudioTarget", "registerStudioCheck", "setStudioCheckStatus"]);
+    expect(extension.executors.map((e) => e.id)).toEqual([REGISTER_TARGET_EXECUTOR_ID, TARGET_STATUS_EXECUTOR_ID, "ex.studio-set-target-health", "ex.studio-repair-target", "ex.studio-register-check", "ex.studio-set-check-status"]);
     expect(Object.isFrozen(extension)).toBe(true);
     expect(trusted.executorCalls()).toBe(0);
     expect(trusted.receivedCalls("registerStudioTarget")).toEqual([]);
@@ -226,5 +227,93 @@ describe("the health and repair executors, called directly", () => {
     const other = await withRepairReceipt({ tenantId: TENANT, applicationId: APP, targetId: "orders.other" }, () => t.repair());
     expect(other.result).toMatchObject({ status: "success" });
     expect(other.repaired).toBeUndefined();
+  });
+});
+
+describe("the check capabilities and executors (S4)", () => {
+  const SEC = { tenantId: TENANT, userId: "maya" } as never;
+  async function setup(options: { managed?: boolean } = {}) {
+    const applications = new FakeApplicationStore();
+    await applications.save({ tenantId: TENANT, actor: "seed" }, APP, { name: "Managed", origin: "http://127.0.0.1:5187", allowedOrigins: ["http://127.0.0.1:5187"], environment: "test", registryId: options.managed === false ? "reference" : "studio-managed" });
+    const store = new FakeTargetStore(applications);
+    if (options.managed !== false) {
+      const scope = { tenantId: TENANT, actor: "seed" };
+      await store.register(scope, APP, { targetId: "orders.submit", route: "orders", page: "/#/orders", role: "button", label: "Submit", description: "Submits.", operations: ["highlight", "click"], privacy: "public" });
+      await store.register(scope, APP, { targetId: "orders.note", route: "orders", page: "/#/orders", role: "textbox", label: "Note", description: "A note.", operations: ["highlight", "input"], privacy: "public" });
+    }
+    const add = (params: Record<string, unknown>) => runRegisterCheck(store, { params: { applicationId: APP, kind: "element.visible", targetId: "orders.submit", ...params } as never, security: SEC });
+    const status = (params: Record<string, unknown>) => runSetCheckStatus(store, { params: { applicationId: APP, name: "check.v0123456789", status: "disabled", ...params } as never, security: SEC });
+    return { applications, store, add, status };
+  }
+  it("are MEDIUM, state-changing, maintainer-only, any page, with the written justification; audit records ids and closed values only, never an expected value, route or attribute", () => {
+    for (const capability of [registerStudioCheck, setStudioCheckStatus]) {
+      expect(capability).toMatchObject({ risk: "MEDIUM", changesState: true, requiredPermission: "perm.walkthrough.maintain", allowedPages: "any", version: 1 });
+      expect(capability.confirmation).toEqual({ kind: "not-required", justification: MEDIUM_JUSTIFICATION });
+      expect(capability.resource?.({ applicationId: APP } as never)).toEqual({ type: "studioApplication", id: APP });
+      expect(inspectInputSchema(capability.inputSchema).issues, capability.id).toEqual([]);
+    }
+    expect(registerStudioCheck.audit.params).toEqual([{ path: "/applicationId", mode: "plain" }, { path: "/kind", mode: "plain" }, { path: "/targetId", mode: "plain" }]);
+    expect(setStudioCheckStatus.audit.params).toEqual([{ path: "/applicationId", mode: "plain" }, { path: "/name", mode: "plain" }, { path: "/status", mode: "plain" }]);
+    for (const param of registerStudioCheck.audit.params) expect(param.path).not.toMatch(/expected|route|attribute/i);
+  });
+  it("the registry accepts them next to every other family", () => {
+    expect(() => buildRegistry([...DEMO_DEFINITIONS, registerStudioCheck, setStudioCheckStatus])).not.toThrow();
+  });
+  it("register: derives the NAME itself (the caller cannot send one), creates, and a second identical call is a no-op success", async () => {
+    const t = await setup();
+    expect(await t.add({})).toMatchObject({ status: "success" });
+    expect(await t.add({})).toMatchObject({ status: "success" });
+    const stored = await t.store.checks(TENANT, APP);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ kind: "element.visible", targetId: "orders.submit", route: null, attribute: null, expected: null, status: "active" });
+    expect(stored[0]!.name).toBe(checkName({ kind: "element.visible", targetId: "orders.submit", route: null, attribute: null, expected: null }));
+    expect(await t.add({ name: "check.v0000000000" })).toEqual({ status: "failure", code: "invalid_target" }); // a supplied name is not a field
+  });
+  it("register: refuses structurally bad checks before the store is asked, with the executor's fixed codes", async () => {
+    const t = await setup();
+    const spy = vi.spyOn(t.store, "registerCheck");
+    for (const bad of [{ kind: "element.exec" }, { kind: "route.equals", targetId: undefined, route: "Bad Route" }, { kind: "element.text.equals", expected: "" }, { kind: "element.attribute.equals", attribute: "onclick", expected: "x" },
+      { kind: "element.value.equals", expected: "a\nb" }, { kind: "element.visible", targetId: "dap.reserved" }, { kind: "element.visible", expected: "extra" }]) {
+      expect(await t.add(bad), JSON.stringify(bad)).toEqual({ status: "failure", code: "invalid_target" });
+    }
+    expect(await t.add({ applicationId: "nope" })).toEqual({ status: "failure", code: "id_refused" });
+    expect(spy).not.toHaveBeenCalled();
+  });
+  it("register: unknown or disabled targets, unknown routes, a value check on a button, a built-in or disabled application and a full registry are the store's fixed codes", async () => {
+    const t = await setup();
+    expect(await t.add({ targetId: "orders.missing" })).toEqual({ status: "failure", code: "target_not_found" });
+    expect(await t.add({ kind: "route.equals", targetId: undefined, route: "nowhere" })).toEqual({ status: "failure", code: "route_not_found" });
+    expect(await t.add({ kind: "element.value.equals", targetId: "orders.submit", expected: "x" })).toEqual({ status: "failure", code: "role_refused" });
+    expect(await t.add({ kind: "element.value.equals", targetId: "orders.note", expected: "x" })).toMatchObject({ status: "success" });
+    expect(await t.add({ kind: "route.equals", targetId: undefined, route: "orders" })).toMatchObject({ status: "success" });
+    await t.store.setStatus({ tenantId: TENANT, actor: "seed" }, APP, "orders.note", "disabled");
+    expect(await t.add({ kind: "element.hidden", targetId: "orders.note" })).toEqual({ status: "failure", code: "target_disabled" });
+    for (let i = 0; i < 98; i += 1) expect(await t.add({ kind: "element.text.equals", expected: `Text ${i}` })).toMatchObject({ status: "success" });
+    expect(await t.add({ kind: "element.text.equals", expected: "One more" })).toEqual({ status: "failure", code: "registry_full" });
+    await t.applications.setEnabled({ tenantId: TENANT, actor: "seed" }, APP, false);
+    expect(await t.add({ kind: "element.hidden" })).toEqual({ status: "failure", code: "application_disabled" });
+    expect(await (await setup({ managed: false })).add({})).toEqual({ status: "failure", code: "registry_not_managed" });
+    t.store.failWith = new Error("db down secret");
+    expect(await t.add({})).toEqual({ status: "failure", code: "store_unavailable" });
+  });
+  it("status: disables and re-enables by name, refuses an unknown name, a malformed id, a built-in application, and re-enabling in a disabled application", async () => {
+    const t = await setup();
+    await t.add({});
+    const [check] = await t.store.checks(TENANT, APP);
+    expect(await t.status({ name: check!.name })).toMatchObject({ status: "success" });
+    expect((await t.store.checks(TENANT, APP))[0]!.status).toBe("disabled");
+    expect(await t.status({ name: check!.name })).toMatchObject({ status: "success" }); // unchanged
+    expect(await t.status({ name: "check.v0000000000" })).toEqual({ status: "failure", code: "check_not_found" });
+    expect(await t.status({ applicationId: "nope" })).toEqual({ status: "failure", code: "id_refused" });
+    await t.applications.setEnabled({ tenantId: TENANT, actor: "seed" }, APP, false);
+    expect(await t.status({ name: check!.name, status: "active" })).toEqual({ status: "failure", code: "application_disabled" });
+    expect(await t.status({ name: check!.name, status: "disabled" })).toMatchObject({ status: "success" });
+    expect(await (await setup({ managed: false })).status({})).toEqual({ status: "failure", code: "registry_not_managed" });
+  });
+  it("tenant and actor come from the trusted context; the executors record received calls only in the host's own handle", async () => {
+    const t = await setup();
+    const { executors, trusted } = createTargetExecutors({ targets: t.store });
+    expect(executors.map((e) => e.id)).toContain("ex.studio-register-check");
+    expect(trusted.executorCalls("registerStudioCheck")).toBe(0);
   });
 });

@@ -84,7 +84,7 @@ describe("studio-managed applications", () => {
     expect(inTx).toEqual(await resolver.resolve(TENANT_A, record("studio-managed")));
   });
   it("managedRegistryData is pure and freezes its result", () => {
-    const resolved = managedRegistryData({ routes: [{ route: "orders", page: "/#/orders" }], elements: [] as never, markers: {} });
+    const resolved = managedRegistryData({ routes: [{ route: "orders", page: "/#/orders" }], elements: [] as never, markers: {}, checks: [] });
     expect(Object.isFrozen(resolved)).toBe(true);
     expect(resolved.registry.postconditionNames).toEqual(["route.orders"]);
   });

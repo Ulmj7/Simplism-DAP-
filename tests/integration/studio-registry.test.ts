@@ -312,7 +312,7 @@ describe("the maintainer routes for managed registries", () => {
     const t = await start();
     const appId = await t.createApplication();
     const empty = await t.call("GET", `/api/admin/applications/${appId}/registry`, "maintainer");
-    expect(empty.body).toEqual({ routes: [], elements: [], postconditionNames: [], previewable: false, source: "studio-managed", pages: {}, previewMode: "application-window" });
+    expect(empty.body).toEqual({ routes: [], elements: [], postconditionNames: [], previewable: false, source: "studio-managed", pages: {}, previewMode: "application-window", checks: [] });
     await t.registerOk(appId);
     await t.registerOk(appId, { targetId: "home.start", route: "home", page: "/", label: "Start" });
     const filled = await t.call("GET", `/api/admin/applications/${appId}/registry`, "maintainer");

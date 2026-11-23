@@ -355,3 +355,71 @@ describe("duplicate markers fail closed through the real routes (H5)", () => {
     } finally { PAGES["/#/orders"] = saved; }
   });
 });
+
+describe("managed target health, repair and checks through the real routes", () => {
+  it("keeps a published workflow bound to its durable id through page changes and excludes inactive verification checks", async () => {
+    const t = await start();
+    const applicationId = await t.createApplication();
+    const connected = await t.studio({ action: "connect", applicationId });
+    expect(connected.status).toBe(200);
+    const sessionId = connected.body.sessionId as string;
+    const command = (action: string, fields = {}) => t.studio({ action, applicationId, sessionId, ...fields });
+    expect((await command("refresh")).status).toBe(200);
+    expect((await t.studio(registerBody(sessionId, applicationId, {}))).status).toBe(200);
+    await t.registerOk(applicationId, { targetId: "orders.note", elementRole: "textbox", operations: ["highlight", "input"] });
+
+    const root = `/api/admin/applications/${applicationId}`;
+    const createCheck = { kind: "element.value.equals", targetId: "orders.note", expected: "Ready for dispatch" };
+    expect((await t.call("POST", `${root}/checks`, "user", createCheck)).status).toBe(403);
+    const created = await t.call("POST", `${root}/checks`, "maintainer", createCheck);
+    expect(created).toMatchObject({ status: 200, body: { ...createCheck, name: expect.stringMatching(/^check\.v[0-9a-f]{10}$/u), status: "active", route: null, attribute: null } });
+    expect((await t.call("POST", `${root}/checks`, "maintainer", createCheck)).body).toEqual(created.body);
+    const name = created.body.name as string;
+    const definition = managedDef();
+    Object.assign(definition.steps[1]!, { verify: name });
+    const workflow = await t.createWorkflow(applicationId, definition);
+    expect(workflow.res.status).toBe(201);
+    expect((await t.call("POST", `/api/admin/walkthroughs/${workflow.id}/status`, "maintainer", { status: "published" })).status).toBe(200);
+    expect((await t.call("GET", `${root}/checks`, "maintainer")).body).toEqual({ checks: [{ ...created.body, references: { drafts: 0, published: 1 } }] });
+    expect(JSON.stringify(await t.rows())).not.toContain(createCheck.expected);
+    expect(JSON.stringify(t.trustedTargets.receivedCalls("registerStudioCheck"))).not.toContain(createCheck.expected);
+
+    const runtime = t.runtimes[0]!;
+    runtime.inspectSemanticId = vi.fn(async (ref) => ref === "@e1" ? "orders.submitNew" : "orders.note");
+    runtime.inspectSemanticIds = vi.fn(async () => new Map<ElementRef, string>([["@e1", "orders.submitNew"], ["@e2", "orders.note"]]));
+    expect((await command("check")).body).toEqual({ page: "/#/orders", route: "orders", results: [
+      { targetId: "orders.submitButton", state: "broken", reason: "not_found" },
+      { targetId: "orders.note", state: "healthy" },
+    ] });
+    const repair = { targetId: "orders.submitButton", ref: "@e1", operations: ["highlight", "click"], label: "Submit order", description: "Submits the order." };
+    const preview = await command("repair", { ...repair, confirm: false });
+    expect(preview).toMatchObject({ status: 200, body: {
+      current: { marker: "orders.submitButton" }, proposed: { marker: "orders.submitNew" },
+      impact: { compatible: true, published: [{ id: workflow.id, version: 1 }] },
+    } });
+    const fixed = await command("repair", { ...repair, confirm: true });
+    expect(fixed).toMatchObject({ status: 200, body: { target: { id: repair.targetId, marker: "orders.submitNew", health: "healthy", revision: 2 } } });
+    expect((await t.call("GET", `${root}/targets/${repair.targetId}`, "maintainer")).body).toMatchObject({
+      changes: [{ revision: 2, changedBy: "maya", before: { marker: "orders.submitButton" }, after: { marker: "orders.submitNew" } }],
+    });
+
+    const bundle = () => t.call("GET", `/api/walkthroughs/published/${workflow.id}/bundle`, "user");
+    expect(await bundle()).toMatchObject({ status: 200, body: { registry: {
+      postconditionNames: ["route.orders", name], checks: [{ ...createCheck, name }],
+      elements: expect.arrayContaining([expect.objectContaining({ id: repair.targetId, marker: "orders.submitNew" })]),
+    } } });
+    expect((await t.call("POST", `${root}/checks/${name}/status`, "maintainer", { status: "disabled" })).body).toMatchObject({ status: "disabled" });
+    expect((await bundle()).status).toBe(404);
+    expect((await t.call("POST", `${root}/checks/${name}/status`, "maintainer", { status: "active" })).body).toMatchObject({ status: "active" });
+    expect((await bundle()).status).toBe(200);
+
+    expect((await t.call("POST", `${root}/targets/orders.note/status`, "maintainer", { status: "disabled" })).status).toBe(200);
+    expect((await t.call("GET", `${root}/registry`, "maintainer")).body).toMatchObject({
+      checks: [{ name, status: "active" }], postconditionNames: ["route.orders"],
+    });
+    expect((await bundle()).status).toBe(404);
+    expect((await t.createWorkflow(applicationId, definition)).res.status).toBe(422);
+    const other = await start();
+    expect((await other.call("GET", `${root}/checks`, "maintainer")).status).toBe(404);
+  });
+});

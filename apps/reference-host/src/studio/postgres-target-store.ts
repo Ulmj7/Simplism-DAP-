@@ -7,10 +7,12 @@ import { withTenant } from "../authoring/tenant-tx.js";
 import type { TenantClient, TenantPool } from "../authoring/tenant-tx.js";
 import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import { STUDIO_MANAGED_REGISTRY_ID, isApplicationId } from "./applications.js";
-import { lockApplicationShared } from "./application-lock.js";
+import { lockApplicationForRepair, lockApplicationShared } from "./application-lock.js";
 import { isPageFor, isTargetId } from "./registry-targets.js";
+import { VALUE_CHECK_ROLES, isCheckName } from "./registry-checks.js";
+import type { CheckKind, CheckAttribute, CheckRecord, CheckStatus, CheckView } from "./registry-checks.js";
 import type { RegistryRouteRecord, TargetOperation, TargetRecord, TargetView, RegistrableRole } from "./registry-targets.js";
-import type { DefinitionUsing, HealthOutcome, ManagedRegistry, RegisterOutcome, RepairFields, RepairOutcome, TargetChange, TargetListing, TargetStatusOutcome, TargetStore } from "./target-store.js";
+import type { CheckRegisterOutcome, CheckStatusOutcome, DefinitionUsing, HealthOutcome, ManagedRegistry, RegisterOutcome, RepairFields, RepairOutcome, TargetChange, TargetListing, TargetStatusOutcome, TargetStore } from "./target-store.js";
 import { impactOf } from "./repair-impact.js";
 
 const iso = (value: unknown): string => (value instanceof Date ? value.toISOString() : String(value));
@@ -46,12 +48,39 @@ async function referenceCounts(client: TenantClient, tenantId: string, applicati
   return new Map(rows.map((row) => [String(row.target_id), { drafts: Number(row.drafts), published: Number(row.published) }] as const));
 }
 
+function toCheck(row: Record<string, unknown>): CheckRecord {
+  const status = row.status;
+  if (status !== "active" && status !== "disabled") throw new Error("Unexpected stored status");
+  const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+  return Object.freeze({ name: String(row.name), kind: String(row.kind) as CheckKind, targetId: text(row.target_id), route: text(row.route), attribute: text(row.attribute) as CheckAttribute | null, expected: text(row.expected), status });
+}
+
+/** How many stored definitions name each check as the `verify` of a step, split by status. */
+async function checkReferenceCounts(client: TenantClient, tenantId: string, applicationId: string): Promise<ReadonlyMap<string, { drafts: number; published: number }>> {
+  const { rows } = await client.query(
+    `SELECT s.verify AS name,
+            count(DISTINCT d.walkthrough_id) FILTER (WHERE d.status = 'draft')::int AS drafts,
+            count(DISTINCT d.walkthrough_id) FILTER (WHERE d.status = 'published')::int AS published
+       FROM public.walkthrough_definitions d
+       CROSS JOIN LATERAL (SELECT step->>'verify' AS verify
+                             FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.definition->'steps') = 'array' THEN d.definition->'steps' ELSE '[]'::jsonb END) AS step
+                            WHERE jsonb_typeof(step) = 'object') s
+      WHERE d.tenant_id = $1::uuid AND d.application_id = $2 AND s.verify LIKE 'check.v%'
+      GROUP BY s.verify`, [tenantId, applicationId]);
+  return new Map(rows.map((row) => [String(row.name), { drafts: Number(row.drafts), published: Number(row.published) }] as const));
+}
+
 async function readRegistry(client: TenantClient, tenantId: string, applicationId: string): Promise<ManagedRegistry> {
   const routes = await client.query("SELECT route, page FROM public.studio_registry_routes WHERE tenant_id = $1::uuid AND application_id = $2 ORDER BY created_at, route", [tenantId, applicationId]);
   const targets = await client.query(
     `SELECT t.target_id, t.marker, t.route, t.role, t.label, t.description, t.operations, t.privacy FROM public.studio_registry_targets t
       WHERE t.tenant_id = $1::uuid AND t.application_id = $2 AND t.status = 'active' ORDER BY t.created_at, t.target_id`, [tenantId, applicationId]);
+  const checks = await client.query(
+    `SELECT c.name, c.kind, c.target_id, c.route, c.attribute, c.expected, c.status FROM public.studio_registry_checks c
+       LEFT JOIN public.studio_registry_targets t ON t.tenant_id = c.tenant_id AND t.application_id = c.application_id AND t.target_id = c.target_id
+      WHERE c.tenant_id = $1::uuid AND c.application_id = $2 AND c.status = 'active' AND (c.target_id IS NULL OR t.status = 'active') ORDER BY c.created_at, c.name`, [tenantId, applicationId]);
   return Object.freeze({
+    checks: Object.freeze(checks.rows.map(toCheck)),
     routes: Object.freeze(routes.rows.map((row): RegistryRouteRecord => Object.freeze({ route: String(row.route), page: String(row.page) }))),
     elements: Object.freeze(targets.rows.map((row) => Object.freeze({
       id: String(row.target_id), route: String(row.route), role: String(row.role), label: String(row.label), description: String(row.description),
@@ -76,7 +105,7 @@ async function readDefinitionsUsing(client: TenantClient, tenantId: string, appl
       WHERE d.tenant_id = $1::uuid AND d.application_id = $2
         AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.definition->'steps') = 'array' THEN d.definition->'steps' ELSE '[]'::jsonb END) AS step
                      WHERE jsonb_typeof(step) = 'object' AND step->>'target' = $3)
-      ORDER BY d.updated_at DESC, d.walkthrough_id LIMIT 200`, [tenantId, applicationId, targetId]);
+      ORDER BY d.updated_at DESC, d.walkthrough_id`, [tenantId, applicationId, targetId]);
   return Object.freeze(rows.map((row): DefinitionUsing => {
     const definition = row.definition as Record<string, unknown> | null;
     const title = typeof definition?.title === "string" ? definition.title : String(row.walkthrough_id);
@@ -117,11 +146,11 @@ export function createPostgresTargetStore(pool: TenantPool): TargetStore {
     },
 
     async registry(tenantId, applicationId) {
-      if (!isApplicationId(applicationId)) return { routes: [], elements: [] as never, markers: {} };
+      if (!isApplicationId(applicationId)) return { routes: [], elements: [] as never, markers: {}, checks: [] };
       return withTenant(pool, tenantId, (client) => readRegistry(client, tenantId, applicationId));
     },
     async registryIn(tx, tenantId, applicationId) {
-      if (!isApplicationId(applicationId)) return { routes: [], elements: [] as never, markers: {} };
+      if (!isApplicationId(applicationId)) return { routes: [], elements: [] as never, markers: {}, checks: [] };
       return readRegistry(tx, tenantId, applicationId);
     },
 
@@ -162,6 +191,70 @@ export function createPostgresTargetStore(pool: TenantPool): TargetStore {
       }
     },
 
+    async checks(tenantId, applicationId): Promise<readonly CheckView[]> {
+      if (!isApplicationId(applicationId)) return [];
+      return withTenant(pool, tenantId, async (client) => {
+        const { rows } = await client.query(
+          `SELECT name, kind, target_id, route, attribute, expected, status FROM public.studio_registry_checks WHERE tenant_id = $1::uuid AND application_id = $2 ORDER BY created_at, name`, [tenantId, applicationId]);
+        const counts = await checkReferenceCounts(client, tenantId, applicationId);
+        return Object.freeze(rows.map((row): CheckView => Object.freeze({ ...toCheck(row), references: Object.freeze(counts.get(String(row.name)) ?? { drafts: 0, published: 0 }) })));
+      });
+    },
+
+    async registerCheck(scope, applicationId, value): Promise<CheckRegisterOutcome> {
+      if (!isApplicationId(applicationId) || !ACTOR(scope.actor) || !isCheckName(value.name)) return { kind: "id_refused" };
+      try {
+        return await withTenant(pool, scope.tenantId, async (client): Promise<CheckRegisterOutcome> => {
+          const application = await lockApplicationShared(client, scope.tenantId, applicationId);
+          if (application === null) return { kind: "application_not_found" };
+          if (!application.enabled) return { kind: "application_disabled" };
+          if (application.registryId !== STUDIO_MANAGED_REGISTRY_ID) return { kind: "registry_not_managed" };
+          await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`studio-registry:${scope.tenantId}:${applicationId}`]);
+          const existing = await client.query("SELECT 1 FROM public.studio_registry_checks WHERE tenant_id = $1::uuid AND application_id = $2 AND name = $3", [scope.tenantId, applicationId, value.name]);
+          if (existing.rows.length > 0) return { kind: "existing" }; // create-or-get: an existing check is left exactly as it is
+          if (value.targetId !== null) {
+            const target = await client.query("SELECT role, status FROM public.studio_registry_targets WHERE tenant_id = $1::uuid AND application_id = $2 AND target_id = $3 FOR SHARE", [scope.tenantId, applicationId, value.targetId]);
+            const row = target.rows[0];
+            if (row === undefined) return { kind: "target_not_found" };
+            if (row.status !== "active") return { kind: "target_disabled" };
+            if (value.kind === "element.value.equals" && !(VALUE_CHECK_ROLES as readonly string[]).includes(String(row.role))) return { kind: "role_refused" };
+          }
+          if (value.route !== null) {
+            const route = await client.query("SELECT 1 FROM public.studio_registry_routes WHERE tenant_id = $1::uuid AND application_id = $2 AND route = $3", [scope.tenantId, applicationId, value.route]);
+            if (route.rows.length === 0) return { kind: "route_not_found" };
+          }
+          await client.query(
+            `INSERT INTO public.studio_registry_checks (tenant_id, application_id, name, kind, target_id, route, attribute, expected, status, created_by, updated_by)
+             VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $9)`,
+            [scope.tenantId, applicationId, value.name, value.kind, value.targetId, value.route, value.attribute, value.expected, scope.actor]);
+          return { kind: "created" };
+        });
+      } catch (error) {
+        const constraint = constraintOf(error);
+        if (constraint === "studio_registry_checks_cap") return { kind: "registry_full" };
+        if (constraint === "studio_registry_checks_pkey" || constraint === "studio_registry_checks_content_key") return { kind: "existing" };
+        if (constraint === "studio_registry_checks_value_role") return { kind: "role_refused" };
+        if (constraint === "studio_registry_checks_target_active") return { kind: "target_disabled" };
+        throw error;
+      }
+    },
+
+    async setCheckStatus(scope, applicationId, name, status: CheckStatus): Promise<CheckStatusOutcome> {
+      if (!isApplicationId(applicationId) || !ACTOR(scope.actor) || !isCheckName(name) || (status !== "active" && status !== "disabled")) return "id_refused";
+      return withTenant(pool, scope.tenantId, async (client): Promise<CheckStatusOutcome> => {
+        const application = await lockApplicationShared(client, scope.tenantId, applicationId);
+        if (application === null) return "application_not_found";
+        if (application.registryId !== STUDIO_MANAGED_REGISTRY_ID) return "registry_not_managed";
+        if (status === "active" && !application.enabled) return "application_disabled";
+        const { rows } = await client.query("SELECT status FROM public.studio_registry_checks WHERE tenant_id = $1::uuid AND application_id = $2 AND name = $3 FOR UPDATE", [scope.tenantId, applicationId, name]);
+        const row = rows[0];
+        if (row === undefined) return "check_not_found";
+        if (row.status === status) return "unchanged";
+        await client.query("UPDATE public.studio_registry_checks SET status = $4, updated_by = $5, updated_at = now() WHERE tenant_id = $1::uuid AND application_id = $2 AND name = $3", [scope.tenantId, applicationId, name, status, scope.actor]);
+        return "changed";
+      });
+    },
+
     async definitionsUsing(tenantId, applicationId, targetId): Promise<readonly DefinitionUsing[]> {
       if (!isApplicationId(applicationId) || !isTargetId(targetId)) return [];
       return withTenant(pool, tenantId, (client) => readDefinitionsUsing(client, tenantId, applicationId, targetId));
@@ -197,7 +290,7 @@ export function createPostgresTargetStore(pool: TenantPool): TargetStore {
       if (!isApplicationId(applicationId) || !ACTOR(scope.actor) || !isTargetId(targetId) || !isTargetId(value.marker)) return { kind: "id_refused" };
       try {
         return await withTenant(pool, scope.tenantId, async (client): Promise<RepairOutcome> => {
-          const application = await lockApplicationShared(client, scope.tenantId, applicationId);
+          const application = await lockApplicationForRepair(client, scope.tenantId, applicationId);
           if (application === null) return { kind: "application_not_found" };
           if (!application.enabled) return { kind: "application_disabled" };
           if (application.registryId !== STUDIO_MANAGED_REGISTRY_ID) return { kind: "registry_not_managed" };

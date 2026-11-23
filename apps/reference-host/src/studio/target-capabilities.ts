@@ -23,6 +23,8 @@ import { APPLICATION_RESOURCE_TYPE } from "./application-capabilities.js";
 import { isApplicationId } from "./applications.js";
 import { registerTargetInputSchema, repairTargetInputSchema, targetHealthInputSchema, targetStatusInputSchema, validateTargetRegistration, validateTargetRepair } from "./registry-targets.js";
 import type { RegisterTargetInput, RepairTargetInput, TargetHealthInput, TargetStatusInput } from "./registry-targets.js";
+import { checkStatusInputSchema, registerCheckInputSchema, validateCheckRegistration } from "./registry-checks.js";
+import type { CheckStatusInput, RegisterCheckInput } from "./registry-checks.js";
 import type { RegisterOutcome, RepairOutcome, TargetStore } from "./target-store.js";
 import { verifyRepair } from "./repair-impact.js";
 
@@ -34,7 +36,11 @@ export const TARGET_HEALTH_ACTION_ID = "setStudioTargetHealth";
 export const REPAIR_TARGET_ACTION_ID = "repairStudioTarget";
 export const TARGET_HEALTH_EXECUTOR_ID = "ex.studio-set-target-health";
 export const REPAIR_TARGET_EXECUTOR_ID = "ex.studio-repair-target";
-export const TARGET_ACTION_IDS: readonly string[] = Object.freeze([REGISTER_TARGET_ACTION_ID, TARGET_STATUS_ACTION_ID, TARGET_HEALTH_ACTION_ID, REPAIR_TARGET_ACTION_ID]);
+export const REGISTER_CHECK_ACTION_ID = "registerStudioCheck";
+export const CHECK_STATUS_ACTION_ID = "setStudioCheckStatus";
+export const REGISTER_CHECK_EXECUTOR_ID = "ex.studio-register-check";
+export const CHECK_STATUS_EXECUTOR_ID = "ex.studio-set-check-status";
+export const TARGET_ACTION_IDS: readonly string[] = Object.freeze([REGISTER_TARGET_ACTION_ID, TARGET_STATUS_ACTION_ID, TARGET_HEALTH_ACTION_ID, REPAIR_TARGET_ACTION_ID, REGISTER_CHECK_ACTION_ID, CHECK_STATUS_ACTION_ID]);
 
 const resource = (params: { readonly applicationId: string }): ResourceRef | null => ({ type: APPLICATION_RESOURCE_TYPE, id: params.applicationId });
 
@@ -98,10 +104,42 @@ export const repairStudioTarget: ActionDefinition<RepairTargetInput> = defineAct
   executorId: REPAIR_TARGET_EXECUTOR_ID as ExecutorId,
 });
 
+export const registerStudioCheck: ActionDefinition<RegisterCheckInput> = defineAction({
+  id: REGISTER_CHECK_ACTION_ID as ActionId,
+  version: 1,
+  description: "Registers one verification check (a closed, read-only observation of the page: the route, an element shown or hidden, its text, value or an allow-listed attribute) of a Studio-managed application, which a guide step may name as its verify. Create-or-get by the name the host derives from the content. Maintainer only; never enter secrets in an expected value.",
+  inputSchema: registerCheckInputSchema,
+  risk: "MEDIUM",
+  requiredPermission: MAINTAIN_PERMISSION as PermissionId,
+  allowedPages: "any",
+  confirmation: { kind: "not-required", justification: MEDIUM_JUSTIFICATION },
+  changesState: true,
+  // Ids only: the expected value, route and attribute are never audited.
+  audit: { params: [{ path: "/applicationId", mode: "plain" }, { path: "/kind", mode: "plain" }, { path: "/targetId", mode: "plain" }] },
+  resource,
+  executorId: REGISTER_CHECK_EXECUTOR_ID as ExecutorId,
+});
+
+export const setStudioCheckStatus: ActionDefinition<CheckStatusInput> = defineAction({
+  id: CHECK_STATUS_ACTION_ID as ActionId,
+  version: 1,
+  description: "Disables or re-enables a verification check of a Studio-managed application. A disabled check is no longer a postcondition a guide may name. Maintainer only.",
+  inputSchema: checkStatusInputSchema,
+  risk: "MEDIUM",
+  requiredPermission: MAINTAIN_PERMISSION as PermissionId,
+  allowedPages: "any",
+  confirmation: { kind: "not-required", justification: MEDIUM_JUSTIFICATION },
+  changesState: true,
+  audit: { params: [{ path: "/applicationId", mode: "plain" }, { path: "/name", mode: "plain" }, { path: "/status", mode: "plain" }] },
+  resource,
+  executorId: CHECK_STATUS_EXECUTOR_ID as ExecutorId,
+});
+
 /** The failure codes of the executors (short, fixed). */
 export type TargetFailureCode =
   | "invalid_target" | "page_refused" | "application_not_found" | "application_disabled" | "registry_not_managed" | "target_exists" | "route_mismatch" | "registry_full"
-  | "target_not_found" | "id_refused" | "store_unavailable" | "marker_in_use" | "unchanged" | "incompatible";
+  | "target_not_found" | "id_refused" | "store_unavailable" | "marker_in_use" | "unchanged" | "incompatible"
+  | "target_disabled" | "route_not_found" | "role_refused" | "check_not_found";
 
 /** The host's own record of what the executors received (never reachable from an AI session). */
 export interface TargetTrustedHandle {
@@ -180,6 +218,31 @@ export async function runRepairTarget(targets: TargetStore, call: TargetCall<Rep
   } catch { return failure("store_unavailable"); }
 }
 
+/** The check registration executor: it re-validates the structure, DERIVES the name itself (the caller never supplies one) and leaves the rest (target active, role, route, cap) to the store under its lock. The expected value is never written anywhere but the table. */
+export async function runRegisterCheck(targets: TargetStore, call: TargetCall<RegisterCheckInput>) {
+  const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
+  const { applicationId, ...candidate } = call.params;
+  if (!isApplicationId(applicationId)) return failure("id_refused");
+  const checked = validateCheckRegistration(candidate);
+  if (!checked.ok) return failure("invalid_target");
+  try {
+    const outcome = await targets.registerCheck(scope, applicationId, checked.value);
+    if (outcome.kind === "created" || outcome.kind === "existing") return { status: "success" as const, affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+    return failure(outcome.kind);
+  } catch { return failure("store_unavailable"); }
+}
+
+export async function runSetCheckStatus(targets: TargetStore, call: TargetCall<CheckStatusInput>) {
+  const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
+  const { applicationId, name, status } = call.params;
+  if (!isApplicationId(applicationId)) return failure("id_refused");
+  try {
+    const outcome = await targets.setCheckStatus(scope, applicationId, name, status);
+    if (outcome === "changed" || outcome === "unchanged") return { status: "success" as const, affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+    return failure(outcome);
+  } catch { return failure("store_unavailable"); }
+}
+
 export async function runRegisterTarget(targets: TargetStore, call: TargetCall<RegisterTargetInput>) {
   // Tenant and actor come from the trusted context only.
   const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
@@ -253,15 +316,31 @@ export function createTargetExecutors(deps: TargetCapabilityDeps): { readonly ex
     },
   });
 
+  const registerCheck = defineExecutor<RegisterCheckInput>({
+    id: REGISTER_CHECK_EXECUTOR_ID,
+    run: async (call) => {
+      record(REGISTER_CHECK_ACTION_ID, { applicationId: call.params.applicationId, kind: call.params.kind, targetId: call.params.targetId });
+      return runRegisterCheck(targets, call);
+    },
+  });
+
+  const checkStatus = defineExecutor<CheckStatusInput>({
+    id: CHECK_STATUS_EXECUTOR_ID,
+    run: async (call) => {
+      record(CHECK_STATUS_ACTION_ID, call.params);
+      return runSetCheckStatus(targets, call);
+    },
+  });
+
   const trusted: TargetTrustedHandle = Object.freeze({
     receivedCalls: (actionId: string) => Object.freeze([...(received.get(actionId) ?? [])]),
     executorCalls: (actionId?: string) => (actionId === undefined ? total : (received.get(actionId)?.length ?? 0)),
   });
-  return { executors: Object.freeze([register, status, health, repair]), trusted };
+  return { executors: Object.freeze([register, status, health, repair, registerCheck, checkStatus]), trusted };
 }
 
-/** The host extension that adds both capabilities and their executors. Each is still OFF unless `DAP_ENABLED_ACTIONS` lists it (default deny). */
+/** The host extension that adds all capabilities and their executors. Each is still OFF unless `DAP_ENABLED_ACTIONS` lists it (default deny). */
 export function createTargetExtension(deps: TargetCapabilityDeps): { readonly extension: HostExtension; readonly trusted: TargetTrustedHandle } {
   const { executors, trusted } = createTargetExecutors(deps);
-  return { extension: Object.freeze({ definitions: Object.freeze([registerStudioTarget, setStudioTargetStatus, setStudioTargetHealth, repairStudioTarget]), executors }), trusted };
+  return { extension: Object.freeze({ definitions: Object.freeze([registerStudioTarget, setStudioTargetStatus, setStudioTargetHealth, repairStudioTarget, registerStudioCheck, setStudioCheckStatus]), executors }), trusted };
 }
