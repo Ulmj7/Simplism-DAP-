@@ -40,8 +40,8 @@ afterEach(async () => { await Promise.all([...closers.splice(0).map((close) => c
 
 const NAME = "Distinctive-Application-Name-3319";
 const ORIGIN = "http://127.0.0.1:5199";
-const referenceConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: NAME, origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "development", registryId: "reference", ...over });
-const fixtureConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Second application", origin: ORIGIN, allowedOrigins: [ORIGIN], environment: "test", registryId: "fixture", ...over });
+const referenceConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: NAME, origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "development", registryId: "reference", routing: "hash", runtimeAccess: false, ...over });
+const fixtureConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Second application", origin: ORIGIN, allowedOrigins: [ORIGIN], environment: "test", registryId: "fixture", routing: "hash", runtimeAccess: false, ...over });
 const profileDef = (over: Record<string, unknown> = {}) => ({
   title: "Save your name", description: "Change your display name and save it.", start: "n1",
   steps: [{ id: "n1", kind: "navigate", route: "profile", next: "s1" }, { id: "s1", kind: "guide", target: "profile.saveButton", text: "Press Save.", wait: "click", verify: "profile.saved", next: "done" }, { id: "done", kind: "complete", text: "Done." }],

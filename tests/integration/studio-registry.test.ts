@@ -66,7 +66,7 @@ describe("registerStudioTarget through the real Gateway", () => {
   it("values beyond the schema bounds (an 81-character id, an empty description, five operations) are refused by the strict schema with INVALID_PARAMETERS and stored nothing", async () => {
     const t = await start();
     const appId = await t.createApplication();
-    for (const over of [{ targetId: `orders.${"a".repeat(74)}` }, { description: "" }, { label: "" }, { operations: ["highlight", "click", "input", "focus", "x"] }, { page: `/#/${"a".repeat(120)}` }]) {
+    for (const over of [{ targetId: `orders.${"a".repeat(74)}` }, { description: "" }, { label: "" }, { operations: ["highlight", "click", "input", "focus", "x"] }, { page: `/${"a".repeat(200)}` }]) {
       expect((await t.registerTarget(appId, over)).outcome, JSON.stringify(over).slice(0, 40)).toBe("INVALID_PARAMETERS");
     }
     expect(await t.targets.list(t.tenant, appId)).toEqual({ targets: [], routes: [] });
@@ -384,11 +384,15 @@ describe("published, external and bundle", () => {
     expect(list.body.external).toEqual([{ id: guide.id, title: "Submit an order", description: "Submit the order.", application: { id: managed, name: "Orders app", origin: "http://127.0.0.1:5187" } }]);
     const bundle = await t.call("GET", `/api/walkthroughs/published/${guide.id}/bundle`, "user");
     expect(bundle.status).toBe(200);
-    expect(Object.keys(bundle.body).sort()).toEqual(["application", "definition", "registry"]);
+    expect(Object.keys(bundle.body).sort()).toEqual(["application", "definition", "registry", "version"]);
+    expect(bundle.body.version).toBe(1);
     expect(bundle.body.application).toEqual({ id: managed, name: "Orders app", origin: "http://127.0.0.1:5187" });
     expect(bundle.body.definition).toMatchObject({ id: guide.id, title: "Submit an order" });
-    const registry = bundle.body.registry as { routes: string[]; elements: { id: string; privacy: string }[]; postconditionNames: string[]; pages: Record<string, string> };
-    expect(Object.keys(registry).sort()).toEqual(["elements", "pages", "postconditionNames", "routes"]);
+    const registry = bundle.body.registry as { routes: string[]; elements: { id: string; marker: string; privacy: string }[]; postconditionNames: string[]; pages: Record<string, string>; checks: unknown[]; routing: string };
+    expect(Object.keys(registry).sort()).toEqual(["checks", "elements", "pages", "postconditionNames", "routes", "routing"]);
+    expect(registry.routing).toBe("hash");
+    expect(registry.checks).toEqual([]);
+    expect(registry.elements.map((e) => [e.id, e.marker])).toEqual([["orders.submitButton", "orders.submitButton"], ["orders.note", "orders.note"]]);
     expect(registry.routes).toEqual(["orders"]);
     expect(registry.elements.map((e) => [e.id, e.privacy])).toEqual([["orders.submitButton", "public"], ["orders.note", "public"]]);
     expect(registry.postconditionNames).toEqual(["route.orders"]);

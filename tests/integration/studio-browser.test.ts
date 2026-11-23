@@ -46,8 +46,8 @@ const FIXTURE_B_ENTRY: RegistryEntry = {
   registry: fixtureB.registry as unknown as RegistryEntry["registry"],
   browser: { labels: fixtureB.browser.labels, pages: fixtureB.browser.pages },
 };
-const referenceConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Reference application", origin: "http://127.0.0.1:5184", allowedOrigins: ["http://127.0.0.1:5184"], environment: "development", registryId: "reference", ...over });
-const fixtureConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Fixture B", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185"], environment: "test", registryId: "fixture-b", ...over });
+const referenceConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Reference application", origin: "http://127.0.0.1:5184", allowedOrigins: ["http://127.0.0.1:5184"], environment: "development", registryId: "reference", routing: "hash", runtimeAccess: false, ...over });
+const fixtureConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Fixture B", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185"], environment: "test", registryId: "fixture-b", routing: "hash", runtimeAccess: false, ...over });
 const profileDef = (over: Record<string, unknown> = {}) => ({
   title: "Save your name", description: "Change your display name and save it.", start: "n1",
   steps: [{ id: "n1", kind: "navigate", route: "profile", next: "s1" }, { id: "s1", kind: "guide", target: "profile.saveButton", text: "Press Save.", wait: "click", verify: "profile.saved", next: "done" }, { id: "done", kind: "complete", text: "Done." }],
