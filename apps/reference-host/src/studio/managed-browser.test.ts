@@ -413,7 +413,31 @@ describe("register: the trust chain persists a target ONLY through the Gateway c
       };
       expect((await h2.command(registerBody())).body).toEqual({ error: "TARGET_EXISTS" });
     });
-    it("a disabled application found by the diagnosis closes the session", async () => {
+    it("the diagnosis explains a route clash and a full registry that the executor found under its lock (the pre-checks passed on an older read)", async () => {
+      const seed = { operations: ["highlight", "click"], privacy: "public" } as const;
+      const clash = await ready();
+      const realClash = clash.targets.register.bind(clash.targets);
+      clash.targets.register = async (scope, applicationId, value) => {
+        await realClash(scope, applicationId, { ...value, targetId: "orders.winner", route: "orderList", ...seed, label: "W", description: "W." });
+        return { kind: "route_mismatch" };
+      };
+      expect((await clash.command(registerBody())).body).toEqual({ error: "ROUTE_MISMATCH" });
+      const full = await ready();
+      const realFull = full.targets.register.bind(full.targets);
+      full.targets.register = async (scope, applicationId, value) => {
+        for (let i = 0; i < 200; i += 1) await realFull(scope, applicationId, { ...value, targetId: `bulk.t${i}`, ...seed, label: "B", description: "B." });
+        return { kind: "registry_full" };
+      };
+      expect((await full.command(registerBody())).body).toEqual({ error: "REGISTRY_FULL" });
+    });
+    it("a registration the store cannot read back is BROWSER_UNAVAILABLE, never a reply with an empty target", async () => {
+      const h = await ready();
+      h.targets.get = async () => null;
+      const res = await h.command(registerBody());
+      expect(res).toMatchObject({ status: 503, body: { error: "BROWSER_UNAVAILABLE" } });
+      expect(res.raw).not.toContain("target");
+    });
+  it("a disabled application found by the diagnosis closes the session", async () => {
       const h = await ready();
       const original = h.targets.register.bind(h.targets);
       h.targets.register = async (scope, applicationId, value) => { await h.applications.setEnabled({ tenantId: TENANT_A, actor: "seed" }, MANAGED, false); return original(scope, applicationId, value); };

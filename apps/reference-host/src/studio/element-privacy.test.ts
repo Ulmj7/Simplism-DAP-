@@ -21,6 +21,7 @@ const PRIVACY_VECTORS: readonly (readonly [string, ElementFacts, "public" | "ign
   ["autocomplete current-password", facts({ autocomplete: "current-password" }), "ignore"],
   ["autocomplete new-password", facts({ autocomplete: "new-password" }), "ignore"],
   ["autocomplete one-time-code", facts({ autocomplete: "one-time-code" }), "ignore"],
+  ["autocomplete in capitals with spaces", facts({ autocomplete: "  CC-Number  " }), "ignore"],
   ["autocomplete email is public", facts({ autocomplete: "email" }), "public"],
   ["autocomplete off is public", facts({ autocomplete: "off" }), "public"],
   ["autocomplete beats private", facts({ autocomplete: "cc-name", dataAiPrivate: true }), "ignore"],

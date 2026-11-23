@@ -257,3 +257,48 @@ describe("what a managed registration never touches", () => {
     expect((await t.targets.list(t.tenant, appId)).targets).toEqual([]);
   });
 });
+
+describe("scoping, authorship and the in-transaction re-check (mutation pass D16)", () => {
+  it("two managed applications of ONE tenant with the same target id and route name keep separate registries: get, list and the validator registry never cross", async () => {
+    const t = await start();
+    const one = await t.createApplication(managedConfig({ name: "One" }));
+    const two = await t.createApplication(managedConfig({ name: "Two", origin: "http://127.0.0.1:5188", allowedOrigins: ["http://127.0.0.1:5188"] }));
+    await t.registerOk(one, { label: "First one", route: "orders", page: "/#/orders" });
+    await t.registerOk(two, { label: "Second one", route: "orders", page: "/#/other" });
+    await t.registerOk(two, { targetId: "extra.only", route: "extra", page: "/#/extra", label: "Extra" });
+    expect((await t.targets.get(t.tenant, one, "orders.submitButton"))?.label).toBe("First one");
+    expect((await t.targets.get(t.tenant, two, "orders.submitButton"))?.label).toBe("Second one");
+    expect(await t.targets.get(t.tenant, one, "extra.only")).toBeNull();
+    expect((await t.targets.list(t.tenant, one)).targets.map((x) => x.id)).toEqual(["orders.submitButton"]);
+    const registry = await t.targets.registry(t.tenant, one);
+    expect(registry.routes).toEqual([{ route: "orders", page: "/#/orders" }]);
+    expect((registry.elements as unknown as { id: string }[]).map((e) => e.id)).toEqual(["orders.submitButton"]);
+    expect((await t.targets.registry(t.tenant, two)).routes).toEqual([{ route: "orders", page: "/#/other" }, { route: "extra", page: "/#/extra" }]);
+    // a status change names ONE application's target
+    expect(await t.targets.setStatus({ tenantId: t.tenant, actor: "maya" }, one, "orders.submitButton", "disabled")).toBe("changed");
+    expect((await t.targets.get(t.tenant, two, "orders.submitButton"))?.status).toBe("active");
+  });
+  it("the actor of a registration is the trusted session's user, on the route and on the target; a status change records its own actor", async () => {
+    const t = await start();
+    const appId = await t.createApplication(managedConfig());
+    await t.registerOk(appId);
+    const rows = await t.sql((client) => client.query("SELECT r.created_by AS route_by, t.created_by AS target_by, t.updated_by AS updated_by FROM public.studio_registry_targets t JOIN public.studio_registry_routes r ON r.tenant_id = t.tenant_id AND r.application_id = t.application_id AND r.route = t.route"));
+    expect(rows.rows).toEqual([{ route_by: "maya", target_by: "maya", updated_by: "maya" }]);
+  });
+  it("saving a draft re-validates against the registry INSIDE the write transaction: a target disabled after the executor's first read refuses the save and stores nothing", async () => {
+    let armed = false;
+    let disable: (() => Promise<unknown>) | null = null;
+    const t = await startHost(closers, hosts, owner, { wrapTargets: (real) => ({ ...real, registry: async (tenantId, applicationId) => {
+      const answer = await real.registry(tenantId, applicationId);
+      if (armed && disable !== null) { armed = false; await disable(); }
+      return answer;
+    } }) });
+    const appId = await t.createApplication(managedConfig());
+    await t.registerOk(appId);
+    disable = () => t.targets.setStatus({ tenantId: t.tenant, actor: "maya" }, appId, "orders.submitButton", "disabled");
+    armed = true;
+    const feedback = await t.submit("saveWalkthroughDraft", { walkthroughId: "wt-0000000000f1", applicationId: appId, definition: { ...managedDef(), id: "wt-0000000000f1" } });
+    expect(feedback).toEqual({ outcome: "ALLOWED", category: "try_later" });
+    expect(await t.realStore.get(t.tenant, "wt-0000000000f1")).toBeNull();
+  });
+});

@@ -10,7 +10,7 @@ import { FakeApplicationStore } from "./fake-application-store.js";
 import { FakeTargetStore } from "./fake-target-store.js";
 import { createRegistryCatalog } from "./registries.js";
 import {
-  REGISTER_TARGET_ACTION_ID, REGISTER_TARGET_EXECUTOR_ID, TARGET_ACTION_IDS, TARGET_STATUS_ACTION_ID, TARGET_STATUS_EXECUTOR_ID, createTargetExtension, registerStudioTarget, setStudioTargetStatus,
+  REGISTER_TARGET_ACTION_ID, REGISTER_TARGET_EXECUTOR_ID, TARGET_ACTION_IDS, TARGET_STATUS_ACTION_ID, TARGET_STATUS_EXECUTOR_ID, createTargetExtension, runRegisterTarget, runSetTargetStatus, registerStudioTarget, setStudioTargetStatus,
 } from "./target-capabilities.js";
 
 const APP = "app-0123456789ab";
@@ -90,5 +90,56 @@ describe("the strict inputs", () => {
   it("accept the exact register shape and refuse a bad application id", () => {
     expect(register(input)).toBe(true);
     expect(register({ ...input, applicationId: "reference" })).toBe(false);
+  });
+});
+
+// --- the executor is the persistence authority: run it directly against a recording store (mutation pass D16) -----------------------------------------------------------------
+describe("the register executor, called directly", () => {
+  const SEC = { tenantId: TENANT, userId: "maya" };
+  async function setup() {
+    const applications = new FakeApplicationStore();
+    await applications.save({ tenantId: TENANT, actor: "seed" }, APP, { name: "Managed", origin: "http://127.0.0.1:5187", allowedOrigins: ["http://127.0.0.1:5187"], environment: "test", registryId: "studio-managed" });
+    const store = new FakeTargetStore(applications);
+    const registerSpy: unknown[][] = [];
+    const real = store.register.bind(store);
+    store.register = async (...args) => { registerSpy.push(args); return real(...args); };
+    const run = (params: unknown) => runRegisterTarget(store, { params: params as never, security: SEC as never });
+    return { store, registerSpy, run };
+  }
+  it("a registration the validator refuses (a role outside the registry roles) never reaches the store and is invalid_target", async () => {
+    const { run, registerSpy } = await setup();
+    expect(await run({ ...input, elementRole: "slider" })).toEqual({ status: "failure", code: "invalid_target" });
+    expect(await run({ ...input, operations: ["highlight", "input"] })).toEqual({ status: "failure", code: "invalid_target" });
+    expect(registerSpy).toEqual([]);
+  });
+  it("a malformed application id is id_refused before the store is asked", async () => {
+    const { run, registerSpy } = await setup();
+    expect(await run({ ...input, applicationId: "nope" })).toEqual({ status: "failure", code: "id_refused" });
+    expect(registerSpy).toEqual([]);
+  });
+  it("hands the store the VALIDATED value (trimmed text, canonical operation order) with tenant and actor taken from the trusted security context only", async () => {
+    const { run, registerSpy, store } = await setup();
+    expect(await run({ ...input, label: "  Submit  ", operations: ["click", "highlight"] })).toMatchObject({ status: "success" });
+    expect(registerSpy).toHaveLength(1);
+    expect(registerSpy[0]![0]).toEqual({ tenantId: TENANT, actor: "maya" });
+    expect(registerSpy[0]![2]).toMatchObject({ label: "Submit", operations: ["highlight", "click"] });
+    expect((await store.get(TENANT, APP, "orders.submit"))?.label).toBe("Submit");
+  });
+  it("a store outcome other than created is the failure with that code; a store that throws is store_unavailable, never a success", async () => {
+    const { run, store } = await setup();
+    expect(await run(input)).toMatchObject({ status: "success" });
+    expect(await run(input)).toEqual({ status: "failure", code: "target_exists" });
+    store.failWith = new Error("db down");
+    expect(await run({ ...input, targetId: "orders.other" })).toEqual({ status: "failure", code: "store_unavailable" });
+  });
+  it("the status executor: a refusal is its failure code, a thrown store error is store_unavailable, and the requested status is what the store gets", async () => {
+    const { store } = await setup();
+    const status = (params: unknown) => runSetTargetStatus(store, { params: params as never, security: SEC as never });
+    await store.register({ tenantId: TENANT, actor: "seed" }, APP, { targetId: "orders.submit", route: "orders", page: "/#/orders", role: "button", label: "S", description: "S.", operations: ["highlight", "click"], privacy: "public" });
+    expect(await status({ applicationId: APP, targetId: "orders.submit", status: "disabled" })).toMatchObject({ status: "success" });
+    expect((await store.get(TENANT, APP, "orders.submit"))?.status).toBe("disabled");
+    expect(await status({ applicationId: APP, targetId: "orders.missing", status: "active" })).toEqual({ status: "failure", code: "target_not_found" });
+    store.failWith = new Error("db down");
+    expect(await status({ applicationId: APP, targetId: "orders.submit", status: "active" })).toEqual({ status: "failure", code: "store_unavailable" });
   });
 });

@@ -15,7 +15,7 @@
  * caller, proves that before it asks. There is no HTTP route that accepts a raw target.
  */
 import { defineAction, defineExecutor } from "@dap/contracts";
-import type { ActionDefinition, ActionExecutor, ActionId, ExecutorId, PermissionId, ResourceRef } from "@dap/contracts";
+import type { ActionDefinition, ActionExecutor, ActionId, ExecutionCall, ExecutorId, PermissionId, ResourceRef } from "@dap/contracts";
 import type { HostExtension } from "../compose.js";
 import { MAINTAIN_PERMISSION, MEDIUM_JUSTIFICATION } from "../authoring/capabilities.js";
 import { APPLICATION_RESOURCE_TYPE } from "./application-capabilities.js";
@@ -77,6 +77,34 @@ export interface TargetCapabilityDeps { readonly targets: TargetStore }
 const MAX_RECORDED = 100;
 const failure = (code: TargetFailureCode) => ({ status: "failure" as const, code });
 
+/** What an executor body needs of a call: the validated params and the TRUSTED security context (exported so the bodies can be tested without a Gateway grant). */
+export type TargetCall<P> = Pick<ExecutionCall<P>, "params" | "security">;
+
+export async function runRegisterTarget(targets: TargetStore, call: TargetCall<RegisterTargetInput>) {
+  // Tenant and actor come from the trusted context only.
+  const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
+  const { applicationId, ...candidate } = call.params;
+  if (!isApplicationId(applicationId)) return failure("id_refused");
+  const checked = validateTargetRegistration(candidate);
+  if (!checked.ok) return failure("invalid_target");
+  try {
+    const outcome = await targets.register(scope, applicationId, checked.value);
+    if (outcome.kind === "created") return { status: "success" as const, affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+    return failure(outcome.kind);
+  } catch { return failure("store_unavailable"); }
+}
+
+export async function runSetTargetStatus(targets: TargetStore, call: TargetCall<TargetStatusInput>) {
+  const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
+  const { applicationId, targetId } = call.params;
+  if (!isApplicationId(applicationId)) return failure("id_refused");
+  try {
+    const outcome = await targets.setStatus(scope, applicationId, targetId, call.params.status);
+    if (outcome === "changed" || outcome === "unchanged") return { status: "success" as const, affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+    return failure(outcome);
+  } catch { return failure("store_unavailable"); }
+}
+
 export function createTargetExecutors(deps: TargetCapabilityDeps): { readonly executors: readonly ActionExecutor[]; readonly trusted: TargetTrustedHandle } {
   const { targets } = deps;
   const received = new Map<string, unknown[]>();
@@ -93,17 +121,7 @@ export function createTargetExecutors(deps: TargetCapabilityDeps): { readonly ex
     id: REGISTER_TARGET_EXECUTOR_ID,
     run: async (call) => {
       record(REGISTER_TARGET_ACTION_ID, call.params);
-      // Tenant and actor come from the trusted context only.
-      const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
-      const { applicationId, ...candidate } = call.params;
-      if (!isApplicationId(applicationId)) return failure("id_refused");
-      const checked = validateTargetRegistration(candidate);
-      if (!checked.ok) return failure("invalid_target");
-      try {
-        const outcome = await targets.register(scope, applicationId, checked.value);
-        if (outcome.kind === "created") return { status: "success", affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
-        return failure(outcome.kind);
-      } catch { return failure("store_unavailable"); }
+      return runRegisterTarget(targets, call);
     },
   });
 
@@ -111,14 +129,7 @@ export function createTargetExecutors(deps: TargetCapabilityDeps): { readonly ex
     id: TARGET_STATUS_EXECUTOR_ID,
     run: async (call) => {
       record(TARGET_STATUS_ACTION_ID, call.params);
-      const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
-      const { applicationId, targetId } = call.params;
-      if (!isApplicationId(applicationId)) return failure("id_refused");
-      try {
-        const outcome = await targets.setStatus(scope, applicationId, targetId, call.params.status);
-        if (outcome === "changed" || outcome === "unchanged") return { status: "success", affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
-        return failure(outcome);
-      } catch { return failure("store_unavailable"); }
+      return runSetTargetStatus(targets, call);
     },
   });
 
