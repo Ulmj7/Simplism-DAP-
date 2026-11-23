@@ -3,10 +3,11 @@
  * page with their accessible names; this module decides, from the page's own markers, the privacy facts read from the LIVE elements and the CURRENT registry, which of them may be shown and in what
  * state. NOTHING about an element that is not listed leaves the host: no name, no role, only the `hidden` count.
  *
- *   trusted      the marker equals an ACTIVE target of the SAME route and the mapped role (its operations are returned)
- *   disabled     the marker equals a DISABLED target of the same route and role (name + target id only)
+ *   trusted      the marker equals the MARKER of an ACTIVE target of the SAME route and the mapped role (its operations are returned)
+ *   mismatched   the marker equals the marker of an ACTIVE target but the route or the role differs: the candidate a repair re-binds the target to (name, role, target id, which problem)
+ *   disabled     the marker equals the marker of a DISABLED target of the same route and role (name + target id only)
  *   registrable  a new valid marker, a registrable role (D5), public by its facts, a name that is not on the secret deny-list, on a hash-routed page, with room in the registry
- *   (hidden)     everything else: no marker, an invalid or reserved marker, a non-registrable role, a target of another route or role, a non-public or secret-looking element, a page that is not
+ *   (hidden)     everything else: no marker, an invalid or reserved marker, a non-registrable role, a target of another route or role that is disabled, the id of a target that moved to another marker, a non-public or secret-looking element, a page that is not
  *                hash-routed, a registry at its caps, an element whose facts could not be read
  *
  * A marker on more than one inspected control is ambiguous and hides all of them.
@@ -38,7 +39,9 @@ export interface RegistrationProposal {
   readonly privacy: "public";
 }
 export interface ManagedRegistrable { readonly ref: ElementRef; readonly name: string; readonly role: string; readonly route: string | null; readonly status: "registrable"; readonly proposal: RegistrationProposal }
-export type ManagedCandidate = ManagedTrusted | ManagedDisabled | ManagedRegistrable;
+/** A control carrying the marker of an ACTIVE target but on another route or with another role: the candidate a repair can re-bind the target to (it passed the same privacy gate). */
+export interface ManagedMismatched { readonly ref: ElementRef; readonly name: string; readonly role: string; readonly route: string | null; readonly status: "mismatched"; readonly targetId: string; readonly problem: "role" | "route" }
+export type ManagedCandidate = ManagedTrusted | ManagedDisabled | ManagedRegistrable | ManagedMismatched;
 
 /** The registry as the inspector sees it: ALL routes and ALL targets (active and disabled). */
 export interface ManagedRegistryView { readonly routes: readonly RegistryRouteRecord[]; readonly targets: readonly TargetRecord[] }
@@ -139,13 +142,19 @@ export function classifyControl(input: ManagedInput, element: BrowserSnapshot["e
   const facts = input.facts.get(element.ref);
   if (facts === undefined || facts === null || effectivePrivacyOfFacts(facts) !== "public") return null;
   if (secretNameHit(element.name)) return null;
-  const existing = input.registry.targets.find((target) => target.id === marker);
+  // The target a control belongs to is found by its MARKER (the DAP id never changes, the marker does when a target is repaired).
+  const existing = input.registry.targets.find((target) => target.marker === marker);
   if (existing !== undefined) {
-    if (route === null || existing.route !== route || existing.role !== targetRole) return null; // a target of another route or role: not this element
-    return existing.status === "active"
-      ? Object.freeze({ ref: element.ref, name: element.name, role: element.role, route, status: "trusted" as const, targetId: existing.id, operations: Object.freeze([...existing.operations]), privacy: "public" as const })
-      : Object.freeze({ ref: element.ref, name: element.name, role: element.role, route, status: "disabled" as const, targetId: existing.id });
+    const sameSpot = route !== null && existing.route === route && existing.role === targetRole;
+    if (existing.status === "active") {
+      return sameSpot
+        ? Object.freeze({ ref: element.ref, name: element.name, role: element.role, route, status: "trusted" as const, targetId: existing.id, operations: Object.freeze([...existing.operations]), privacy: "public" as const })
+        : Object.freeze({ ref: element.ref, name: element.name, role: element.role, route, status: "mismatched" as const, targetId: existing.id, problem: (route === null || existing.route !== route ? "route" : "role") as "role" | "route" });
+    }
+    return sameSpot ? Object.freeze({ ref: element.ref, name: element.name, role: element.role, route, status: "disabled" as const, targetId: existing.id }) : null;
   }
+  // The id of a target that was moved to another marker is not a marker anyone may register again.
+  if (input.registry.targets.some((target) => target.id === marker)) return null;
   if (page === null) return null; // not a hash-routed page
   if (input.registry.targets.length >= MAX_TARGETS_PER_APPLICATION) return null;
   const routeIsNew = route === null;

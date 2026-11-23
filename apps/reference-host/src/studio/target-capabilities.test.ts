@@ -1,5 +1,5 @@
 /** Studio V1B without a database: the two target capabilities against the Feature 001 registry rules and the extension shape. The Gateway and executor proof is tests/integration/studio-registry.test.ts. */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildRegistry, inspectInputSchema } from "@dap/security";
 import { DEMO_DEFINITIONS } from "../capabilities.js";
 import { composeReferenceHost } from "../compose.js";
@@ -10,7 +10,7 @@ import { FakeApplicationStore } from "./fake-application-store.js";
 import { FakeTargetStore } from "./fake-target-store.js";
 import { createRegistryCatalog } from "./registries.js";
 import {
-  REGISTER_TARGET_ACTION_ID, REGISTER_TARGET_EXECUTOR_ID, TARGET_ACTION_IDS, TARGET_STATUS_ACTION_ID, TARGET_STATUS_EXECUTOR_ID, createTargetExtension, runRegisterTarget, runSetTargetStatus, registerStudioTarget, setStudioTargetStatus,
+  REGISTER_TARGET_ACTION_ID, REGISTER_TARGET_EXECUTOR_ID, TARGET_ACTION_IDS, TARGET_STATUS_ACTION_ID, TARGET_STATUS_EXECUTOR_ID, createTargetExtension, runRegisterTarget, runRepairTarget, runSetTargetHealth, runSetTargetStatus, withRepairReceipt, registerStudioTarget, setStudioTargetStatus,
 } from "./target-capabilities.js";
 
 const APP = "app-0123456789ab";
@@ -27,7 +27,7 @@ describe("the two capabilities", () => {
     }
     expect(registerStudioTarget.id).toBe("registerStudioTarget");
     expect(setStudioTargetStatus.id).toBe("setStudioTargetStatus");
-    expect(TARGET_ACTION_IDS).toEqual(["registerStudioTarget", "setStudioTargetStatus"]);
+    expect(TARGET_ACTION_IDS).toEqual(["registerStudioTarget", "setStudioTargetStatus", "setStudioTargetHealth", "repairStudioTarget"]);
     expect([REGISTER_TARGET_ACTION_ID, TARGET_STATUS_ACTION_ID]).toEqual(["registerStudioTarget", "setStudioTargetStatus"]);
   });
   it("audit ids and flags only: /applicationId and /targetId (and the closed /status); never a label, description, page, route or operations", () => {
@@ -56,8 +56,8 @@ describe("the extension", () => {
   it("is exactly { definitions, executors }, frozen, with a trusted handle that has run nothing", () => {
     const { extension, trusted } = createTargetExtension({ targets: targets() });
     expect(Object.keys(extension).sort()).toEqual(["definitions", "executors"]);
-    expect(extension.definitions.map((d) => d.id)).toEqual(["registerStudioTarget", "setStudioTargetStatus"]);
-    expect(extension.executors.map((e) => e.id)).toEqual([REGISTER_TARGET_EXECUTOR_ID, TARGET_STATUS_EXECUTOR_ID]);
+    expect(extension.definitions.map((d) => d.id)).toEqual(["registerStudioTarget", "setStudioTargetStatus", "setStudioTargetHealth", "repairStudioTarget"]);
+    expect(extension.executors.map((e) => e.id)).toEqual([REGISTER_TARGET_EXECUTOR_ID, TARGET_STATUS_EXECUTOR_ID, "ex.studio-set-target-health", "ex.studio-repair-target"]);
     expect(Object.isFrozen(extension)).toBe(true);
     expect(trusted.executorCalls()).toBe(0);
     expect(trusted.receivedCalls("registerStudioTarget")).toEqual([]);
@@ -141,5 +141,90 @@ describe("the register executor, called directly", () => {
     expect(await status({ applicationId: APP, targetId: "orders.missing", status: "active" })).toEqual({ status: "failure", code: "target_not_found" });
     store.failWith = new Error("db down");
     expect(await status({ applicationId: APP, targetId: "orders.submit", status: "active" })).toEqual({ status: "failure", code: "store_unavailable" });
+  });
+});
+
+// --- health and repair executor bodies (Studio COMPLETION, S3) ---------------------------------------------------------------------------------------------------------
+describe("the health and repair executors, called directly", () => {
+  const SEC = { tenantId: TENANT, userId: "maya" } as never;
+  const guide = (target: string, wait: "click" | "input" | "ack" = "click", title = "Submit an order") => ({
+    id: "wt-0000000000a1", title, description: "Submit the order.", start: "n1",
+    steps: [{ id: "n1", kind: "navigate", route: "orders", next: "s1" }, { id: "s1", kind: "guide", target, text: "Press it.", wait, verify: "route.orders", next: "done" }, { id: "done", kind: "complete", text: "Done." }],
+  });
+  async function setup(options: { managed?: boolean } = {}) {
+    const applications = new FakeApplicationStore();
+    await applications.save({ tenantId: TENANT, actor: "seed" }, APP, { name: "Managed", origin: "http://127.0.0.1:5187", allowedOrigins: ["http://127.0.0.1:5187"], environment: "test", registryId: options.managed === false ? "reference" : "studio-managed" });
+    const store = new FakeTargetStore(applications);
+    if (options.managed !== false) await store.register({ tenantId: TENANT, actor: "seed" }, APP, { targetId: "orders.submit", route: "orders", page: "/#/orders", role: "button", label: "Submit", description: "Submits.", operations: ["highlight", "click"], privacy: "public" });
+    const health = (params: Record<string, unknown>) => runSetTargetHealth(store, { params: { applicationId: APP, targetId: "orders.submit", health: "broken", ...params } as never, security: SEC });
+    const repair = (params: Record<string, unknown> = {}) => runRepairTarget(store, { params: { applicationId: APP, targetId: "orders.submit", marker: "orders.submitNew", elementRole: "button", operations: ["highlight", "click"], label: "Submit now", description: "Submits it.", ...params } as never, security: SEC });
+    return { applications, store, health, repair };
+  }
+  it("health: changed, unchanged, never needs an enabled application, and refuses a built-in application, an unknown target and a malformed id", async () => {
+    const t = await setup();
+    expect(await t.health({})).toMatchObject({ status: "success" });
+    expect((await t.store.get(TENANT, APP, "orders.submit"))?.health).toBe("broken");
+    expect(await t.health({ health: "healthy" })).toMatchObject({ status: "success" });
+    expect((await t.store.get(TENANT, APP, "orders.submit"))).toMatchObject({ health: "healthy", healthCheckedAt: expect.any(String) });
+    expect(await t.health({ targetId: "orders.other" })).toEqual({ status: "failure", code: "target_not_found" });
+    expect(await t.health({ applicationId: "nope" })).toEqual({ status: "failure", code: "id_refused" });
+    await t.applications.setEnabled({ tenantId: TENANT, actor: "seed" }, APP, false);
+    expect(await t.health({ health: "unverified" })).toMatchObject({ status: "success" });
+    const builtIn = await setup({ managed: false });
+    expect(await builtIn.health({})).toEqual({ status: "failure", code: "registry_not_managed" });
+    t.store.failWith = new Error("db down");
+    expect(await t.health({})).toEqual({ status: "failure", code: "store_unavailable" });
+  });
+  it("repair: re-binds the marker, role, operations and texts, keeps the id, raises the revision, marks it healthy and writes the history (tenant and actor from the trusted context)", async () => {
+    const t = await setup();
+    const { result, repaired } = await withRepairReceipt({ tenantId: TENANT, applicationId: APP, targetId: "orders.submit" }, () => t.repair());
+    expect(result).toMatchObject({ status: "success" });
+    expect(repaired?.target).toMatchObject({ id: "orders.submit", marker: "orders.submitNew", label: "Submit now", revision: 2, health: "healthy" });
+    expect(repaired?.after).toEqual({ marker: "orders.submitNew", role: "button", operations: ["highlight", "click"], label: "Submit now", description: "Submits it." });
+    const changes = await t.store.changes(TENANT, APP, "orders.submit", 50);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({ revision: 2, changedBy: "maya", before: { marker: "orders.submit", label: "Submit" }, after: { marker: "orders.submitNew" } });
+    expect((await t.store.registry(TENANT, APP)).markers).toEqual({ "orders.submit": "orders.submitNew" });
+  });
+  it("repair refuses a structurally invalid repair before the store is asked, an unchanged one, a marker in use (another target's id or marker), a disabled application, a built-in application and an unknown target", async () => {
+    const t = await setup();
+    await t.store.register({ tenantId: TENANT, actor: "seed" }, APP, { targetId: "orders.note", route: "orders", page: "/#/orders", role: "textbox", label: "Note", description: "Note.", operations: ["highlight", "input"], privacy: "public" });
+    const spy = vi.spyOn(t.store, "repair");
+    expect(await t.repair({ marker: "Bad.marker" })).toEqual({ status: "failure", code: "invalid_target" });
+    expect(await t.repair({ operations: ["highlight", "input"] })).toEqual({ status: "failure", code: "invalid_target" });
+    expect(await t.repair({ route: "orders" })).toEqual({ status: "failure", code: "invalid_target" });
+    expect(await t.repair({ applicationId: "nope" })).toEqual({ status: "failure", code: "id_refused" });
+    expect(spy).not.toHaveBeenCalled();
+    expect(await t.repair({ marker: "orders.submit", label: "Submit", description: "Submits." })).toEqual({ status: "failure", code: "unchanged" });
+    expect(await t.repair({ marker: "orders.note" })).toEqual({ status: "failure", code: "marker_in_use" });
+    expect(await t.repair({ targetId: "orders.missing" })).toEqual({ status: "failure", code: "target_not_found" });
+    await t.repair({ marker: "orders.submitNew" });
+    expect(await t.repair({ targetId: "orders.note", marker: "orders.submitNew", elementRole: "textbox", operations: ["highlight", "input"] })).toEqual({ status: "failure", code: "marker_in_use" });
+    expect(await t.repair({ targetId: "orders.note", marker: "orders.submit", elementRole: "textbox", operations: ["highlight", "input"] })).toEqual({ status: "failure", code: "marker_in_use" }); // the id of another target
+    await t.applications.setEnabled({ tenantId: TENANT, actor: "seed" }, APP, false);
+    expect(await t.repair({ marker: "orders.other" })).toEqual({ status: "failure", code: "application_disabled" });
+    expect(await (await setup({ managed: false })).repair()).toEqual({ status: "failure", code: "registry_not_managed" });
+  });
+  it("repair is refused when a draft or a published guide would stop validating, with the validator's fixed problems on the receipt, and nothing changes", async () => {
+    const t = await setup();
+    t.store.definitions.push({ tenantId: TENANT, applicationId: APP, id: "wt-0000000000a1", title: "Submit an order", status: "draft", definition: guide("orders.submit", "click") });
+    t.store.definitions.push({ tenantId: TENANT, applicationId: APP, id: "wt-0000000000a2", title: "Live one", status: "published", definition: { ...guide("orders.submit", "click", "Live one"), id: "wt-0000000000a2" } });
+    const bad = await withRepairReceipt({ tenantId: TENANT, applicationId: APP, targetId: "orders.submit" }, () => t.repair({ elementRole: "textbox", operations: ["highlight", "input"] }));
+    expect(bad.result).toEqual({ status: "failure", code: "incompatible" });
+    expect(bad.problems?.length).toBeGreaterThan(0);
+    expect(bad.problems?.every((problem) => problem.startsWith("wt-0000000000a"))).toBe(true);
+    expect((bad.problems ?? []).join(" ")).toMatch(/click/u);
+    expect(await t.store.get(TENANT, APP, "orders.submit")).toMatchObject({ role: "button", revision: 1, marker: "orders.submit" });
+    expect(await t.store.changes(TENANT, APP, "orders.submit", 5)).toEqual([]);
+    // a compatible repair of the same target (only the marker and texts change) goes through and reports both workflows
+    const ok = await withRepairReceipt({ tenantId: TENANT, applicationId: APP, targetId: "orders.submit" }, () => t.repair());
+    expect(ok.result).toMatchObject({ status: "success" });
+    expect(ok.repaired?.impact).toEqual({ drafts: [{ id: "wt-0000000000a1", title: "Submit an order" }], published: [{ id: "wt-0000000000a2", title: "Live one", version: 1 }] });
+  });
+  it("the receipt belongs to the awaiting request only: a repair for another target or tenant never writes into it", async () => {
+    const t = await setup();
+    const other = await withRepairReceipt({ tenantId: TENANT, applicationId: APP, targetId: "orders.other" }, () => t.repair());
+    expect(other.result).toMatchObject({ status: "success" });
+    expect(other.repaired).toBeUndefined();
   });
 });

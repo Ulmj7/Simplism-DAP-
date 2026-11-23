@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ALLOWED_OPERATIONS, DEFAULT_OPERATIONS, MAX_PAGE_CHARS, REGISTRABLE_ROLES, RESERVED_TARGET_PREFIXES, TARGET_ISSUE_PHRASES, isPage, isRouteName, isTargetId, managedPostconditionName,
-  MAX_HISTORY_PAGE_CHARS, isHashPage, isHistoryPage, isPageFor, registerTargetInputSchema, snapshotRoleToTargetRole, targetStatusInputSchema, validateTargetRegistration,
+  MAX_HISTORY_PAGE_CHARS, isHashPage, isHistoryPage, isPageFor, registerTargetInputSchema, repairTargetInputSchema, snapshotRoleToTargetRole, targetHealthInputSchema, validateTargetRepair, targetStatusInputSchema, validateTargetRegistration,
 } from "./registry-targets.js";
 
 const valid = (patch: Record<string, unknown> = {}) => ({
@@ -54,7 +54,7 @@ describe("every rejection class", () => {
     expect(isPage(`/#/${"a".repeat(MAX_PAGE_CHARS - 3)}`)).toBe(true);
     expect(isPage(`/#/${"a".repeat(MAX_PAGE_CHARS - 2)}`)).toBe(false);
   });
-  it.each(["panel", "nav", "heading", "text", "searchbox", "combobox", "Button", "", 5, null, undefined, "__proto__"])("refuses the role %j", (elementRole) => {
+  it.each(["panel", "nav", "searchbox", "combobox", "Button", "", 5, null, undefined, "__proto__"])("refuses the role %j", (elementRole) => {
     expect(issuesOf(valid({ elementRole }))).toEqual([TARGET_ISSUE_PHRASES.role]);
   });
   it.each([
@@ -89,8 +89,8 @@ describe("every rejection class", () => {
 
 describe("roles and operations (D5)", () => {
   it("maps snapshot roles onto registry roles and refuses every other role", () => {
-    expect(["button", "link", "textbox", "searchbox", "checkbox", "combobox"].map(snapshotRoleToTargetRole)).toEqual(["button", "link", "textbox", "textbox", "checkbox", "select"]);
-    for (const role of ["heading", "img", "listbox", "menuitem", "radio", "switch", "tab", "slider", "spinbutton", "option", "", null, undefined, 5]) expect(snapshotRoleToTargetRole(role), String(role)).toBeNull();
+    expect(["button", "link", "textbox", "searchbox", "checkbox", "combobox", "status", "alert", "heading"].map(snapshotRoleToTargetRole)).toEqual(["button", "link", "textbox", "textbox", "checkbox", "select", "text", "text", "heading"]);
+    for (const role of ["img", "listbox", "menuitem", "radio", "switch", "tab", "slider", "spinbutton", "option", "", null, undefined, 5]) expect(snapshotRoleToTargetRole(role), String(role)).toBeNull();
   });
   it("every default is a subset of its allowed set and includes highlight", () => {
     for (const role of REGISTRABLE_ROLES) {
@@ -152,5 +152,54 @@ describe("history pages (Studio COMPLETION, S1)", () => {
   it("the capability input schema allows pages up to 200 characters", () => {
     expect(registerTargetInputSchema.safeParse({ applicationId: "app-0123456789ab", targetId: "a.b", route: "a", page: `/${"a".repeat(199)}`, elementRole: "button", label: "L", description: "D", operations: ["highlight"], privacy: "public" }).success).toBe(true);
     expect(registerTargetInputSchema.safeParse({ applicationId: "app-0123456789ab", targetId: "a.b", route: "a", page: `/${"a".repeat(200)}`, elementRole: "button", label: "L", description: "D", operations: ["highlight"], privacy: "public" }).success).toBe(false);
+  });
+});
+
+describe("text and heading targets (Studio COMPLETION)", () => {
+  it.each(["text", "heading"])("a %s target is valid with exactly the operation highlight, in a registration and in a repair", (elementRole) => {
+    expect(validateTargetRegistration(valid({ elementRole, operations: ["highlight"] }))).toMatchObject({ ok: true, value: { role: elementRole, operations: ["highlight"] } });
+    expect(validateTargetRepair({ marker: "orders.saved", elementRole, operations: ["highlight"], label: "Saved", description: "The saved message" })).toMatchObject({ ok: true, value: { role: elementRole, marker: "orders.saved" } });
+    expect(ALLOWED_OPERATIONS[elementRole as "text"]).toEqual(["highlight"]);
+    expect(DEFAULT_OPERATIONS[elementRole as "text"]).toEqual(["highlight"]);
+    for (const operations of [["highlight", "click"], ["highlight", "focus"], ["highlight", "input"], ["click"], []]) {
+      expect(issuesOf(valid({ elementRole, operations })), operations.join()).toEqual([TARGET_ISSUE_PHRASES.operations]);
+      expect(validateTargetRepair({ marker: "orders.saved", elementRole, operations, label: "L", description: "D" })).toMatchObject({ ok: false });
+    }
+  });
+  it("the registrable roles are the five V1B roles plus text and heading", () => {
+    expect([...REGISTRABLE_ROLES]).toEqual(["button", "link", "textbox", "checkbox", "select", "text", "heading"]);
+  });
+});
+
+describe("the repair validator", () => {
+  const repair = (patch: Record<string, unknown> = {}) => ({ marker: "orders.submitNew", elementRole: "button", operations: ["click", "highlight"], label: "  Submit  ", description: " Submits ", ...patch });
+  it("returns a frozen value with trimmed texts, canonical operations and the marker", () => {
+    const result = validateTargetRepair(repair());
+    expect(result).toEqual({ ok: true, value: { marker: "orders.submitNew", role: "button", operations: ["highlight", "click"], label: "Submit", description: "Submits" } });
+    if (result.ok) { expect(Object.isFrozen(result.value)).toBe(true); expect(Object.isFrozen(result.value.operations)).toBe(true); }
+  });
+  it.each([
+    [{ marker: "Orders.x" }, "marker"], [{ marker: "dap.thing" }, "marker"], [{ marker: "x" }, "marker"], [{ marker: `orders.${"a".repeat(80)}` }, "marker"], [{ marker: 5 }, "marker"],
+    [{ elementRole: "panel" }, "role"], [{ elementRole: "role" }, "role"], [{ label: "" }, "label"], [{ label: "<b>" }, "label"], [{ description: "x".repeat(241) }, "description"],
+    [{ operations: [] }, "operations"], [{ operations: ["click"] }, "operations"], [{ operations: ["highlight", "input"] }, "operations"], [{ operations: ["highlight", "eval"] }, "operations"],
+  ])("refuses %j with the fixed %s phrase", (patch, field) => {
+    const result = validateTargetRepair(repair(patch));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issues.some((issue) => issue.startsWith(`${field}:`))).toBe(true);
+  });
+  it("refuses unknown keys (a repair can never carry a route, a page or a privacy) and non-objects", () => {
+    for (const extra of ["route", "page", "privacy", "status", "targetId", "id"]) expect(validateTargetRepair(repair({ [extra]: "x" })).ok, extra).toBe(false);
+    for (const bad of [null, "x", 5, [], undefined]) expect(validateTargetRepair(bad).ok).toBe(false);
+  });
+  it("the capability schemas are strict and bounded; health accepts the three states only", () => {
+    const base = { applicationId: "app-0123456789ab", targetId: "orders.submit" };
+    expect(targetHealthInputSchema.safeParse({ ...base, health: "broken" }).success).toBe(true);
+    for (const health of ["healthy", "unverified", "broken"]) expect(targetHealthInputSchema.safeParse({ ...base, health }).success).toBe(true);
+    for (const bad of ["", "ok", "BROKEN", 1, "x".repeat(11)]) expect(targetHealthInputSchema.safeParse({ ...base, health: bad }).success, String(bad)).toBe(false);
+    expect(targetHealthInputSchema.safeParse({ ...base, health: "broken", extra: 1 }).success).toBe(false);
+    const full = { ...base, marker: "orders.submitNew", elementRole: "button", operations: ["highlight"], label: "L", description: "D" };
+    expect(repairTargetInputSchema.safeParse(full).success).toBe(true);
+    for (const extra of ["tenantId", "route", "page", "privacy", "role", "revision", "health"]) expect(repairTargetInputSchema.safeParse({ ...full, [extra]: "x" }).success, extra).toBe(false);
+    expect(repairTargetInputSchema.safeParse({ ...full, operations: Array(5).fill("highlight") }).success).toBe(false);
   });
 });

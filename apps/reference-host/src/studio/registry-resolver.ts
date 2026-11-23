@@ -25,6 +25,8 @@ export interface ResolvedRegistry {
   /** `in-app`: Preview remounts the draft inside the reference web app; `application-window`: it runs in the application's own window through the embed. */
   readonly previewMode: "in-app" | "application-window";
   readonly previewable: boolean;
+  /** Studio-managed registries only: target id -> the `data-ai-id` marker of its element in the page. Built-in registries have none (the marker is the id). */
+  readonly markers?: Readonly<Record<string, string>>;
 }
 export interface RegistryResolver {
   resolve(tenantId: string, application: ApplicationRecord | null): Promise<ResolvedRegistry | undefined>;
@@ -38,7 +40,7 @@ export function managedRegistryData(managed: ManagedRegistry): ResolvedRegistry 
   return Object.freeze({
     source: "studio-managed" as const,
     registry: Object.freeze({ routes: Object.freeze(routes), elements: managed.elements, postconditionNames: Object.freeze(routes.map(managedPostconditionName)) }),
-    pages, previewMode: "application-window" as const, previewable: routes.length > 0,
+    pages, previewMode: "application-window" as const, previewable: routes.length > 0, markers: managed.markers,
   });
 }
 

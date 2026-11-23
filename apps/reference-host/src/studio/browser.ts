@@ -55,10 +55,7 @@ const busyRecheckMs = 1_000;
 const MAINTAIN = "perm.walkthrough.maintain";
 
 /** The policy a runtime is created with: derived from the application, never from a request. */
-export type BrowserRuntimeConfig = Pick<AgentBrowserAdapterOptions, "labels" | "routes" | "origins"> & {
-  /** `history` for an application whose pages are pathnames (the adapter then ignores query and fragment); omitted for `hash`, so a hash application's configuration is exactly V1B's. */
-  readonly routing?: "history";
-};
+export type BrowserRuntimeConfig = Pick<AgentBrowserAdapterOptions, "labels" | "routes" | "origins" | "routing">;
 
 type AnyCandidate = Candidate | ManagedCandidate;
 
@@ -104,7 +101,7 @@ function withoutQueryAndFragment(url: string): string {
 /** The fields of an application that shape the adapter's policy. A rename does not; an origin, allowed-origin or registry change does. */
 const policyOf = (application: ApplicationRecord): string => JSON.stringify([application.origin, application.allowedOrigins, application.registryId, application.routing]);
 
-export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, applications, catalog, authoring, createRuntime = (config) => createAgentBrowserAdapter(config as AgentBrowserAdapterOptions), makeId = randomUUID, ...rest }: Options): void {
+export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, applications, catalog, authoring, createRuntime = (config) => createAgentBrowserAdapter(config), makeId = randomUUID, ...rest }: Options): void {
   const targets = rest.targets ?? emptyTargetStore;
   const resolver = rest.resolver ?? createRegistryResolver({ catalog, targets });
   let current: Session | undefined;
@@ -177,18 +174,23 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       const snapshot = session.snapshot;
       const candidate = session.candidates.get(command.ref);
       if (!snapshot || !candidate) return deny(409, "REF_NOT_FOUND");
-      const expectedId = candidate.status === "trusted" ? candidate.targetId : candidate.status === "registrable" && command.action === "highlight" ? candidate.proposal.targetId : null;
-      if (expectedId === null) return deny(409, "TARGET_UNAVAILABLE");
+      // The MARKER the page must still carry: a trusted or mismatched control's is the target's current marker (the DAP id never changes, the marker does after a repair), a registrable one's is its own.
+      const registry = session.source === "studio-managed" ? await registryView(principal.tenantId, session.applicationId) : undefined;
+      const markerOf = (targetId: string): string | null => (registry === undefined ? targetId : (registry.targets.find((item) => item.id === targetId)?.marker ?? null));
+      let expectedMarker: string | null = null;
+      if (candidate.status === "trusted") expectedMarker = markerOf(candidate.targetId);
+      else if (command.action === "highlight" && candidate.status === "registrable") expectedMarker = candidate.proposal.targetId;
+      else if (command.action === "highlight" && candidate.status === "mismatched") expectedMarker = markerOf(candidate.targetId);
+      if (expectedMarker === null) return deny(409, "TARGET_UNAVAILABLE");
       // The adapter checks the observation is still current before reading the marker and facts.
       const ref = candidate.ref;
       const id = await session.runtime.inspectSemanticId(ref, snapshot);
-      if (id !== expectedId) return deny(409, "TARGET_UNAVAILABLE");
+      if (id !== expectedMarker) return deny(409, "TARGET_UNAVAILABLE");
       let currentCandidate = candidate;
       let captureRole = candidate.role;
-      if (session.source === "studio-managed") {
+      if (registry !== undefined) {
         const element = snapshot.elements.find((item) => item.ref === ref);
         if (!element) return deny(409, "REF_NOT_FOUND");
-        const registry = await registryView(principal.tenantId, session.applicationId);
         const facts = await session.runtime.inspectElementFacts([ref], snapshot);
         const live = classifyControl({ routing: session.routing, snapshot, ids: new Map([[ref, id]]), facts, registry }, element);
         if (live === null || live.status !== candidate.status) return deny(409, "TARGET_UNAVAILABLE");
@@ -202,7 +204,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       await session.runtime.highlight(ref, snapshot);
       if (command.action === "highlight") return { highlighted: true, ref };
       if (currentCandidate.status !== "trusted") return deny(409, "TARGET_UNAVAILABLE");
-      return { targetId: expectedId, route: currentCandidate.route, name: currentCandidate.name, role: captureRole, operations: currentCandidate.operations };
+      return { targetId: currentCandidate.targetId, route: currentCandidate.route, name: currentCandidate.name, role: captureRole, operations: currentCandidate.operations };
     } catch (error) {
       if (error instanceof BrowserRuntimeError) {
         // A stale element is always a conflict the UI recovers from by refreshing; a closed session is cleared here; everything else keeps the session open (the user can navigate back).
@@ -278,7 +280,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     if (liveMarker === null || liveMarker !== command.targetId) return deny(409, "TARGET_ID_MISMATCH");
     // The eligibility rules are RE-RUN on the live data and the fresh registry (the cached candidate is not trusted).
     const registry = await registryView(principal.tenantId, session.applicationId);
-    if (registry.targets.some((target) => target.id === liveMarker)) return deny(409, "TARGET_EXISTS");
+    if (registry.targets.some((target) => target.id === liveMarker || target.marker === liveMarker)) return deny(409, "TARGET_EXISTS");
     // The caps are answered as such (not as "not registrable"): the registry is full, or the live page needs a new route and no route is left.
     const livePage = pageOfUrl(snapshot.url, session.routing);
     if (registry.targets.length >= MAX_TARGETS_PER_APPLICATION || (livePage !== null && routeOfPage(livePage, registry.routes) === null && registry.routes.length >= MAX_ROUTES_PER_APPLICATION)) return deny(409, "REGISTRY_FULL");
@@ -320,7 +322,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     catch { return deny(503, "BROWSER_UNAVAILABLE"); }
     if (record === null) { await close().catch(() => {}); return deny(404, "APPLICATION_NOT_FOUND"); }
     if (!record.enabled) { await close().catch(() => {}); return deny(409, "APPLICATION_DISABLED"); }
-    if (registry.targets.some((target) => target.id === value.targetId)) return deny(409, "TARGET_EXISTS");
+    if (registry.targets.some((target) => target.id === value.targetId || target.marker === value.targetId)) return deny(409, "TARGET_EXISTS");
     const byPage = registry.routes.find((entry) => entry.page === value.page);
     if ((byPage !== undefined && byPage.route !== value.route) || (byPage === undefined && registry.routes.some((entry) => entry.route === value.route))) return deny(409, "ROUTE_MISMATCH");
     if (registry.targets.length >= MAX_TARGETS_PER_APPLICATION || (byPage === undefined && registry.routes.length >= MAX_ROUTES_PER_APPLICATION)) return deny(409, "REGISTRY_FULL");

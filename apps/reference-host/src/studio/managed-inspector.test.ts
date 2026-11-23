@@ -9,7 +9,8 @@ const ORIGIN = "http://127.0.0.1:5187";
 const PUBLIC: ElementFacts = { tagName: null, inputType: null, autocomplete: null, dataAiPrivate: false, dataAiIgnore: false, dataAiRedact: false };
 const ref = (n: number): ElementRef => `@e${n}`;
 const target = (id: string, route: string, role: RegistrableRole, status: "active" | "disabled" = "active"): TargetRecord => ({
-  id, route, page: `/#/${route}`, role, label: id, description: id, operations: role === "textbox" ? ["highlight", "input", "focus"] : ["highlight", "click"], privacy: "public", status, updatedAt: "2026-11-23T00:00:00.000Z",
+  id, marker: id, route, page: `/#/${route}`, role, label: id, description: id, operations: role === "textbox" ? ["highlight", "input", "focus"] : ["highlight", "click"], privacy: "public", status, health: "unverified", healthCheckedAt: null, revision: 1,
+  updatedAt: "2026-11-23T00:00:00.000Z",
 });
 const registry = (over: Partial<ManagedRegistryView> = {}): ManagedRegistryView => ({ routes: [{ route: "orders", page: "/#/orders" }], targets: [], ...over });
 
@@ -80,7 +81,7 @@ describe("classifyManaged for a history application", () => {
   it("a registered target is trusted on its history route and not on another pathname", () => {
     const reg = historyRegistry({ routes: [{ route: "profile", page: "/profile" }, { route: "settings", page: "/settings" }], targets: [{ ...target("profile.save", "profile", "button"), page: "/profile" }] });
     expect(run([{ name: "Save", role: "button", id: "profile.save" }], `${ORIGIN}/profile/`, reg).elements[0]).toMatchObject({ status: "trusted", route: "profile" });
-    expect(run([{ name: "Save", role: "button", id: "profile.save" }], `${ORIGIN}/settings`, reg).elements).toEqual([]);
+    expect(run([{ name: "Save", role: "button", id: "profile.save" }], `${ORIGIN}/settings`, reg).elements[0]).toMatchObject({ status: "mismatched", targetId: "profile.save", route: "settings", problem: "route" });
   });
   it("the same privacy gate, name check, ambiguity rule and caps apply as for hash pages", () => {
     expect(run([{ name: "Secret", role: "textbox", id: "profile.x", facts: { ...PUBLIC, dataAiPrivate: true } }], `${ORIGIN}/profile`).elements).toEqual([]);
@@ -142,7 +143,7 @@ describe("classifyManaged: what is listed and in which state", () => {
     expect(res.elements[0]).toMatchObject({ status: "registrable", proposal: { route: "orders2", routeIsNew: true } });
   });
   it("the D5 role map: button, link, textbox, searchbox, checkbox and combobox register; everything else is hidden", () => {
-    const roles: [string, RegistrableRole | null][] = [["button", "button"], ["link", "link"], ["textbox", "textbox"], ["searchbox", "textbox"], ["checkbox", "checkbox"], ["combobox", "select"], ["radio", null], ["switch", null], ["menuitem", null], ["tab", null], ["heading", null], ["", null], ["BUTTON", null]];
+    const roles: [string, RegistrableRole | null][] = [["button", "button"], ["link", "link"], ["textbox", "textbox"], ["searchbox", "textbox"], ["checkbox", "checkbox"], ["combobox", "select"], ["radio", null], ["switch", null], ["menuitem", null], ["tab", null], ["heading", "heading"], ["status", "text"], ["alert", "text"], ["", null], ["BUTTON", null]];
     for (const [role, mapped] of roles) {
       const res = only({ name: "Thing", role, id: "orders.thing" });
       if (mapped === null) { expect(res.elements, role).toEqual([]); expect(res.hidden, role).toBe(1); }
@@ -195,12 +196,33 @@ describe("classifyManaged: what is listed and in which state", () => {
     ]);
     expect(res.hidden).toBe(0);
   });
-  it("an existing marker is NOT shown on another route, with another role, or on an unregistered page (it is hidden, never registrable: the id is taken)", () => {
-    const reg = registry({ routes: [{ route: "orders", page: "/#/orders" }, { route: "home", page: "/" }], targets: [target("orders.save", "orders", "button")] });
-    expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.save" }], `${ORIGIN}/`, reg)).elements, "other route").toEqual([]);
-    expect(classifyManaged(input([{ name: "Save", role: "link", id: "orders.save" }], undefined, reg)).elements, "other role").toEqual([]);
-    expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.save" }], `${ORIGIN}/#/unknown`, reg)).elements, "unregistered page").toEqual([]);
+  it("an existing marker of an ACTIVE target on another route, with another role or on an unregistered page is `mismatched` (a repair candidate, never registrable); a non-registrable role, or a DISABLED target elsewhere, is hidden", () => {
+    const reg = registry({ routes: [{ route: "orders", page: "/#/orders" }, { route: "home", page: "/" }], targets: [target("orders.save", "orders", "button"), target("orders.off", "orders", "button", "disabled")] });
+    expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.save" }], `${ORIGIN}/`, reg)).elements[0], "other route").toEqual({ ref: "@e1", name: "Save", role: "button", route: "home", status: "mismatched", targetId: "orders.save", problem: "route" });
+    expect(classifyManaged(input([{ name: "Save", role: "link", id: "orders.save" }], undefined, reg)).elements[0], "other role").toEqual({ ref: "@e1", name: "Save", role: "link", route: "orders", status: "mismatched", targetId: "orders.save", problem: "role" });
+    expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.save" }], `${ORIGIN}/#/unknown`, reg)).elements[0], "unregistered page").toMatchObject({ status: "mismatched", route: null, problem: "route" });
     expect(classifyManaged(input([{ name: "Save", role: "radio", id: "orders.save" }], undefined, reg)).elements, "non-registrable role").toEqual([]);
+    expect(classifyManaged(input([{ name: "Off", role: "link", id: "orders.off" }], undefined, reg)).elements, "disabled target elsewhere").toEqual([]);
+  });
+  it("a mismatched candidate passes the same privacy gate and the same name check, and an ambiguous marker still hides every twin", () => {
+    const reg = registry({ targets: [target("orders.save", "orders", "button")] });
+    expect(classifyManaged(input([{ name: "Save", role: "link", id: "orders.save", facts: { ...PUBLIC, dataAiPrivate: true } }], undefined, reg))).toEqual({ elements: [], hidden: 1, truncated: false });
+    expect(classifyManaged(input([{ name: "Password", role: "link", id: "orders.save" }], undefined, reg))).toEqual({ elements: [], hidden: 1, truncated: false });
+    expect(classifyManaged(input([{ name: "A", role: "link", id: "orders.save" }, { name: "B", role: "link", id: "orders.save" }], undefined, reg))).toEqual({ elements: [], hidden: 2, truncated: false });
+  });
+  it("targets are found by their MARKER: a repaired target is trusted under its new marker and its old marker (its id) is no marker anyone may register again", () => {
+    const moved = { ...target("orders.save", "orders", "button"), marker: "orders.saveNew" };
+    const reg = registry({ targets: [moved] });
+    expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.saveNew" }], undefined, reg)).elements[0]).toMatchObject({ status: "trusted", targetId: "orders.save" });
+    expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.save" }], undefined, reg))).toEqual({ elements: [], hidden: 1, truncated: false });
+  });
+  it("status and heading controls: registrable with the single operation highlight (default and allowed), under the same privacy gate", () => {
+    for (const [role, mapped] of [["status", "text"], ["alert", "text"], ["heading", "heading"]] as const) {
+      const res = only({ name: "Saved", role, id: "profile.saved" });
+      expect(res.elements[0], role).toMatchObject({ status: "registrable", proposal: { role: mapped, allowedOperations: ["highlight"], defaultOperations: ["highlight"] } });
+      expect(only({ name: "Saved", role, id: "profile.saved", facts: { ...PUBLIC, dataAiRedact: true } }).elements, `${role} redacted`).toEqual([]);
+      expect(only({ name: "Your password is", role, id: "profile.saved" }).elements, `${role} secret-looking`).toEqual([]);
+    }
   });
   describe("a registered control passes the SAME privacy and name gate on every inspection (E2)", () => {
     const reg = () => registry({ targets: [target("orders.save", "orders", "button"), target("orders.off", "orders", "button", "disabled")] });
@@ -247,7 +269,7 @@ describe("classifyManaged: what is listed and in which state", () => {
   });
   it("lists in document order and counts hidden = every control not listed", () => {
     const res = classifyManaged(input([
-      { name: "Zeta", role: "button", id: "orders.zeta" }, { name: "Skip", role: "button" }, { name: "Alpha", role: "link", id: "orders.alpha" }, { name: "Heading", role: "heading", id: "orders.h" },
+      { name: "Zeta", role: "button", id: "orders.zeta" }, { name: "Skip", role: "button" }, { name: "Alpha", role: "link", id: "orders.alpha" }, { name: "Heading", role: "radio", id: "orders.h" },
     ]));
     expect(res.elements.map((element) => element.name)).toEqual(["Zeta", "Alpha"]);
     expect(res.hidden).toBe(2);

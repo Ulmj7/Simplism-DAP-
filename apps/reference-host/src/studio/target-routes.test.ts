@@ -79,7 +79,7 @@ describe("GET targets", () => {
     expect(res.body.limits).toEqual({ maxTargets: 200, maxRoutes: 20 });
     expect(res.body.routes).toEqual([{ route: "orders", page: "/#/orders" }]);
     const [target] = res.body.targets as Record<string, unknown>[];
-    expect(Object.keys(target!).sort()).toEqual(["description", "id", "label", "operations", "page", "privacy", "references", "role", "route", "status", "updatedAt"]);
+    expect(Object.keys(target!).sort()).toEqual(["description", "health", "healthCheckedAt", "id", "label", "marker", "operations", "page", "privacy", "references", "revision", "role", "route", "status", "updatedAt"]);
     expect(target).toMatchObject({ id: "orders.submit", status: "active", privacy: "public", references: { drafts: 2, published: 1 } });
     noLeak(res.raw);
   });

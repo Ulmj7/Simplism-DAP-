@@ -6,7 +6,8 @@
  *
  * Grammar (the database repeats each rule as a CHECK, migration 074):
  *   target id   the walkthrough semantic-id rule `^[a-z][A-Za-z0-9]*(\.[A-Za-z0-9]+)+$`, at most 80 characters, first segment not one of dap|studio|admin|system|internal
- *   role        button | link | textbox | checkbox | select (the snapshot roles map onto these, `snapshotRoleToTargetRole`)
+ *   role        button | link | textbox | checkbox | select | text | heading (the snapshot roles map onto these, `snapshotRoleToTargetRole`); `text` (status and alert regions) and
+ *               `heading` can only be highlighted: their operations are EXACTLY {highlight}
  *   operations  a non-empty subset allowed for the role that contains `highlight` (textbox: input and focus; the others: click and focus)
  *   privacy     always `public`: a private or redacted element is never registrable in V1B
  *   label       plain text, 1 to 80 characters, none of `< > & " ' \``  (the walkthrough registry's text rule); description the same up to 240
@@ -22,7 +23,7 @@ import { APPLICATION_ID } from "./applications.js";
 export const TARGET_ID_PATTERN = /^[a-z][A-Za-z0-9]*(\.[A-Za-z0-9]+)+$/;
 export const MAX_TARGET_ID_CHARS = 80;
 export const RESERVED_TARGET_PREFIXES: readonly string[] = Object.freeze(["dap", "studio", "admin", "system", "internal"]);
-export const REGISTRABLE_ROLES = ["button", "link", "textbox", "checkbox", "select"] as const;
+export const REGISTRABLE_ROLES = ["button", "link", "textbox", "checkbox", "select", "text", "heading"] as const;
 export type RegistrableRole = (typeof REGISTRABLE_ROLES)[number];
 export const ALL_OPERATIONS = ["highlight", "click", "input", "focus"] as const;
 export type TargetOperation = (typeof ALL_OPERATIONS)[number];
@@ -50,10 +51,12 @@ export const ALLOWED_OPERATIONS: Readonly<Record<RegistrableRole, readonly Targe
   button: Object.freeze(["highlight", "click", "focus"] as const), link: Object.freeze(["highlight", "click", "focus"] as const),
   checkbox: Object.freeze(["highlight", "click", "focus"] as const), select: Object.freeze(["highlight", "click", "focus"] as const),
   textbox: Object.freeze(["highlight", "input", "focus"] as const),
+  text: Object.freeze(["highlight"] as const), heading: Object.freeze(["highlight"] as const),
 });
 export const DEFAULT_OPERATIONS: Readonly<Record<RegistrableRole, readonly TargetOperation[]>> = Object.freeze({
   button: Object.freeze(["highlight", "click"] as const), link: Object.freeze(["highlight", "click"] as const), checkbox: Object.freeze(["highlight", "click"] as const),
   select: Object.freeze(["highlight", "click"] as const), textbox: Object.freeze(["highlight", "input", "focus"] as const),
+  text: Object.freeze(["highlight"] as const), heading: Object.freeze(["highlight"] as const),
 });
 
 /** The accessibility role the browser reports -> the registry role, or `null` when the element is not registrable in V1B. */
@@ -64,6 +67,8 @@ export function snapshotRoleToTargetRole(role: unknown): RegistrableRole | null 
     case "textbox": case "searchbox": return "textbox";
     case "checkbox": return "checkbox";
     case "combobox": return "select";
+    case "status": case "alert": return "text";
+    case "heading": return "heading";
     default: return null;
   }
 }
@@ -82,8 +87,12 @@ export const managedPostconditionName = (route: string): string => `route.${rout
 
 // --- stored shapes ----------------------------------------------------------------------------------------------------------------------------------------
 export interface RegistryRouteRecord { readonly route: string; readonly page: string }
+export const HEALTH_STATES = ["unverified", "healthy", "broken"] as const;
+export type TargetHealth = (typeof HEALTH_STATES)[number];
 export interface TargetRecord {
   readonly id: string;
+  /** The `data-ai-id` the page carries for this target (the runtime resolves the DOM by it). Equal to `id` until a repair changes it; the DAP id never changes. */
+  readonly marker: string;
   readonly route: string;
   readonly page: string;
   readonly role: RegistrableRole;
@@ -92,6 +101,10 @@ export interface TargetRecord {
   readonly operations: readonly TargetOperation[];
   readonly privacy: "public";
   readonly status: TargetStatus;
+  readonly health: TargetHealth;
+  readonly healthCheckedAt: string | null;
+  /** 1 for a new target; +1 for every repair. */
+  readonly revision: number;
   readonly updatedAt: string;
 }
 /** What the maintainer routes return (the contract's `TargetView`). */
@@ -102,12 +115,14 @@ export const TARGET_ISSUE_PHRASES = Object.freeze({
   targetId: "targetId: must be a dotted id (for example orders.submitButton) of at most 80 characters that does not start with dap, studio, admin, system or internal",
   route: "route: must be a name of at most 40 letters and digits starting with a lower-case letter",
   page: "page: must be / , /#/ followed by path segments, or a path of segments, without a query or fragment",
-  role: "role: must be button, link, textbox, checkbox or select",
+  role: "role: must be button, link, textbox, checkbox, select, text or heading",
   operations: "operations: must be a non-empty set allowed for the role that includes highlight",
   privacy: "privacy: must be public",
   label: "label: must be plain text of 1 to 80 characters without < > & \" ' or `",
   description: "description: must be plain text of 1 to 240 characters without < > & \" ' or `",
   status: "status: must be active or disabled",
+  health: "health: must be unverified, healthy or broken",
+  marker: "marker: must be a dotted id (for example orders.submitButton) of at most 80 characters that does not start with dap, studio, admin, system or internal",
 });
 
 /** The values the persistence authority writes. `routeIsNew` is decided by the store inside the transaction, not here. */
@@ -162,6 +177,46 @@ export function validateTargetRegistration(input: unknown): TargetValidation {
     operations: Object.freeze(operations), privacy: "public" as const }) });
 }
 
+/** What a repair writes (everything else of a target is fixed). */
+export interface TargetRepair {
+  readonly marker: string;
+  readonly role: RegistrableRole;
+  readonly label: string;
+  readonly description: string;
+  readonly operations: readonly TargetOperation[];
+}
+export type RepairValidation = { readonly ok: true; readonly value: TargetRepair } | { readonly ok: false; readonly issues: readonly string[] };
+const REPAIR_KEYS: readonly string[] = ["marker", "elementRole", "label", "description", "operations"];
+
+/** The structural check of a repair in the capability's parameter shape (the same field rules as a registration; no route, no page, no privacy: they cannot change). */
+export function validateTargetRepair(input: unknown): RepairValidation {
+  const P = TARGET_ISSUE_PHRASES;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return Object.freeze({ ok: false, issues: Object.freeze([P.shape]) });
+  const issues: string[] = [];
+  let bag: Record<string, unknown>;
+  try {
+    if (Object.keys(input).some((key) => !REPAIR_KEYS.includes(key))) issues.push(P.shape);
+    bag = Object.fromEntries(REPAIR_KEYS.map((key) => [key, (input as Record<string, unknown>)[key]]));
+  } catch { return Object.freeze({ ok: false, issues: Object.freeze([P.shape]) }); }
+  if (!isTargetId(bag.marker)) issues.push(P.marker);
+  const role = (REGISTRABLE_ROLES as readonly unknown[]).includes(bag.elementRole) ? (bag.elementRole as RegistrableRole) : null;
+  if (role === null) issues.push(P.role);
+  const label = typeof bag.label === "string" ? bag.label.trim() : bag.label;
+  if (!plainText(label, MAX_TARGET_LABEL_CHARS)) issues.push(P.label);
+  const description = typeof bag.description === "string" ? bag.description.trim() : bag.description;
+  if (!plainText(description, MAX_TARGET_DESCRIPTION_CHARS)) issues.push(P.description);
+  let operations: TargetOperation[] = [];
+  if (!Array.isArray(bag.operations) || bag.operations.length === 0 || bag.operations.length > ALL_OPERATIONS.length || bag.operations.some((operation: unknown) => !(ALL_OPERATIONS as readonly unknown[]).includes(operation))) issues.push(P.operations);
+  else if (role !== null) {
+    const wanted = new Set(bag.operations as TargetOperation[]);
+    const allowed = ALLOWED_OPERATIONS[role];
+    if (!wanted.has("highlight") || [...wanted].some((operation) => !allowed.includes(operation))) issues.push(P.operations);
+    else operations = allowed.filter((operation) => wanted.has(operation));
+  }
+  if (issues.length > 0) return Object.freeze({ ok: false, issues: Object.freeze(issues) });
+  return Object.freeze({ ok: true, value: Object.freeze({ marker: bag.marker as string, role: role as RegistrableRole, label: label as string, description: description as string, operations: Object.freeze(operations) }) });
+}
+
 // --- the capability input schemas (shape and size only; the rules live in the validator above) -------------------------------------------------------------------
 const bounded = (max: number) => z.string().min(1).max(max);
 /** `registerStudioTarget` input. `elementRole`, not `role`: `role` is a reserved Gateway parameter name. */
@@ -182,5 +237,23 @@ export const targetStatusInputSchema = z.strictObject({
   targetId: bounded(MAX_TARGET_ID_CHARS),
   status: z.string().max(8).pipe(z.enum(TARGET_STATUSES)),
 });
+/** `setStudioTargetHealth` input. The HTTP route only ever sends `broken` or `unverified`; `healthy` is written by the session `check` command and by a repair. */
+export const targetHealthInputSchema = z.strictObject({
+  applicationId: z.string().max(16).regex(APPLICATION_ID),
+  targetId: bounded(MAX_TARGET_ID_CHARS),
+  health: z.string().max(10).pipe(z.enum(HEALTH_STATES)),
+});
+/** `repairStudioTarget` input: the new marker and, with it, the role, operations and texts of the replacement control. `elementRole`: `role` is a reserved Gateway parameter name. */
+export const repairTargetInputSchema = z.strictObject({
+  applicationId: z.string().max(16).regex(APPLICATION_ID),
+  targetId: bounded(MAX_TARGET_ID_CHARS),
+  marker: bounded(MAX_TARGET_ID_CHARS),
+  elementRole: bounded(16),
+  operations: z.array(bounded(16)).min(1).max(ALL_OPERATIONS.length),
+  label: bounded(MAX_TARGET_LABEL_CHARS),
+  description: bounded(MAX_TARGET_DESCRIPTION_CHARS),
+});
 export type RegisterTargetInput = z.infer<typeof registerTargetInputSchema>;
+export type TargetHealthInput = z.infer<typeof targetHealthInputSchema>;
+export type RepairTargetInput = z.infer<typeof repairTargetInputSchema>;
 export type TargetStatusInput = z.infer<typeof targetStatusInputSchema>;

@@ -7,8 +7,12 @@ import type { TargetStore } from "./target-store.js";
 export const emptyTargetStore: TargetStore = Object.freeze({
   list: async () => ({ targets: [], routes: [] }),
   get: async () => null,
-  registry: async () => ({ routes: [], elements: [] as never }),
-  registryIn: async () => ({ routes: [], elements: [] as never }),
+  registry: async () => ({ routes: [], elements: [] as never, markers: {} }),
+  registryIn: async () => ({ routes: [], elements: [] as never, markers: {} }),
   register: async () => ({ kind: "registry_not_managed" as const }),
   setStatus: async () => "registry_not_managed" as const,
+  definitionsUsing: async () => [],
+  changes: async () => [],
+  setHealth: async () => "registry_not_managed" as const,
+  repair: async () => ({ kind: "registry_not_managed" as const }),
 });

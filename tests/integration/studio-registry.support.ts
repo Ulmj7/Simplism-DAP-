@@ -30,7 +30,7 @@ import { createPostgresPool } from "../../packages/security/src/index.js";
 import { withTenant as withTenantOwner } from "../../packages/security/src/state/postgres/tenant-tx.js";
 import type { Pool } from "pg";
 
-export const ALL_ACTIONS = "demoLookup,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,rotateStudioRuntimeKey,registerStudioTarget,setStudioTargetStatus";
+export const ALL_ACTIONS = "demoLookup,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,rotateStudioRuntimeKey,registerStudioTarget,setStudioTargetStatus,setStudioTargetHealth,repairStudioTarget";
 export const managedConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Managed application", origin: "http://127.0.0.1:5187", allowedOrigins: ["http://127.0.0.1:5187"], environment: "test", registryId: "studio-managed", routing: "hash", runtimeAccess: false, ...over });
 export const referenceConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Reference application", origin: "http://127.0.0.1:5184", allowedOrigins: ["http://127.0.0.1:5184"], environment: "development", registryId: "reference", routing: "hash", runtimeAccess: false, ...over });
 export const fixtureConfig = (over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name: "Fixture application", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185"], environment: "test", registryId: "fixture", routing: "hash", runtimeAccess: false, ...over });

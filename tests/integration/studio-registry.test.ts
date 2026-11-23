@@ -277,7 +277,7 @@ describe("the maintainer routes for managed registries", () => {
     expect(res.body.routes).toEqual([{ route: "orders", page: "/#/orders" }]);
     const targets = res.body.targets as Record<string, unknown>[];
     expect(targets.map((target) => target.id)).toEqual(["orders.submitButton", "orders.note"]);
-    expect(Object.keys(targets[0]!).sort()).toEqual(["description", "id", "label", "operations", "page", "privacy", "references", "role", "route", "status", "updatedAt"]);
+    expect(Object.keys(targets[0]!).sort()).toEqual(["description", "health", "healthCheckedAt", "id", "label", "marker", "operations", "page", "privacy", "references", "revision", "role", "route", "status", "updatedAt"]);
     expect(targets[0]).toMatchObject({ references: { drafts: 1, published: 1 } });
     expect(targets[1]).toMatchObject({ references: { drafts: 0, published: 0 } });
     const builtIn = await t.createApplication(referenceConfig());

@@ -21,15 +21,20 @@ import type { HostExtension } from "../compose.js";
 import { MAINTAIN_PERMISSION, MEDIUM_JUSTIFICATION } from "../authoring/capabilities.js";
 import { APPLICATION_RESOURCE_TYPE } from "./application-capabilities.js";
 import { isApplicationId } from "./applications.js";
-import { registerTargetInputSchema, targetStatusInputSchema, validateTargetRegistration } from "./registry-targets.js";
-import type { RegisterTargetInput, TargetStatusInput } from "./registry-targets.js";
-import type { RegisterOutcome, TargetStore } from "./target-store.js";
+import { registerTargetInputSchema, repairTargetInputSchema, targetHealthInputSchema, targetStatusInputSchema, validateTargetRegistration, validateTargetRepair } from "./registry-targets.js";
+import type { RegisterTargetInput, RepairTargetInput, TargetHealthInput, TargetStatusInput } from "./registry-targets.js";
+import type { RegisterOutcome, RepairOutcome, TargetStore } from "./target-store.js";
+import { verifyRepair } from "./repair-impact.js";
 
 export const REGISTER_TARGET_ACTION_ID = "registerStudioTarget";
 export const TARGET_STATUS_ACTION_ID = "setStudioTargetStatus";
 export const REGISTER_TARGET_EXECUTOR_ID = "ex.studio-register-target";
 export const TARGET_STATUS_EXECUTOR_ID = "ex.studio-set-target-status";
-export const TARGET_ACTION_IDS: readonly string[] = Object.freeze([REGISTER_TARGET_ACTION_ID, TARGET_STATUS_ACTION_ID]);
+export const TARGET_HEALTH_ACTION_ID = "setStudioTargetHealth";
+export const REPAIR_TARGET_ACTION_ID = "repairStudioTarget";
+export const TARGET_HEALTH_EXECUTOR_ID = "ex.studio-set-target-health";
+export const REPAIR_TARGET_EXECUTOR_ID = "ex.studio-repair-target";
+export const TARGET_ACTION_IDS: readonly string[] = Object.freeze([REGISTER_TARGET_ACTION_ID, TARGET_STATUS_ACTION_ID, TARGET_HEALTH_ACTION_ID, REPAIR_TARGET_ACTION_ID]);
 
 const resource = (params: { readonly applicationId: string }): ResourceRef | null => ({ type: APPLICATION_RESOURCE_TYPE, id: params.applicationId });
 
@@ -63,10 +68,40 @@ export const setStudioTargetStatus: ActionDefinition<TargetStatusInput> = define
   executorId: TARGET_STATUS_EXECUTOR_ID as ExecutorId,
 });
 
+export const setStudioTargetHealth: ActionDefinition<TargetHealthInput> = defineAction({
+  id: TARGET_HEALTH_ACTION_ID as ActionId,
+  version: 1,
+  description: "Records the observed health of a registered target of a Studio-managed application: unverified, healthy or broken. Maintainer only; a health is an observation, never identity.",
+  inputSchema: targetHealthInputSchema,
+  risk: "MEDIUM",
+  requiredPermission: MAINTAIN_PERMISSION as PermissionId,
+  allowedPages: "any",
+  confirmation: { kind: "not-required", justification: MEDIUM_JUSTIFICATION },
+  changesState: true,
+  audit: { params: [{ path: "/applicationId", mode: "plain" }, { path: "/targetId", mode: "plain" }, { path: "/health", mode: "plain" }] },
+  resource,
+  executorId: TARGET_HEALTH_EXECUTOR_ID as ExecutorId,
+});
+
+export const repairStudioTarget: ActionDefinition<RepairTargetInput> = defineAction({
+  id: REPAIR_TARGET_ACTION_ID as ActionId,
+  version: 1,
+  description: "Re-records a registered target of a Studio-managed application on a live control: its marker, role, operations, label and description change, its id never does. Refused unless every workflow that names the target still validates. Maintainer only.",
+  inputSchema: repairTargetInputSchema,
+  risk: "MEDIUM",
+  requiredPermission: MAINTAIN_PERMISSION as PermissionId,
+  allowedPages: "any",
+  confirmation: { kind: "not-required", justification: MEDIUM_JUSTIFICATION },
+  changesState: true,
+  audit: { params: [{ path: "/applicationId", mode: "plain" }, { path: "/targetId", mode: "plain" }] },
+  resource,
+  executorId: REPAIR_TARGET_EXECUTOR_ID as ExecutorId,
+});
+
 /** The failure codes of the executors (short, fixed). */
 export type TargetFailureCode =
   | "invalid_target" | "page_refused" | "application_not_found" | "application_disabled" | "registry_not_managed" | "target_exists" | "route_mismatch" | "registry_full"
-  | "target_not_found" | "id_refused" | "store_unavailable";
+  | "target_not_found" | "id_refused" | "store_unavailable" | "marker_in_use" | "unchanged" | "incompatible";
 
 /** The host's own record of what the executors received (never reachable from an AI session). */
 export interface TargetTrustedHandle {
@@ -95,6 +130,54 @@ export async function withRegistrationReceipt<T>(scope: Omit<RegistrationReceipt
   const receipt: RegistrationReceipt = { ...scope };
   const result = await registrationReceipt.run(receipt, submit);
   return { result, route: receipt.route };
+}
+
+interface RepairReceipt {
+  readonly tenantId: string;
+  readonly applicationId: string;
+  readonly targetId: string;
+  repaired?: Extract<RepairOutcome, { kind: "repaired" }>;
+  problems?: readonly string[];
+}
+// Same discipline as the registration receipt: planner feedback stays closed, only the host request awaiting this exact repair reads what its transaction produced.
+const repairReceipt = new AsyncLocalStorage<RepairReceipt>();
+export async function withRepairReceipt<T>(scope: Pick<RepairReceipt, "tenantId" | "applicationId" | "targetId">, submit: () => Promise<T>) {
+  const receipt: RepairReceipt = { ...scope };
+  const result = await repairReceipt.run(receipt, submit);
+  return { result, repaired: receipt.repaired, problems: receipt.problems };
+}
+
+export async function runSetTargetHealth(targets: TargetStore, call: TargetCall<TargetHealthInput>) {
+  const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
+  const { applicationId, targetId, health } = call.params;
+  if (!isApplicationId(applicationId)) return failure("id_refused");
+  try {
+    const outcome = await targets.setHealth(scope, applicationId, targetId, health);
+    if (outcome === "changed" || outcome === "unchanged") return { status: "success" as const, affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+    return failure(outcome);
+  } catch { return failure("store_unavailable"); }
+}
+
+/** The repair executor: it re-validates every structural rule itself (the browser session proved the live control; this is the persistence authority) and the compatibility of every workflow, inside the transaction. */
+export async function runRepairTarget(targets: TargetStore, call: TargetCall<RepairTargetInput>) {
+  const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
+  const { applicationId, targetId, ...candidate } = call.params;
+  if (!isApplicationId(applicationId)) return failure("id_refused");
+  const checked = validateTargetRepair(candidate);
+  if (!checked.ok) return failure("invalid_target");
+  const receipt = repairReceipt.getStore();
+  try {
+    const outcome = await targets.repair(scope, applicationId, targetId, checked.value, verifyRepair);
+    if (outcome.kind === "repaired") {
+      if (receipt?.tenantId === scope.tenantId && receipt.applicationId === applicationId && receipt.targetId === targetId) receipt.repaired = outcome;
+      return { status: "success" as const, affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+    }
+    if (outcome.kind === "incompatible") {
+      if (receipt?.tenantId === scope.tenantId && receipt.applicationId === applicationId && receipt.targetId === targetId) receipt.problems = outcome.problems;
+      return failure("incompatible");
+    }
+    return failure(outcome.kind);
+  } catch { return failure("store_unavailable"); }
 }
 
 export async function runRegisterTarget(targets: TargetStore, call: TargetCall<RegisterTargetInput>) {
@@ -154,15 +237,31 @@ export function createTargetExecutors(deps: TargetCapabilityDeps): { readonly ex
     },
   });
 
+  const health = defineExecutor<TargetHealthInput>({
+    id: TARGET_HEALTH_EXECUTOR_ID,
+    run: async (call) => {
+      record(TARGET_HEALTH_ACTION_ID, call.params);
+      return runSetTargetHealth(targets, call);
+    },
+  });
+
+  const repair = defineExecutor<RepairTargetInput>({
+    id: REPAIR_TARGET_EXECUTOR_ID,
+    run: async (call) => {
+      record(REPAIR_TARGET_ACTION_ID, call.params);
+      return runRepairTarget(targets, call);
+    },
+  });
+
   const trusted: TargetTrustedHandle = Object.freeze({
     receivedCalls: (actionId: string) => Object.freeze([...(received.get(actionId) ?? [])]),
     executorCalls: (actionId?: string) => (actionId === undefined ? total : (received.get(actionId)?.length ?? 0)),
   });
-  return { executors: Object.freeze([register, status]), trusted };
+  return { executors: Object.freeze([register, status, health, repair]), trusted };
 }
 
 /** The host extension that adds both capabilities and their executors. Each is still OFF unless `DAP_ENABLED_ACTIONS` lists it (default deny). */
 export function createTargetExtension(deps: TargetCapabilityDeps): { readonly extension: HostExtension; readonly trusted: TargetTrustedHandle } {
   const { executors, trusted } = createTargetExecutors(deps);
-  return { extension: Object.freeze({ definitions: Object.freeze([registerStudioTarget, setStudioTargetStatus]), executors }), trusted };
+  return { extension: Object.freeze({ definitions: Object.freeze([registerStudioTarget, setStudioTargetStatus, setStudioTargetHealth, repairStudioTarget]), executors }), trusted };
 }

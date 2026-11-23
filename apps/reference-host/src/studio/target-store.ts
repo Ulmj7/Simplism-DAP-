@@ -8,7 +8,7 @@
 import type { TenantClient } from "../authoring/tenant-tx.js";
 import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import type { ApplicationScope } from "./application-store.js";
-import type { RegistryRouteRecord, TargetRegistration, TargetStatus, TargetView } from "./registry-targets.js";
+import type { RegistryRouteRecord, TargetHealth, TargetRecord, TargetRegistration, TargetRepair, TargetStatus, TargetView } from "./registry-targets.js";
 
 
 
@@ -16,6 +16,8 @@ import type { RegistryRouteRecord, TargetRegistration, TargetStatus, TargetView 
 export interface ManagedRegistry {
   readonly routes: readonly RegistryRouteRecord[];
   readonly elements: TrustedRegistryData["elements"];
+  /** Target id -> the `data-ai-id` marker the page carries for it (the runtime and the embed resolve the DOM by it). */
+  readonly markers: Readonly<Record<string, string>>;
 }
 export interface TargetListing {
   readonly targets: readonly TargetView[];
@@ -25,7 +27,24 @@ export interface TargetListing {
 export type RegisterOutcome =
   | { readonly kind: "created"; readonly route: { readonly route: string; readonly page: string; readonly created: boolean } }
   | { readonly kind: "application_not_found" | "application_disabled" | "registry_not_managed" | "target_exists" | "route_mismatch" | "registry_full" | "id_refused" | "page_refused" };
+export type HealthOutcome = "changed" | "unchanged" | "target_not_found" | "application_not_found" | "registry_not_managed" | "id_refused";
+/** One stored workflow that names a target: a draft or a published head (the version snapshots join with the versioning order; `version` is 1 until then, `null` for a draft). */
+export interface DefinitionUsing { readonly id: string; readonly title: string; readonly status: "draft" | "published"; readonly version: number | null; readonly definition: unknown }
+/** The five fields a repair can change, as stored (the change history records exactly these). */
+export interface RepairFields { readonly marker: string; readonly role: string; readonly operations: readonly string[]; readonly label: string; readonly description: string }
+export interface RepairImpact {
+  readonly drafts: readonly { readonly id: string; readonly title: string }[];
+  readonly published: readonly { readonly id: string; readonly title: string; readonly version: number }[];
+}
+/** Decides, inside the repair's own transaction, whether every workflow that names the target still validates against the registry AS IT IS AFTER the repair: the problems, or `[]`. */
+export type RepairVerify = (definitions: readonly DefinitionUsing[], registry: ManagedRegistry, target: TargetRecord) => readonly string[];
+export type RepairOutcome =
+  | { readonly kind: "repaired"; readonly target: TargetView; readonly before: RepairFields; readonly after: RepairFields; readonly impact: RepairImpact }
+  | { readonly kind: "incompatible"; readonly problems: readonly string[] }
+  | { readonly kind: "application_not_found" | "application_disabled" | "registry_not_managed" | "target_not_found" | "marker_in_use" | "unchanged" | "id_refused" };
 export type TargetStatusOutcome = "changed" | "unchanged" | "target_not_found" | "application_not_found" | "application_disabled" | "registry_not_managed" | "id_refused";
+
+export interface TargetChange { readonly revision: number; readonly changedAt: string; readonly changedBy: string; readonly before: RepairFields; readonly after: RepairFields }
 
 export interface TargetStore {
   /** Every target of the application (active and disabled) with its reference counts, and its routes. Empty for an unknown or foreign application. */
@@ -41,6 +60,17 @@ export interface TargetStore {
    * route in the SAME transaction. An existing id is `target_exists`; the caps (20 routes, 200 targets) are `registry_full`.
    */
   register(scope: ApplicationScope, applicationId: string, value: TargetRegistration): Promise<RegisterOutcome>;
+  /** Every stored workflow of the application that names the target (drafts and published heads), newest first, at most 200. The single place to extend when published versions arrive. */
+  definitionsUsing(tenantId: string, applicationId: string, targetId: string): Promise<readonly DefinitionUsing[]>;
+  /** The newest change rows of a target (at most `limit`, newest first). */
+  changes(tenantId: string, applicationId: string, targetId: string, limit: number): Promise<readonly TargetChange[]>;
+  /** Records an observation of the target's health. Free to change (it is not identity); never needs the application to be enabled. */
+  setHealth(scope: ApplicationScope, applicationId: string, targetId: string, health: TargetHealth): Promise<HealthOutcome>;
+  /**
+   * Repairs a target (D-S3): new marker, role, operations, label and description; health becomes `healthy`, the revision rises by one and a change row is written, in ONE transaction that
+   * holds the application row FOR SHARE and the target row FOR UPDATE. `verify` runs inside it after the change is applied; any problem rolls everything back (`incompatible`).
+   */
+  repair(scope: ApplicationScope, applicationId: string, targetId: string, value: TargetRepair, verify: RepairVerify): Promise<RepairOutcome>;
   /** Disables (always allowed) or re-enables (needs the application enabled) a target. Nothing but the status ever changes. */
   setStatus(scope: ApplicationScope, applicationId: string, targetId: string, status: TargetStatus): Promise<TargetStatusOutcome>;
 }
