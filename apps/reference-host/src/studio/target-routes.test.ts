@@ -12,7 +12,7 @@ import { registerApplicationRoutes } from "./application-routes.js";
 import { FakeApplicationStore } from "./fake-application-store.js";
 import { FakeTargetStore } from "./fake-target-store.js";
 import { createRegistryCatalog } from "./registries.js";
-import { TARGET_STATUS_ACTION_ID } from "./target-capabilities.js";
+import { TARGET_HEALTH_ACTION_ID, TARGET_STATUS_ACTION_ID } from "./target-capabilities.js";
 
 const TENANT_A = "1111aaaa-2222-4333-8444-5555bbbb5555";
 const TENANT_B = "2222bbbb-3333-4444-8555-6666cccc6666";
@@ -46,6 +46,10 @@ async function build(over: { feedback?: () => unknown } = {}) {
         if (!permissions.includes(MAINTAIN_PERMISSION)) return { outcome: "UNAUTHORIZED", category: "not_available" };
         if (action === TARGET_STATUS_ACTION_ID) {
           const outcome = await targets.setStatus({ tenantId: tenant, actor: who }, params.applicationId as string, params.targetId as string, params.status as "active" | "disabled");
+          return { outcome: "ALLOWED", category: outcome === "changed" || outcome === "unchanged" ? "ok" : "try_later" };
+        }
+        if (action === TARGET_HEALTH_ACTION_ID) {
+          const outcome = await targets.setHealth({ tenantId: tenant, actor: who }, params.applicationId as string, params.targetId as string, params.health as "healthy" | "broken" | "unverified");
           return { outcome: "ALLOWED", category: outcome === "changed" || outcome === "unchanged" ? "ok" : "try_later" };
         }
         return { outcome: "INVALID_ACTION", category: "not_available" };
@@ -196,5 +200,105 @@ describe("POST targets/:targetId/status", () => {
     for (const [url, body] of [[statusUrl(MANAGED, `${MARK}.x`), { status: "disabled" }], [statusUrl(MANAGED), { status: MARK }], [statusUrl(MANAGED), { [MARK]: 1 }]] as const) {
       expect((await t.call("POST", url, { who: "maintainer", body })).raw).not.toContain(MARK);
     }
+  });
+});
+
+// --- Studio COMPLETION S3: health, target detail and the real overview --------------------------------------------------------------------------------------------------
+const healthUrl = (id: string, target = "orders.submit") => `/api/admin/applications/${id}/targets/${target}/health`;
+const detailUrl = (id: string, target = "orders.submit") => `/api/admin/applications/${id}/targets/${target}`;
+const SCOPE_A = { tenantId: TENANT_A, actor: "seed" };
+
+describe("POST targets/:targetId/health", () => {
+  it("records broken or unverified through the Gateway with server-built params and replies with the TargetView read back", async () => {
+    const t = await build();
+    const broken = await t.call("POST", healthUrl(MANAGED), { who: "maintainer", body: { state: "broken" } });
+    expect(broken.status).toBe(200);
+    expect(broken.body).toMatchObject({ id: "orders.submit", health: "broken", marker: "orders.submit", revision: 1, healthCheckedAt: expect.any(String) });
+    expect(t.submitted.at(-1)).toEqual({ action: "setStudioTargetHealth", params: { applicationId: MANAGED, targetId: "orders.submit", health: "broken" } });
+    expect((await t.call("POST", healthUrl(MANAGED), { who: "maintainer", body: { state: "unverified" } })).body).toMatchObject({ health: "unverified" });
+    noLeak(broken.raw);
+  });
+  it("`healthy` is never accepted from a client (400, nothing submitted), nor is any other body", async () => {
+    const t = await build();
+    for (const body of [{ state: "healthy" }, { state: "fine" }, { state: "" }, { state: 1 }, { state: "broken", extra: 1 }, {}, [], null, { health: "broken" }]) {
+      expect((await t.call("POST", healthUrl(MANAGED), { who: "maintainer", body })).status, JSON.stringify(body)).toBe(400);
+    }
+    expect(t.submitted).toEqual([]);
+    expect((await t.targets.get(TENANT_A, MANAGED, "orders.submit"))?.health).toBe("unverified");
+  });
+  it("401 / 403, 404 TARGET_NOT_FOUND (unknown, malformed, other tenant's), 409 REGISTRY_NOT_MANAGED for a built-in application, fixed 503 when the Gateway or the store fails", async () => {
+    const t = await build();
+    const body = { state: "broken" };
+    expect((await t.call("POST", healthUrl(MANAGED), { who: "none", body })).status).toBe(401);
+    expect((await t.call("POST", healthUrl(MANAGED), { who: "user", body })).status).toBe(403);
+    for (const target of ["orders.missing", "nope", "dap.reserved"]) expect((await t.call("POST", healthUrl(MANAGED, target), { who: "maintainer", body })).body, target).toMatchObject({ code: "TARGET_NOT_FOUND" });
+    expect((await t.call("POST", healthUrl(MANAGED), { who: "maintainerB", body })).body).toMatchObject({ code: "APPLICATION_NOT_FOUND" });
+    expect((await t.call("POST", healthUrl(BUILT_IN), { who: "maintainer", body })).body).toMatchObject({ code: "REGISTRY_NOT_MANAGED" });
+    expect(t.submitted).toEqual([]);
+    const down = await build({ feedback: () => ({ outcome: "ALLOWED", category: "try_later" }) });
+    expect((await down.call("POST", healthUrl(MANAGED), { who: "maintainer", body })).status).toBe(503);
+    const refused = await build({ feedback: () => ({ outcome: "FORBIDDEN_POLICY" }) });
+    expect((await refused.call("POST", healthUrl(MANAGED), { who: "maintainer", body })).status).toBe(403);
+    t.targets.failWith = new Error(SECRET);
+    const broken = await t.call("POST", healthUrl(MANAGED), { who: "maintainer", body });
+    expect(broken.status).toBe(503);
+    noLeak(broken.raw);
+  });
+});
+
+describe("GET targets/:targetId", () => {
+  it("returns the TargetView with its usage (drafts, published with version) and its change history, newest first, closed shape", async () => {
+    const t = await build();
+    const draft = { id: "wt-0000000000a1", title: "A draft", status: "draft" as const, definition: { steps: [{ id: "s1", kind: "guide", target: "orders.submit", text: "x", wait: "click", next: "done" }] } };
+    t.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, ...draft });
+    t.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a2", title: "Live", status: "published", definition: draft.definition });
+    t.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a3", title: "Unrelated", status: "draft", definition: { steps: [{ id: "s1", kind: "guide", target: "orders.other" }] } });
+    const { repair } = await import("./target-capabilities.js").then(() => ({ repair: (marker: string, label: string) => t.targets.repair(SCOPE_A, MANAGED, "orders.submit", { marker, role: "button", operations: ["highlight", "click"], label, description: "Submits" }, () => []) }));
+    await repair("orders.submitTwo", "Second");
+    await repair("orders.submitThree", "Third");
+    const res = await t.call("GET", detailUrl(MANAGED), { who: "maintainer" });
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["changes", "description", "health", "healthCheckedAt", "id", "label", "marker", "operations", "page", "privacy", "references", "revision", "role", "route", "status", "updatedAt", "usage"]);
+    expect(res.body).toMatchObject({ id: "orders.submit", marker: "orders.submitThree", revision: 3, health: "healthy" });
+    expect(res.body.usage).toEqual({ drafts: [{ id: "wt-0000000000a1", title: "A draft" }], published: [{ id: "wt-0000000000a2", title: "Live", version: 1 }] });
+    const changes = res.body.changes as { revision: number; changedBy: string; before: { marker: string }; after: { marker: string } }[];
+    expect(changes.map((c) => [c.revision, c.before.marker, c.after.marker])).toEqual([[3, "orders.submitTwo", "orders.submitThree"], [2, "orders.submit", "orders.submitTwo"]]);
+    expect(Object.keys(changes[0]!).sort()).toEqual(["after", "before", "changedAt", "changedBy", "revision"]);
+    noLeak(res.raw);
+  });
+  it("caps the history at 50 entries, newest first", async () => {
+    const t = await build();
+    for (let i = 0; i < 55; i += 1) await t.targets.repair(SCOPE_A, MANAGED, "orders.submit", { marker: `orders.marker${i}`, role: "button", operations: ["highlight", "click"], label: `L${i}`, description: "D" }, () => []);
+    const changes = (await t.call("GET", detailUrl(MANAGED), { who: "maintainer" })).body.changes as { revision: number }[];
+    expect(changes).toHaveLength(50);
+    expect(changes[0]!.revision).toBe(56);
+    expect(changes.at(-1)!.revision).toBe(7);
+  });
+  it("401 / 403, 404 for an unknown, malformed or other tenant's target and application, 409 for a built-in application, fixed 503 when the store fails; no echo", async () => {
+    const t = await build();
+    expect((await t.call("GET", detailUrl(MANAGED), { who: "none" })).status).toBe(401);
+    expect((await t.call("GET", detailUrl(MANAGED), { who: "user" })).status).toBe(403);
+    for (const target of ["orders.missing", "nope", "dap.reserved", "<script>"]) expect((await t.call("GET", detailUrl(MANAGED, encodeURIComponent(target)), { who: "maintainer" })).body, target).toMatchObject({ code: "TARGET_NOT_FOUND" });
+    expect((await t.call("GET", detailUrl(OTHER), { who: "maintainer" })).body).toMatchObject({ code: "APPLICATION_NOT_FOUND" });
+    expect((await t.call("GET", detailUrl(MANAGED), { who: "maintainerB" })).body).toMatchObject({ code: "APPLICATION_NOT_FOUND" });
+    expect((await t.call("GET", detailUrl(BUILT_IN), { who: "maintainer" })).body).toMatchObject({ code: "REGISTRY_NOT_MANAGED" });
+    t.targets.failWith = new Error(SECRET);
+    const down = await t.call("GET", detailUrl(MANAGED), { who: "maintainer" });
+    expect(down.status).toBe(503);
+    noLeak(down.raw);
+  });
+});
+
+describe("the overview reports the real health counts of the ACTIVE targets", () => {
+  it("healthy, broken and unverified come from the stored health; disabled targets are counted as disabled and never in the health states", async () => {
+    const t = await build();
+    for (const [id, health] of [["orders.b", "broken"], ["orders.c", "healthy"], ["orders.d", "unverified"], ["orders.e", "healthy"]] as const) {
+      await t.targets.register(SCOPE_A, MANAGED, registration({ targetId: id, label: id }));
+      await t.targets.setHealth(SCOPE_A, MANAGED, id, health);
+    }
+    await t.targets.setHealth(SCOPE_A, MANAGED, "orders.e", "healthy");
+    await t.targets.setStatus(SCOPE_A, MANAGED, "orders.e", "disabled");
+    const res = await t.call("GET", `/api/admin/applications/${MANAGED}/overview`, { who: "maintainer" });
+    expect(res.body.targets).toEqual({ total: 5, active: 4, disabled: 1, healthy: 1, unverified: 2, broken: 1 });
   });
 });

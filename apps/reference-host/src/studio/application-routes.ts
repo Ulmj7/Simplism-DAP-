@@ -9,7 +9,9 @@
  *   PUT  /api/admin/applications/:id          Maintainer   body EXACTLY the seven fields above: update the configuration (the enabled flag is untouched); a routing change after routes exist is
  *                                                          409 ROUTING_LOCKED
  *   POST /api/admin/applications/:id/runtime-key Maintainer   (Studio-managed only, 409 REGISTRY_NOT_MANAGED otherwise) replace the runtime key through the Gateway: ApplicationView
- *   GET  /api/admin/applications/:id/overview Maintainer   { application, targets: { total, active, disabled, healthy, unverified, broken }, workflows: { draft, published } }
+ *   GET  /api/admin/applications/:id/overview Maintainer   { application, targets: { total, active, disabled, healthy, unverified, broken }, workflows: { draft, published } } (the health counts are of the ACTIVE targets)
+ *   GET  /api/admin/applications/:id/targets/:targetId        Maintainer   TargetView + usage { drafts: [{ id, title }], published: [{ id, title, version }] } + changes (<= 50, newest first)
+ *   POST /api/admin/applications/:id/targets/:targetId/health Maintainer   body EXACTLY { state: "broken" | "unverified" } (`healthy` is written by the session check and by a repair only: 400): TargetView
  *   POST /api/admin/applications/:id/status   Maintainer   body EXACTLY { enabled: boolean }: Gateway enable/disable
  *   GET  /api/admin/applications/:id/registry Maintainer   { routes, elements (public only), postconditionNames, previewable }: the application's public-eligible registry
  *
@@ -34,8 +36,9 @@ import type { TargetStatus } from "./registry-targets.js";
 import { createRegistryResolver } from "./registry-resolver.js";
 import type { RegistryResolver } from "./registry-resolver.js";
 import type { RegistryCatalog } from "./registries.js";
-import { TARGET_STATUS_ACTION_ID } from "./target-capabilities.js";
+import { TARGET_HEALTH_ACTION_ID, TARGET_STATUS_ACTION_ID } from "./target-capabilities.js";
 import type { TargetStore } from "./target-store.js";
+import { impactOf } from "./repair-impact.js";
 
 export interface ApplicationRouteDeps {
   readonly applications: ApplicationStore;
@@ -218,15 +221,16 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
     try {
       const record = await applications.get(principal.tenantId, id);
       if (record === null) return notFound(reply);
-      let total: number; let active: number;
+      let total: number; let active: number; let healthy = 0; let broken = 0;
       if (registrySourceOf(record.registryId) === "studio-managed") {
         const listing = await targets.list(principal.tenantId, record.id);
-        total = listing.targets.length; active = listing.targets.filter((target) => target.status === "active").length;
+        const live = listing.targets.filter((target) => target.status === "active");
+        total = listing.targets.length; active = live.length;
+        healthy = live.filter((target) => target.health === "healthy").length; broken = live.filter((target) => target.health === "broken").length;
       } else { total = view(record).counts.targets; active = total; }
-      // Health arrives with a later order: nothing is verified yet, so every active target is `unverified` and none is `healthy` or `broken`.
       return send(reply, 200, {
         application: view(record),
-        targets: { total, active, disabled: total - active, healthy: 0, unverified: active, broken: 0 },
+        targets: { total, active, disabled: total - active, healthy, unverified: active - healthy - broken, broken },
         workflows: { draft: record.counts.drafts, published: record.counts.published },
       });
     } catch { return unavailable(reply); }
@@ -271,6 +275,43 @@ export function registerApplicationRoutes(app: FastifyInstance, deps: Applicatio
     try {
       const listing = await targets.list(principal.tenantId, record.id);
       return send(reply, 200, { targets: listing.targets, routes: listing.routes, limits: { maxTargets: MAX_TARGETS_PER_APPLICATION, maxRoutes: MAX_ROUTES_PER_APPLICATION } });
+    } catch { return unavailable(reply); }
+  });
+
+  app.get("/api/admin/applications/:id/targets/:targetId", async (request, reply) => {
+    const principal = await gate(request, reply);
+    if (principal === null) return;
+    const record = await managed(principal, reply, request);
+    if (record === null) return;
+    const targetId = (request.params as { targetId?: unknown } | undefined)?.targetId;
+    if (!isTargetId(targetId)) return send(reply, 404, failure("not_found", APPLICATION_MESSAGES.targetNotFound, "TARGET_NOT_FOUND"));
+    try {
+      const target = await targets.get(principal.tenantId, record.id, targetId);
+      if (target === null) return send(reply, 404, failure("not_found", APPLICATION_MESSAGES.targetNotFound, "TARGET_NOT_FOUND"));
+      const [usingTarget, changes] = await Promise.all([targets.definitionsUsing(principal.tenantId, record.id, targetId), targets.changes(principal.tenantId, record.id, targetId, 50)]);
+      const usage = impactOf(usingTarget);
+      return send(reply, 200, { ...target, usage: { drafts: usage.drafts, published: usage.published }, changes: changes.map((change) => ({ revision: change.revision, changedAt: change.changedAt, changedBy: change.changedBy, before: change.before, after: change.after })) });
+    } catch { return unavailable(reply); }
+  });
+
+  app.post("/api/admin/applications/:id/targets/:targetId/health", async (request, reply) => {
+    const principal = await gate(request, reply);
+    if (principal === null) return;
+    const body = exactBody(request.body, ["state"]);
+    // The client reports `broken` (a Preview failure) or `unverified` (a reset) only: `healthy` is a verdict the server makes (the session check, a repair).
+    if (body === null || (body.state !== "broken" && body.state !== "unverified")) return malformed(reply);
+    const record = await managed(principal, reply, request);
+    if (record === null) return;
+    const targetId = (request.params as { targetId?: unknown } | undefined)?.targetId;
+    const targetNotFound = () => send(reply, 404, failure("not_found", APPLICATION_MESSAGES.targetNotFound, "TARGET_NOT_FOUND"));
+    if (!isTargetId(targetId)) return targetNotFound();
+    try { if ((await targets.get(principal.tenantId, record.id, targetId)) === null) return targetNotFound(); } catch { return unavailable(reply); }
+    const result = await submitGatewayWrite(principal, TARGET_HEALTH_ACTION_ID, { applicationId: record.id, targetId, health: body.state });
+    if (result === "refused") return send(reply, 403, failure("forbidden", AUTHORING_MESSAGES.refused));
+    if (result !== "ok") return unavailable(reply);
+    try {
+      const target = await targets.get(principal.tenantId, record.id, targetId);
+      return target === null ? unavailable(reply) : send(reply, 200, target);
     } catch { return unavailable(reply); }
   });
 
