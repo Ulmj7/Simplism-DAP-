@@ -53,7 +53,7 @@ describe("suggestRouteName", () => {
 describe("suggestLabel", () => {
   it("removes markup characters and control characters, collapses spaces and trims", () => {
     expect(suggestLabel(`  Save <b>"all"</b> & 'go'\n\`x\`  `, "orders.save")).toBe("Save b all /b go x");
-    expect(suggestLabel("a‮b", "orders.save")).toBe("a b");
+    expect(suggestLabel("a\u202eb", "orders.save")).toBe("a b");
   });
   it("is at most 80 characters and never blank (last id segment as a fallback)", () => {
     expect(suggestLabel("x".repeat(200), "orders.save")).toHaveLength(80);
