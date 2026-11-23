@@ -86,7 +86,7 @@ try {
   const resolvePrincipal = createDemoPrincipalResolver({ sessions: parseDevSessions(env.DEV_SESSIONS), userToken: token, maintainerToken, openSession: (evidence) => host.openSession(evidence) });
   registerAuthoringRoutes(app, { store, applications, catalog, targets, resolver, resolvePrincipal });
   registerApplicationRoutes(app, { applications, catalog, targets, resolver, resolvePrincipal });
-  registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: store });
+  registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: store, targets, resolver });
   close = async () => { await app.close(); await host.close(); await authoringPool.end(); };
   phase = "listen";
   await app.listen({ host: HTTP_HOST, port });

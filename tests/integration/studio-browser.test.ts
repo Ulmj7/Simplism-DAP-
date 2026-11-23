@@ -262,7 +262,7 @@ describe("the second application drives the inspector with its own registry (fix
     const session = connected.body.sessionId as string;
     const refreshed = await t.studioCall({ action: "refresh", sessionId: session, applicationId: second });
     expect(refreshed.body).toEqual({
-      url: "http://127.0.0.1:5185/#/orders", route: "orders",
+      url: "http://127.0.0.1:5185/#/orders", route: "orders", page: "/#/orders", hidden: 0, truncated: false,
       elements: [
         { ref: "@e5", name: "Submit order", role: "button", route: "orders", status: "trusted", targetId: "orders.submit", operations: ["highlight", "click"], privacy: "public" },
         { ref: "@e6", name: "Order note", role: "textbox", route: "orders", status: "trusted", targetId: "orders.note", operations: ["highlight", "input"], privacy: "public" },
