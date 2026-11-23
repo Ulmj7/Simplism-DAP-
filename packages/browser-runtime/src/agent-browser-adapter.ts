@@ -22,6 +22,9 @@ const maxAutocomplete = 200;
 // "any" routes: a hash-routed page shape (`/path` plus an optional `#/route`), no query, no percent escapes, no `=`/`&`: a fragment such as `#access_token=…` is never a page.
 const anyPage = /^\/[A-Za-z0-9._~/-]*(?:#\/?[A-Za-z0-9._~/-]*)?$/u;
 const maxPageChars = 200;
+// History routing (`routing: "history"`): the page is the PATHNAME only. Query and fragment of the observed URL are ignored (never returned, never stored, never a reason to refuse), the pathname is
+// a static path of letters, digits and `._~/-` without an empty segment, and a trailing slash (except the root) is removed.
+const historyPath = /^\/[A-Za-z0-9._~/-]*$/u;
 
 interface TrustedObservation {
   readonly route: string;
@@ -36,6 +39,10 @@ export interface AgentBrowserAdapterOptions {
   // Navigation policy: static `pathname + hash` strings the session may be on. "any" accepts any hash-routed page (`/` or `/path`, optional `#/route`, at most 200
   // characters, no query and no characters outside letters, digits and `._~/-`) on an allowed ORIGIN: the exact scheme, host and port stay enforced on every URL.
   readonly routes: readonly string[] | "any";
+  // How an application with `routes: "any"` addresses its pages. "hash" (default) is the hash-routed shape above. "history" uses the pathname alone: query and fragment are ignored and never
+  // exposed, the pathname must match `^/[A-Za-z0-9._~/-]*$` (at most 200 characters, no `//`), a trailing slash is removed except for "/", and the returned `snapshot.url` is
+  // `origin + normalised pathname`. The exact origin stays enforced. "history" needs `routes: "any"`.
+  readonly routing?: "hash" | "history";
   // Navigation policy: 1..5 normalized origins (`scheme://host[:port]`, http/https only, no
   // credentials, path, query or hash). The CLI allow-list is host-level (the unique hostnames of
   // these origins), so DAP itself enforces the exact scheme, host and port on every URL it reads.
@@ -74,6 +81,9 @@ function normalizeOrigins(value: unknown): { readonly origins: ReadonlySet<strin
 export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, run: RunCli = localCli(executable)): BrowserRuntime {
   if (options.labels !== "all" && !Array.isArray(options.labels)) throw new TypeError("labels must be a list of labels or \"all\"");
   if (options.routes !== "any" && !Array.isArray(options.routes)) throw new TypeError("routes must be a list of routes or \"any\"");
+  if (options.routing !== undefined && options.routing !== "hash" && options.routing !== "history") throw new TypeError("routing must be \"hash\" or \"history\"");
+  if (options.routing === "history" && options.routes !== "any") throw new TypeError("history routing needs routes \"any\"");
+  const history = options.routing === "history";
   const labels = options.labels === "all" ? "all" : options.labels.map(label => ({ ...label }));
   const routes = options.routes === "any" ? "any" : new Set(options.routes);
   const { origins, hostnames } = normalizeOrigins(options.origins);
@@ -104,6 +114,11 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
 
   function approvedUrl(value: unknown): string {
     const url = allowedUrl(value);
+    if (history) {
+      const path = url.pathname.length > 1 && url.pathname.endsWith("/") ? url.pathname.slice(0, -1) : url.pathname;
+      if (!origins.has(url.origin) || path.length > maxPageChars || !historyPath.test(path) || url.pathname.includes("//")) throw new BrowserRuntimeError("DOMAIN_BLOCKED");
+      return url.origin + path;
+    }
     const route = url.pathname + url.hash;
     const page = routes === "any" ? route.length <= maxPageChars && anyPage.test(route) : routes.has(route);
     if (!origins.has(url.origin) || !page || url.search) throw new BrowserRuntimeError("DOMAIN_BLOCKED");
