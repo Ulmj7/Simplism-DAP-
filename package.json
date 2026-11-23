@@ -35,7 +35,8 @@
     "test:studio": "vitest run packages/browser-runtime apps/reference-host/src/studio apps/reference-web/src/admin tests/integration/studio-fixture-app.test.ts",
     "probe:studio-domains": "tsc -b && node scripts/studio-domain-probe.mjs",
     "acceptance:studio-v1-host": "tsc -b && node scripts/studio-v1-host-acceptance.mjs",
-    "acceptance:studio-v1-ui": "tsc -b && node scripts/studio-browser-smoke.mjs"
+    "acceptance:studio-v1-ui": "tsc -b && node scripts/studio-browser-smoke.mjs",
+    "build:embed": "vite build --config apps/reference-web/vite.config.ts --mode embed"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
