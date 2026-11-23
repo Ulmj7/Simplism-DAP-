@@ -7,7 +7,7 @@ import { exactBody } from "../http/transport.js";
 import { isAuthoredId } from "../authoring/ids.js";
 import { APPLICATION_ID } from "./applications.js";
 
-export const STUDIO_ACTIONS = ["connect", "refresh", "highlight", "capture", "disconnect"] as const;
+export const STUDIO_ACTIONS = ["connect", "resume", "refresh", "highlight", "capture", "register", "disconnect"] as const;
 export type StudioAction = (typeof STUDIO_ACTIONS)[number];
 
 /** An element reference of the pinned browser CLI: `@e` + 1..9 digits, no leading zero. Session-only evidence, never persisted. */
@@ -17,7 +17,12 @@ export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 
 export type StudioCommand =
   | { readonly action: "connect"; readonly applicationId: string; readonly walkthroughId?: string }
+  | { readonly action: "resume"; readonly applicationId: string }
   | { readonly action: "refresh"; readonly sessionId: string; readonly applicationId: string }
+  | {
+    readonly action: "register"; readonly sessionId: string; readonly applicationId: string; readonly ref: string; readonly targetId: string; readonly route: string;
+    readonly operations: readonly string[]; readonly label: string; readonly description: string; readonly privacy: string;
+  }
   | { readonly action: "highlight" | "capture"; readonly sessionId: string; readonly applicationId: string; readonly ref: string }
   | { readonly action: "disconnect"; readonly sessionId: string; readonly applicationId?: string };
 
@@ -39,6 +44,20 @@ export function parseStudioCommand(body: unknown): StudioCommand | null {
       }
       const plain = exactBody(body, ["action", "applicationId"]);
       return plain !== null && applicationId(plain.applicationId) ? { action, applicationId: plain.applicationId } : null;
+    }
+    case "resume": {
+      const parsed = exactBody(body, ["action", "applicationId"]);
+      return parsed !== null && applicationId(parsed.applicationId) ? { action, applicationId: parsed.applicationId } : null;
+    }
+    case "register": {
+      // Shape and size only; the VALUES are judged by the one target validator (422 INVALID_TARGET), after the live element has been re-verified.
+      const parsed = exactBody(body, ["action", "sessionId", "applicationId", "ref", "targetId", "route", "operations", "label", "description", "privacy"]);
+      if (parsed === null || !sessionId(parsed.sessionId) || !applicationId(parsed.applicationId) || !refOf(parsed.ref)) return null;
+      const { targetId, route, label, description, privacy, operations } = parsed;
+      const short = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max;
+      if (!short(targetId, 200) || !short(route, 100) || !short(label, 1000) || !short(description, 2000) || !short(privacy, 40)) return null;
+      if (!Array.isArray(operations) || operations.length > 16 || !operations.every((operation) => short(operation, 40))) return null;
+      return { action, sessionId: parsed.sessionId, applicationId: parsed.applicationId, ref: parsed.ref, targetId, route, operations: [...operations], label, description, privacy };
     }
     case "refresh": {
       const parsed = exactBody(body, ["action", "sessionId", "applicationId"]);
