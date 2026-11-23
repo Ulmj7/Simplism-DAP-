@@ -438,7 +438,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
           h("p", {}, `Published workflows that use this target (${impact.published.length})`), list(impact.published.map(item => `${item.title} · version ${item.version}`)),
           h("p", { class: impact.compatible ? "" : "error" }, impact.compatible ? "Compatible: every workflow stays valid." : "Not compatible: the repair cannot be applied."),
           ...(impact.compatible ? [] : [list(impact.problems)])));
-      confirm.hidden = false; confirm.disabled = !impact.compatible || pending;
+      confirm.hidden = false; confirm.disabled = !impact.compatible;
       if (!impact.compatible) warn(failures.REPAIR_INCOMPATIBLE!, impact.problems);
       else say("Review the old and new evidence and the impact, then confirm the repair.");
     };
