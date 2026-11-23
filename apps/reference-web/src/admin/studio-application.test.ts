@@ -172,7 +172,7 @@ function fill(root: ParentNode, id: string, value: string, event = "input") {
   const input = control<HTMLInputElement>(root, `[id="${id}"]`); input.value = value; input.dispatchEvent(new Event(event, { bubbles: true }));
 }
 const click = async (root: ParentNode, name: string) => { button(root, name).click(); await turn(); };
-const navigate = async (route: "dashboard" | "walkthroughs" | "applications" | "editor" | "analytics") => { mounted?.current()?.router.navigate(route); await turn(); };
+const navigate = async (route: "dashboard" | "walkthroughs" | "applications" | "targets" | "editor" | "analytics") => { mounted?.current()?.router.navigate(route); await turn(); };
 const options = (root: ParentNode, id: string) => [...control<HTMLSelectElement>(root, `[id="${id}"]`).options].map(item => item.value);
 // The first cell is the name followed by its Enabled/Disabled badge.
 const rowFor = (root: ParentNode, name: string) => [...root.querySelectorAll("tbody tr")].find(row => [name, `${name} ${p.enabledLabel}`, `${name} ${p.disabledLabel}`].includes(row.firstElementChild?.textContent ?? ""))!;
@@ -815,4 +815,52 @@ it("uses the managed registry for list Publish and defers list Preview to the ap
   expect(document.querySelector("[data-ai-overlay]")).toBeNull();
   await click(root, "Publish: Orders tour");
   expect(root.querySelector("dialog[open]")).not.toBeNull();
+});
+
+// ---------------------------------------------------------------------------------------------------------------- navigation and information architecture (S9)
+
+it("marks the current top-level page with aria-current, labels Workflows, and focuses the page heading on every route change", async () => {
+  const { root } = await setup("applications");
+  const current = () => [...root.querySelectorAll("nav a[aria-current=page]")].map(link => link.textContent);
+  expect(current()).toEqual(["Applications"]);
+  expect(document.activeElement).not.toBeNull();
+  for (const [route, label, heading] of [["walkthroughs", "Workflows", "Workflows"], ["targets", "Targets", "Targets"], ["editor", "DAP Studio", "DAP Studio"], ["analytics", "Analytics", "Analytics"]] as const) {
+    await navigate(route);
+    expect(current(), route).toEqual([label]);
+    expect(root.querySelector("h1")?.textContent, route).toBe(heading);
+    expect(root.querySelector("h1")?.getAttribute("tabindex"), route).toBe("-1");
+    expect(document.title, route).toBe(`DAP — ${heading === "DAP Studio" ? "Studio" : heading}`);
+  }
+});
+
+it("the admin pages carry breadcrumbs that end in the current page: Applications › Targets and Applications › name › Workflows", async () => {
+  const { root } = await setup("targets");
+  expect(root.querySelector("nav[aria-label=Breadcrumb]")?.textContent).toContain("Applications");
+  expect(root.querySelector("nav[aria-label=Breadcrumb] [aria-current=page]")?.textContent).toBe("Targets");
+  expect(root.querySelector('nav[aria-label=Breadcrumb] a')?.getAttribute("href")).toBe("#/applications");
+  await navigate("walkthroughs");
+  expect(root.querySelector("nav[aria-label=Breadcrumb] [aria-current=page]")?.textContent).toBe("Workflows");
+});
+
+it("Manage Workflows narrows the Workflows page to one application and says so in the breadcrumb; All applications shows everything", async () => {
+  const host = fakeHost({ apps: [app(ORD, "Orders application", 5185, "fixture-b"), app(REF, "Reference application", 5173, "reference")],
+    guides: [guide(savedId, "draft", ordersDraft(savedId), ORD)] });
+  const { root } = await setup("applications", host);
+  await click(root, "Overview: Orders application");
+  await click(root, "Manage Workflows: Orders application");
+  expect(root.querySelector("h1")?.textContent).toBe("Workflows");
+  expect(control<HTMLSelectElement>(root, "#walkthrough-application").value).toBe(ORD);
+  expect(root.querySelector("nav[aria-label=Breadcrumb]")?.textContent).toContain("Orders application");
+  expect([...root.querySelectorAll("tbody tr")].map(row => row.firstElementChild?.textContent)).toEqual(["Orders tour"]);
+  const select = control<HTMLSelectElement>(root, "#walkthrough-application");
+  select.value = REF; select.dispatchEvent(new Event("change", { bubbles: true })); await turn();
+  expect(root.querySelectorAll("tbody tr")).toHaveLength(0);
+  select.value = ""; select.dispatchEvent(new Event("change", { bubbles: true })); await turn();
+  expect(root.querySelectorAll("tbody tr").length).toBeGreaterThan(1);
+});
+
+it("the Targets page is denied to an ordinary user like every admin page", async () => {
+  const { root } = await setup("targets", fakeHost(), "user");
+  expect(root.querySelector('nav [href="#/targets"]')).toBeNull();
+  expect(root.textContent).toContain(c.denied);
 });
