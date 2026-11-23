@@ -95,7 +95,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   right.append(metadata, inspector);
   const panes = h("div", { class: "editor-panes" }, left, right);
   const applicationBox = h("div", { class: "editor-application" });
-  page.append(applicationBox, h("div", { class: "admin-toolbar" }, h("div", { class: "admin-actions" }, save, showPreview, publish)), previewHint, publishHint, errors, panes);
+  page.append(applicationBox, h("div", { class: "admin-toolbar" }, h("div", { class: "admin-actions" }, save, showPreview, publish)), previewHint, publishHint, h("div", { "aria-live": "polite" }, errors), panes);
 
   let busy = false;
   const fields = new Map<string, { control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement; hint: HTMLElement }>();
