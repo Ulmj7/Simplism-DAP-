@@ -101,16 +101,16 @@ describe("S5 workflow versions and concurrency", () => {
   });
 
   it("checks the reviewed revision again inside the publish transaction after an intervening save", async () => {
-    let beforePublish: (() => Promise<void>) | undefined;
+    const beforePublish: { run?: () => Promise<void> } = {};
     const t = await ready({ wrapStore: (store) => ({
       ...store,
-      setStatus: async (...args) => { await beforePublish?.(); return store.setStatus(...args); },
+      setStatus: async (...args) => { await beforePublish.run?.(); return store.setStatus(...args); },
     }) });
     expect((await t.publish(1)).status).toBe(200);
     expect((await t.post("revise")).status).toBe(200);
     const review = await t.post("review");
     expect(review.body.revision).toBe(3);
-    beforePublish = async () => {
+    beforePublish.run = async () => {
       const saved = await t.save(3, managedDef("orders.other", undefined, { title: "Intervening save" }));
       expect(saved).toMatchObject({ status: 200, body: { revision: 4 } });
     };
@@ -135,10 +135,10 @@ describe("S5 workflow versions and concurrency", () => {
   });
 
   it("reports an unavailable verification and rechecks it if it changes after the HTTP publish preflight", async () => {
-    let beforePublish: (() => Promise<void>) | undefined;
+    const beforePublish: { run?: () => Promise<void> } = {};
     const t = await ready({ wrapStore: (store) => ({
       ...store,
-      setStatus: async (...args) => { await beforePublish?.(); return store.setStatus(...args); },
+      setStatus: async (...args) => { await beforePublish.run?.(); return store.setStatus(...args); },
     }) });
     const checks = `/api/admin/applications/${t.applicationId}/checks`;
     const registered = await t.host.call("POST", checks, "maintainer", { kind: "element.visible", targetId: "orders.submitButton" });
@@ -148,7 +148,7 @@ describe("S5 workflow versions and concurrency", () => {
     Object.assign(definition.steps[1]!, { verify: name });
     expect((await t.save(1, definition)).status).toBe(200);
     expect(await t.post("review")).toMatchObject({ status: 200, body: { revision: 2, ok: true } });
-    beforePublish = async () => {
+    beforePublish.run = async () => {
       expect((await t.host.call("POST", `${checks}/${name}/status`, "maintainer", { status: "disabled" })).status).toBe(200);
     };
     expect(await t.publish(2)).toMatchObject({ status: 422, body: { kind: "invalid" } });
