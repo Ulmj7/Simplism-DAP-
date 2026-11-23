@@ -4,7 +4,7 @@
  * being re-resolved on every command, the inspector reply, the `register` trust chain (every refusal, asserted on what reached the Gateway and the store), and `resume`.
  * The PostgreSQL proof through the real routes is tests/integration/studio-managed.test.ts.
  */
-import { runRegisterTarget } from "./target-capabilities.js";
+import { runRegisterTarget, runRepairTarget, runSetTargetHealth } from "./target-capabilities.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserRuntimeError } from "@dap/browser-runtime";
 import type { BrowserRuntime, BrowserSnapshot, ElementFacts, ElementRef } from "@dap/browser-runtime";
@@ -95,9 +95,9 @@ async function harness(options: { controls?: Control[]; url?: string; ids?: stri
           if (state.mode === "broken") throw new Error(SECRET);
           if (state.mode === "refused") return { outcome: "FORBIDDEN_POLICY" } as never;
           if (state.mode === "failed") return { outcome: "ALLOWED", category: "try_later" } as never;
-          const outcome = await runRegisterTarget(targets, {
-            params: parsed.params as never, security: { tenantId, userId: "author" } as never,
-          });
+          const security = { tenantId, userId: "author" } as never;
+          const run = parsed.action === "setStudioTargetHealth" ? runSetTargetHealth : parsed.action === "repairStudioTarget" ? runRepairTarget : runRegisterTarget;
+          const outcome = await (run as typeof runRegisterTarget)(targets, { params: parsed.params as never, security });
           return (outcome.status === "success" ? { outcome: "ALLOWED", category: "ok" } : { outcome: "ALLOWED", category: "try_later" }) as never;
         }),
       };
@@ -763,5 +763,302 @@ describe("history routing (Studio COMPLETION, S1)", () => {
     await h.applications.save({ tenantId: TENANT_A, actor: "seed" }, MANAGED, { ...managedConfig("Orders application"), routing: "hash" });
     expect((await h.command(refresh())).body).toEqual({ error: "APPLICATION_MISMATCH" });
     expect(h.runtimes[0]!.close).toHaveBeenCalledOnce();
+  });
+});
+
+// --- Studio COMPLETION S3: the `check` and `repair` session commands ------------------------------------------------------------------------------------------------------
+const SCOPE = { tenantId: TENANT_A, actor: "seed" };
+const reg = (id: string, over: Record<string, unknown> = {}) => ({ targetId: id, route: "orders", page: "/#/orders", role: "button" as const, label: id, description: `${id}.`, operations: ["highlight", "click"] as never, privacy: "public" as const, ...over });
+const check = (sessionId = "session-1", applicationId = MANAGED) => ({ action: "check", sessionId, applicationId });
+const healthCalls = (h: H) => h.calls.filter((call) => call.action === "setStudioTargetHealth").map((call) => [call.params.targetId, call.params.health]);
+
+describe("check: the health of the registered targets of the current page", () => {
+  async function checked(controls: Control[], url?: string) {
+    const h = await harness({ controls, ...(url === undefined ? {} : { url }) });
+    await h.targets.register(SCOPE, MANAGED, reg("orders.exportButton"));
+    await h.targets.register(SCOPE, MANAGED, reg("orders.note", { role: "textbox", operations: ["highlight", "input"] }));
+    await h.connect();
+    return h;
+  }
+  const good = () => [control("Export", "button", "orders.exportButton"), control("Order note", "textbox", "orders.note")];
+
+  it("healthy targets are reported healthy and persisted once through the Gateway; a second check with no change writes nothing", async () => {
+    const h = await checked(good());
+    const first = await h.command(check());
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ page: "/#/orders", route: "orders", results: [{ targetId: "orders.exportButton", state: "healthy" }, { targetId: "orders.note", state: "healthy" }] });
+    expect(healthCalls(h)).toEqual([["orders.exportButton", "healthy"], ["orders.note", "healthy"]]);
+    expect((await h.targets.get(TENANT_A, MANAGED, "orders.note"))?.health).toBe("healthy");
+    h.calls.length = 0;
+    expect((await h.command(check())).body).toMatchObject({ results: [{ state: "healthy" }, { state: "healthy" }] });
+    expect(h.calls).toEqual([]);
+  });
+  it.each([
+    ["not_found: no control carries the marker", [control("Order note", "textbox", "orders.note")], "orders.exportButton", "not_found"],
+    ["ambiguous: two controls carry the marker", [control("Export", "button", "orders.exportButton"), control("Export again", "button", "orders.exportButton"), control("Order note", "textbox", "orders.note")], "orders.exportButton", "ambiguous"],
+    ["role_changed: the control is a link now", [control("Export", "link", "orders.exportButton"), control("Order note", "textbox", "orders.note")], "orders.exportButton", "role_changed"],
+    ["private: the control became private", [control("Export", "button", "orders.exportButton", { ...PUBLIC, dataAiPrivate: true }), control("Order note", "textbox", "orders.note")], "orders.exportButton", "private"],
+    ["private: the control is a password field now", [control("Export", "button", "orders.exportButton", { ...PUBLIC, inputType: "password" }), control("Order note", "textbox", "orders.note")], "orders.exportButton", "private"],
+    ["private: its name looks secret", [control("Reveal your password", "button", "orders.exportButton"), control("Order note", "textbox", "orders.note")], "orders.exportButton", "private"],
+  ])("%s", async (_name, controls, targetId, reason) => {
+    const h = await checked(controls);
+    const res = await h.command(check());
+    expect((res.body.results as { targetId: string; state: string; reason?: string }[]).find((r) => r.targetId === targetId)).toEqual({ targetId, state: "broken", reason });
+    expect(healthCalls(h)).toContainEqual([targetId, "broken"]);
+    expect((await h.targets.get(TENANT_A, MANAGED, targetId))?.health).toBe("broken");
+  });
+  it("a broken target that recovers is written healthy again (only the change is persisted)", async () => {
+    const h = await checked([control("Order note", "textbox", "orders.note")]);
+    await h.command(check());
+    h.calls.length = 0;
+    h.runtimes[0]!.controls.unshift(control("Export", "button", "orders.exportButton"));
+    const res = await h.command(check());
+    expect(res.body.results).toEqual([{ targetId: "orders.exportButton", state: "healthy" }, { targetId: "orders.note", state: "healthy" }]);
+    expect(healthCalls(h)).toEqual([["orders.exportButton", "healthy"]]);
+  });
+  it("facts that cannot be read leave the target unverified and write nothing; so does a marker missing from a page with more controls than are inspected", async () => {
+    const h = await checked([control("Export", "button", "orders.exportButton", null), control("Order note", "textbox", "orders.note")]);
+    expect((await h.command(check())).body.results).toEqual([{ targetId: "orders.exportButton", state: "unverified" }, { targetId: "orders.note", state: "healthy" }]);
+    expect(healthCalls(h)).toEqual([["orders.note", "healthy"]]);
+    const crowded = await checked([...Array.from({ length: 64 }, (_, i) => control(`Filler ${i}`, "button", `orders.filler${i}`)), control("Export", "button", "orders.exportButton"), control("Order note", "textbox", "orders.note")]);
+    expect((await crowded.command(check())).body.results).toEqual([{ targetId: "orders.exportButton", state: "unverified" }, { targetId: "orders.note", state: "unverified" }]);
+    expect(healthCalls(crowded)).toEqual([]);
+  });
+  it("checks the targets of the CURRENT route only, never a disabled target, and an unregistered page has no results", async () => {
+    const h = await checked(good());
+    await h.targets.register(SCOPE, MANAGED, reg("home.start", { route: "home", page: "/" }));
+    await h.targets.register(SCOPE, MANAGED, reg("orders.old"));
+    await h.targets.setStatus(SCOPE, MANAGED, "orders.old", "disabled");
+    expect(((await h.command(check())).body.results as { targetId: string }[]).map((r) => r.targetId)).toEqual(["orders.exportButton", "orders.note"]);
+    h.runtimes[0]!.url = `${ORIGIN}/#/unknown`;
+    expect((await h.command(check())).body).toEqual({ page: "/#/unknown", route: null, results: [] });
+  });
+  it("never names a control that is hidden: the reply holds registered target ids only", async () => {
+    const h = await checked([...good(), control("Secret internal thing", "button", "dap.internal"), control("Your password", "textbox", "orders.pw"), control("Unregistered", "button", "orders.fresh")]);
+    const res = await h.command(check());
+    expect(res.raw).not.toMatch(/Secret internal|password|Unregistered|dap\.internal|orders\.pw|orders\.fresh/u);
+    expect(Object.keys(res.body).sort()).toEqual(["page", "results", "route"]);
+  });
+  it("is also a refresh (its refs are usable) and does not accept extra keys", async () => {
+    const h = await checked(good());
+    await h.command(check());
+    expect((await h.command({ action: "highlight", sessionId: "session-1", applicationId: MANAGED, ref: "@e1" })).body).toEqual({ highlighted: true, ref: "@e1" });
+    expect((await h.command({ ...check(), ref: "@e1" })).body).toEqual({ error: "INVALID_REQUEST" });
+    expect((await h.command({ action: "check", applicationId: MANAGED })).body).toEqual({ error: "INVALID_REQUEST" });
+  });
+  it("needs the owner's session, a managed application that is still enabled, and a Gateway that answers; refusals leak nothing", async () => {
+    const h = await checked(good());
+    expect((await h.command(check(), "another-maintainer")).body).toEqual({ error: "SESSION_CLOSED" });
+    expect((await h.command(check(), "tenant-b")).body).toEqual({ error: "SESSION_CLOSED" });
+    expect((await h.command(check("nope"))).body).toEqual({ error: "SESSION_CLOSED" });
+    expect((await h.command(check("session-1", MANAGED_2))).body).toEqual({ error: "APPLICATION_MISMATCH" });
+    h.state.mode = "refused";
+    expect((await h.command(check())).body).toEqual({ error: "FORBIDDEN" });
+    h.state.mode = "broken";
+    const broken = await h.command(check());
+    expect(broken.body).toEqual({ error: "BROWSER_UNAVAILABLE" });
+    noLeak(broken.raw);
+    h.state.mode = "executor";
+    await h.applications.setEnabled(SCOPE, MANAGED, false);
+    expect((await h.command(check())).body).toEqual({ error: "APPLICATION_DISABLED" });
+    expect(h.runtimes[0]!.close).toHaveBeenCalledOnce();
+  });
+  it("a built-in application's session refuses it: REGISTRY_NOT_MANAGED", async () => {
+    const h = await harness();
+    await h.connect(BUILT_IN);
+    expect((await h.command(check("session-1", BUILT_IN))).body).toEqual({ error: "REGISTRY_NOT_MANAGED" });
+  });
+  it("restarts the idle clock like any owner command", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const h = await checked(good());
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect((await h.command(check())).status).toBe(200);
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect(h.runtimes[0]!.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_001);
+    expect(h.runtimes[0]!.close).toHaveBeenCalledOnce();
+  });
+});
+
+describe("repair: re-bind a registered target to a live control", () => {
+  const guide = (target: string, wait: "click" | "input" | "ack" = "click", title = "Submit an order") => ({
+    id: "wt-0000000000a1", title, description: "Submit the order.", start: "n1",
+    steps: [{ id: "n1", kind: "navigate", route: "orders", next: "s1" }, { id: "s1", kind: "guide", target, text: "Press it.", wait, verify: "route.orders", next: "done" }, { id: "done", kind: "complete", text: "Done." }],
+  });
+  /** The registered target `orders.exportButton` whose page now carries its marker on a LINK (role changed): a `mismatched` candidate at @e1, plus a brand-new control at @e2. */
+  async function broken(controls?: Control[]) {
+    const h = await harness({ controls: controls ?? [control("Export", "link", "orders.exportButton"), control("Export now", "button", "orders.exportNow"), control("Order note", "textbox", "orders.note")] });
+    await h.targets.register(SCOPE, MANAGED, reg("orders.exportButton"));
+    await h.targets.register(SCOPE, MANAGED, reg("orders.note", { role: "textbox", operations: ["highlight", "input"] }));
+    await h.connect();
+    await h.command(refresh());
+    return h;
+  }
+  const repairBody = (over: Record<string, unknown> = {}) => ({
+    action: "repair", sessionId: "session-1", applicationId: MANAGED, targetId: "orders.exportButton", ref: "@e1", operations: ["highlight", "click"], label: "Export link", description: "Exports the orders.", confirm: false, ...over,
+  });
+
+  it("the refresh lists the control as mismatched (role) and a new control as registrable", async () => {
+    const h = await broken();
+    const shown = (await h.command(refresh())).body.elements as { name: string; status: string; problem?: string; targetId?: string }[];
+    expect(shown.map((e) => [e.name, e.status, e.problem, e.targetId])).toEqual([["Export", "mismatched", "role", "orders.exportButton"], ["Export now", "registrable", undefined, undefined], ["Order note", "trusted", undefined, "orders.note"]]);
+  });
+  it("a DRY RUN (confirm false) returns the current and proposed fields and the impact, and writes nothing", async () => {
+    const h = await broken();
+    h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a1", title: "Submit an order", status: "draft", definition: guide("orders.exportButton", "ack") });
+    h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a2", title: "Live guide", status: "published", definition: { ...guide("orders.exportButton", "ack", "Live guide"), id: "wt-0000000000a2" } });
+    const res = await h.command(repairBody({ operations: ["highlight", "click"] }));
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["current", "impact", "proposed", "target"]);
+    expect(res.body.current).toEqual({ marker: "orders.exportButton", role: "button", operations: ["highlight", "click"], label: "orders.exportButton", description: "orders.exportButton." });
+    expect(res.body.proposed).toEqual({ marker: "orders.exportButton", role: "link", operations: ["highlight", "click"], label: "Export link", description: "Exports the orders." });
+    expect(res.body.impact).toEqual({ drafts: [{ id: "wt-0000000000a1", title: "Submit an order" }], published: [{ id: "wt-0000000000a2", title: "Live guide", version: 1 }], compatible: true, problems: [] });
+    expect(res.body.target).toMatchObject({ id: "orders.exportButton", revision: 1 });
+    expect(h.calls).toEqual([]);
+    expect(await h.targets.get(TENANT_A, MANAGED, "orders.exportButton")).toMatchObject({ role: "button", revision: 1 });
+  });
+  it("CONFIRM applies a compatible repair: the Gateway gets the server-built parameters (live marker and role), the reply is the new TargetView and the impact, and the control is trusted at once", async () => {
+    const h = await broken();
+    const res = await h.command(repairBody({ confirm: true }));
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["impact", "target"]);
+    expect(res.body.target).toMatchObject({ id: "orders.exportButton", role: "link", marker: "orders.exportButton", label: "Export link", revision: 2, health: "healthy" });
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]).toMatchObject({ action: "repairStudioTarget", params: { applicationId: MANAGED, targetId: "orders.exportButton", marker: "orders.exportButton", elementRole: "link", operations: ["highlight", "click"], label: "Export link", description: "Exports the orders." } });
+    expect(h.calls[0]!.raw).not.toMatch(/@e\d/u);
+    expect(await h.targets.changes(TENANT_A, MANAGED, "orders.exportButton", 5)).toHaveLength(1);
+    expect(((await h.command({ action: "capture", sessionId: "session-1", applicationId: MANAGED, ref: "@e1" })).body)).toMatchObject({ targetId: "orders.exportButton", role: "link" });
+  });
+  it("a REGISTRABLE control (a new marker) can replace the target: the marker changes, the id never does", async () => {
+    const h = await broken();
+    const res = await h.command(repairBody({ ref: "@e2", operations: ["highlight", "click"], label: "Export now", description: "Exports at once." , confirm: true }));
+    expect(res.status).toBe(200);
+    expect(res.body.target).toMatchObject({ id: "orders.exportButton", marker: "orders.exportNow", role: "button", revision: 2 });
+    expect((await h.targets.registry(TENANT_A, MANAGED)).markers).toEqual({ "orders.exportButton": "orders.exportNow", "orders.note": "orders.note" });
+    // the next refresh knows the control by its new marker, and the old marker (the id) is nobody's
+    const shown = (await h.command(refresh())).body.elements as { name: string; status: string }[];
+    expect(shown.map((e) => [e.name, e.status])).toEqual([["Export now", "trusted"], ["Order note", "trusted"]]);
+  });
+  it("is refused for an incompatible repair: the dry run says why (fixed problems), confirm is 409 REPAIR_INCOMPATIBLE and nothing is written", async () => {
+    const h = await broken([control("Export", "textbox", "orders.exportButton"), control("Order note", "textbox", "orders.note")]);
+    h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a1", title: "Submit an order", status: "draft", definition: guide("orders.exportButton", "click") });
+    const dry = await h.command(repairBody({ operations: ["highlight", "input"] }));
+    expect(dry.status).toBe(200);
+    expect((dry.body.impact as { compatible: boolean; problems: string[] })).toMatchObject({ compatible: false });
+    expect((dry.body.impact as { problems: string[] }).problems.join(" ")).toMatch(/click/u);
+    const real = await h.command(repairBody({ operations: ["highlight", "input"], confirm: true }));
+    expect(real).toMatchObject({ status: 409, body: { error: "REPAIR_INCOMPATIBLE" } });
+    expect((real.body.problems as string[]).length).toBeGreaterThan(0);
+    expect(h.calls).toEqual([]);
+    expect(await h.targets.get(TENANT_A, MANAGED, "orders.exportButton")).toMatchObject({ role: "button", revision: 1 });
+  });
+  it("a repair that loses a race with a new workflow is refused INSIDE the write: the executor's problems come back as REPAIR_INCOMPATIBLE", async () => {
+    const h = await broken([control("Export", "textbox", "orders.exportButton"), control("Order note", "textbox", "orders.note")]);
+    const real = h.targets.definitionsUsing.bind(h.targets);
+    let calls = 0;
+    h.targets.definitionsUsing = async (tenant, app, id) => {
+      calls += 1;
+      if (calls === 2) h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a9", title: "Raced", status: "draft", definition: guide("orders.exportButton", "click", "Raced") });
+      return real(tenant, app, id);
+    };
+    const res = await h.command(repairBody({ operations: ["highlight", "input"], confirm: true }));
+    expect(res).toMatchObject({ status: 409, body: { error: "REPAIR_INCOMPATIBLE" } });
+    expect(await h.targets.get(TENANT_A, MANAGED, "orders.exportButton")).toMatchObject({ role: "button", revision: 1 });
+  });
+  it("an unchanged repair is allowed as a dry run and refused on confirm (REPAIR_UNCHANGED)", async () => {
+    const h = await broken([control("Export", "button", "orders.exportButton"), control("Order note", "textbox", "orders.note"), control("Newer", "button", "orders.newer")]);
+    const body = repairBody({ ref: "@e1", label: "orders.exportButton", description: "orders.exportButton." });
+    // @e1 is TRUSTED here (nothing is wrong), so it is not a candidate for a repair at all
+    expect((await h.command(body)).body).toEqual({ error: "TARGET_NOT_REGISTRABLE" });
+  });
+  it("route identity never changes: a control on another page cannot repair the target (REPAIR_ROUTE_MISMATCH)", async () => {
+    const h = await broken([control("Export", "button", "home.exportCopy"), control("Order note", "textbox", "orders.note")]);
+    h.runtimes[0]!.url = `${ORIGIN}/`;
+    await h.command(refresh());
+    expect((await h.command(repairBody())).body).toEqual({ error: "REPAIR_ROUTE_MISMATCH" });
+    expect(h.calls).toEqual([]);
+  });
+  it("a mismatched control that belongs to ANOTHER target is MARKER_IN_USE; an unknown target is TARGET_NOT_FOUND; a trusted ref is not a candidate", async () => {
+    const h = await broken([control("Export", "link", "orders.exportButton"), control("Note", "link", "orders.note"), control("Fresh", "button", "orders.fresh")]);
+    await h.command(refresh());
+    expect((await h.command(repairBody({ ref: "@e2" }))).body).toEqual({ error: "MARKER_IN_USE" });
+    expect((await h.command(repairBody({ targetId: "orders.missing" }))).body).toEqual({ error: "TARGET_NOT_FOUND" });
+    const ok = await broken();
+    expect((await ok.command(repairBody({ ref: "@e3" }))).body).toEqual({ error: "TARGET_NOT_REGISTRABLE" }); // the trusted note
+    expect(h.calls).toEqual([]);
+  });
+  it("the trust chain: unknown, stale or hidden refs, private or ambiguous controls, drifted markers", async () => {
+    const h = await broken([control("Export", "link", "orders.exportButton", { ...PUBLIC, dataAiPrivate: true }), control("Export now", "button", "orders.exportNow"), control("Order note", "textbox", "orders.note")]);
+    expect((await h.command(repairBody({ ref: "@e1" }))).body, "a private control is hidden: never listed").toEqual({ error: "REF_NOT_FOUND" });
+    expect((await h.command(repairBody({ ref: "@e99" }))).body).toEqual({ error: "REF_NOT_FOUND" });
+    h.runtimes[0]!.controls[1]!.facts = { ...PUBLIC, dataAiPrivate: true };
+    expect((await h.command(repairBody({ ref: "@e2", operations: ["highlight", "click"] }))).body, "turned private after the refresh").toEqual({ error: "TARGET_NOT_REGISTRABLE" });
+    h.runtimes[0]!.controls[1]!.facts = PUBLIC;
+    h.runtimes[0]!.controls[2]!.id = "orders.exportNow"; // another control of the inspected set now carries the same marker
+    expect((await h.command(repairBody({ ref: "@e2" }))).body, "a twin appeared").toEqual({ error: "TARGET_NOT_REGISTRABLE" });
+    h.runtimes[0]!.controls[2]!.id = "orders.note";
+    h.runtimes[0]!.controls[1]!.id = null;
+    expect((await h.command(repairBody({ ref: "@e2" }))).body, "the marker disappeared").toEqual({ error: "TARGET_NOT_REGISTRABLE" });
+    h.runtimes[0]!.url = `${ORIGIN}/#/other`;
+    expect((await h.command(repairBody({ ref: "@e2" }))).body, "the page changed").toEqual({ error: "REF_NOT_FOUND" });
+    expect(h.calls).toEqual([]);
+  });
+  it("maintainer fields are judged by the shared validator against the LIVE role: 422 INVALID_TARGET with fixed issues, never an echo", async () => {
+    const h = await broken();
+    for (const over of [{ operations: ["highlight", "input"] }, { operations: [] }, { operations: ["click"] }, { label: "<b>x</b>" }, { label: "" }, { description: "x".repeat(241) }]) {
+      const res = await h.command(repairBody(over));
+      expect(res.status, JSON.stringify(over)).toBe(422);
+      expect(res.body.error).toBe("INVALID_TARGET");
+      expect((res.body.issues as string[]).length).toBeGreaterThan(0);
+      if (typeof over.label === "string" && over.label.length > 3) expect(res.raw).not.toContain(over.label);
+    }
+    expect(h.calls).toEqual([]);
+  });
+  it("body: exact keys, a real boolean confirm, bounded values; the server-owned fields (marker, role, route, page, privacy, revision) are not accepted", async () => {
+    const h = await broken();
+    for (const bad of [{ confirm: "true" }, { confirm: 1 }, { marker: "x.y" }, { role: "link" }, { route: "orders" }, { page: "/" }, { privacy: "public" }, { revision: 2 }, { ref: "e1" }, { targetId: "x".repeat(201) }, { label: "x".repeat(1001) }]) {
+      expect((await h.command(repairBody(bad))).body, JSON.stringify(bad)).toEqual({ error: "INVALID_REQUEST" });
+    }
+    const { confirm: _confirm, ...noConfirm } = repairBody();
+    expect((await h.command(noConfirm)).body).toEqual({ error: "INVALID_REQUEST" });
+  });
+  it("ownership and state: another maintainer or tenant, a disabled application, a built-in application, an unavailable Gateway", async () => {
+    const h = await broken();
+    expect((await h.command(repairBody(), "another-maintainer")).body).toEqual({ error: "SESSION_CLOSED" });
+    expect((await h.command(repairBody(), "tenant-b")).body).toEqual({ error: "SESSION_CLOSED" });
+    expect((await h.command(repairBody({ applicationId: MANAGED_2 }))).body).toEqual({ error: "APPLICATION_MISMATCH" });
+    h.state.mode = "refused";
+    expect((await h.command(repairBody({ confirm: true }))).body).toEqual({ error: "FORBIDDEN" });
+    h.state.mode = "broken";
+    const down = await h.command(repairBody({ confirm: true }));
+    expect(down.body).toEqual({ error: "BROWSER_UNAVAILABLE" });
+    noLeak(down.raw);
+    h.state.mode = "executor";
+    await h.applications.setEnabled(SCOPE, MANAGED, false);
+    expect((await h.command(repairBody({ confirm: true }))).body).toEqual({ error: "APPLICATION_DISABLED" });
+    const builtIn = await harness();
+    await builtIn.connect(BUILT_IN);
+    expect((await builtIn.command({ ...repairBody({ applicationId: BUILT_IN }) })).body).toEqual({ error: "REGISTRY_NOT_MANAGED" });
+  });
+  it("a marker taken between the dry run and the write (the executor refuses) is diagnosed from the state: MARKER_IN_USE", async () => {
+    const h = await broken();
+    const real = h.targets.repair.bind(h.targets);
+    h.targets.repair = async (scope, app, id, value, verify) => {
+      await h.targets.register(SCOPE, MANAGED, reg(value.marker === "orders.exportNow" ? "orders.exportNow" : "orders.x", { label: "Taken" }));
+      return real(scope, app, id, value, verify);
+    };
+    const res = await h.command(repairBody({ ref: "@e2", confirm: true }));
+    expect(res.body).toEqual({ error: "MARKER_IN_USE" });
+  });
+  it("repairing a DISABLED target is allowed and has no problems of its own (workflows already fail while it is disabled)", async () => {
+    const h = await broken();
+    await h.targets.setStatus(SCOPE, MANAGED, "orders.exportButton", "disabled");
+    h.targets.definitions.push({ tenantId: TENANT_A, applicationId: MANAGED, id: "wt-0000000000a1", title: "Old", status: "draft", definition: guide("orders.exportButton", "click") });
+    await h.command(refresh());
+    const dry = await h.command(repairBody({ ref: "@e2", operations: ["highlight", "input"] }));
+    expect(dry.status).toBe(422); // the live control is a button: input is not an operation of its role
+    const res = await h.command(repairBody({ ref: "@e2", operations: ["highlight", "click"], confirm: true }));
+    expect(res.status).toBe(200);
+    expect(res.body.target).toMatchObject({ status: "disabled", marker: "orders.exportNow", revision: 2 });
   });
 });

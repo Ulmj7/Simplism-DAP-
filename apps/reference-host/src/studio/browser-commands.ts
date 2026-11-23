@@ -7,7 +7,7 @@ import { exactBody } from "../http/transport.js";
 import { isAuthoredId } from "../authoring/ids.js";
 import { APPLICATION_ID } from "./applications.js";
 
-export const STUDIO_ACTIONS = ["connect", "resume", "refresh", "highlight", "capture", "register", "disconnect"] as const;
+export const STUDIO_ACTIONS = ["connect", "resume", "refresh", "highlight", "capture", "register", "check", "repair", "disconnect"] as const;
 export type StudioAction = (typeof STUDIO_ACTIONS)[number];
 
 /** An element reference of the pinned browser CLI: `@e` + 1..9 digits, no leading zero. Session-only evidence, never persisted. */
@@ -22,6 +22,11 @@ export type StudioCommand =
   | {
     readonly action: "register"; readonly sessionId: string; readonly applicationId: string; readonly ref: string; readonly targetId: string; readonly route: string;
     readonly operations: readonly string[]; readonly label: string; readonly description: string; readonly privacy: string;
+  }
+  | { readonly action: "check"; readonly sessionId: string; readonly applicationId: string }
+  | {
+    readonly action: "repair"; readonly sessionId: string; readonly applicationId: string; readonly targetId: string; readonly ref: string;
+    readonly operations: readonly string[]; readonly label: string; readonly description: string; readonly confirm: boolean;
   }
   | { readonly action: "highlight" | "capture"; readonly sessionId: string; readonly applicationId: string; readonly ref: string }
   | { readonly action: "disconnect"; readonly sessionId: string; readonly applicationId?: string };
@@ -59,7 +64,17 @@ export function parseStudioCommand(body: unknown): StudioCommand | null {
       if (!Array.isArray(operations) || operations.length > 16 || !operations.every((operation) => short(operation, 40))) return null;
       return { action, sessionId: parsed.sessionId, applicationId: parsed.applicationId, ref: parsed.ref, targetId, route, operations: [...operations], label, description, privacy };
     }
-    case "refresh": {
+    case "repair": {
+      // Shape and size only; the VALUES are judged by the one repair validator (422 INVALID_TARGET) after the live control has been re-verified. `confirm` is a real boolean: false is a dry run.
+      const parsed = exactBody(body, ["action", "sessionId", "applicationId", "targetId", "ref", "operations", "label", "description", "confirm"]);
+      if (parsed === null || !sessionId(parsed.sessionId) || !applicationId(parsed.applicationId) || !refOf(parsed.ref) || typeof parsed.confirm !== "boolean") return null;
+      const { targetId, label, description, operations } = parsed;
+      const short = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max;
+      if (!short(targetId, 200) || !short(label, 1000) || !short(description, 2000)) return null;
+      if (!Array.isArray(operations) || operations.length > 16 || !operations.every((operation) => short(operation, 40))) return null;
+      return { action, sessionId: parsed.sessionId, applicationId: parsed.applicationId, targetId, ref: parsed.ref, operations: [...operations], label, description, confirm: parsed.confirm };
+    }
+    case "check": case "refresh": {
       const parsed = exactBody(body, ["action", "sessionId", "applicationId"]);
       return parsed !== null && sessionId(parsed.sessionId) && applicationId(parsed.applicationId) ? { action, sessionId: parsed.sessionId, applicationId: parsed.applicationId } : null;
     }

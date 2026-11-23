@@ -12,15 +12,26 @@
  *   connect    { action, applicationId, walkthroughId? }                         -> { sessionId, applicationId, application, origin, registrySource }
  *   resume     { action, applicationId }                                         -> the same + resumed:true (adopts the owner's running session under a NEW id)
  *   refresh    { action, sessionId, applicationId }                              -> { url, route, page, elements, hidden, truncated }
- *   highlight  { action, sessionId, applicationId, ref }                         -> { highlighted: true, ref }   (trusted or registrable; re-verifies; persists NOTHING)
+ *   highlight  { action, sessionId, applicationId, ref }                         -> { highlighted: true, ref }   (trusted, registrable or mismatched; re-verifies; persists NOTHING)
  *   capture    { action, sessionId, applicationId, ref }                         -> { targetId, route, name, role, operations }   (the UI's "Use": trusted only)
  *   register   { action, sessionId, applicationId, ref, targetId, route, operations, label, description, privacy } -> { target, route: { route, page, created } }
+ *   check      { action, sessionId, applicationId }                              -> { page, route, results: [{ targetId, state: healthy|broken|unverified, reason?: not_found|role_changed|private|ambiguous }] }
+ *   repair     { action, sessionId, applicationId, targetId, ref, operations, label, description, confirm } -> confirm false: { target, current, proposed, impact }; true: { target, impact }
  *   disconnect { action, sessionId, applicationId? }                             -> { closed: true }
+ *
+ * Error codes (`{ error: CODE }`, never an echo of what was sent): INVALID_REQUEST 400; FORBIDDEN 403; SESSION_CLOSED 404 (also: not the owner); APPLICATION_NOT_FOUND 404; BROWSER_BUSY, APPLICATION_DISABLED,
+ * APPLICATION_MISMATCH, REGISTRY_NOT_MANAGED, REF_NOT_FOUND, TARGET_UNAVAILABLE, TARGET_NOT_REGISTRABLE, TARGET_ID_MISMATCH, TARGET_EXISTS, ROUTE_MISMATCH, REGISTRY_FULL 409; and for a repair
+ * TARGET_NOT_FOUND, REPAIR_ROUTE_MISMATCH (the control is on another page than the target's), MARKER_IN_USE (the marker belongs to another target), REPAIR_UNCHANGED 409, and
+ * REPAIR_INCOMPATIBLE 409 { error, problems: <= 20 fixed phrases }; INVALID_TARGET 422 { error, issues }; BROWSER_UNAVAILABLE 503 (+ the adapter's fixed codes).
  *
  * REGISTRATION TRUST CHAIN (the ONLY way a target is created; there is no route that accepts a raw target): the application is re-loaded (enabled, Studio-managed, same tenant); the ref must be
  * one of the LAST refresh's candidates and `registrable`; a FRESH observation re-reads the live marker and privacy facts (drift is REF_NOT_FOUND, never a fuzzy match); the body's `targetId`
  * must equal the live marker; role and page are derived from the live element and URL, never from the body; the maintainer's fields are validated by the same validator the executor uses; and only
  * then the Gateway capability `registerStudioTarget` persists it with server-built parameters. The element ref (`@eN`) never reaches the capability, the store or a log.
+ *
+ * REPAIR TRUST CHAIN (the only way a target's marker, role, operations or texts change): the same chain as a registration, with the ref's candidate `registrable` (a new marker) or `mismatched`
+ * (the target's own marker on another role or route), a control on the target's own PAGE, a marker no other target owns, and every workflow that names the target validating, with the one Feature 002
+ * validator, against the registry as it would be after the repair. `check` verifies the active targets of the current page against a fresh observation and persists the verdicts that changed.
  *
  * Invariants kept from V1A (and re-tested): ONE session per host owned by [principal key, tenant, actor]; one command in flight (BROWSER_BUSY); the session closes on disconnect, after five idle
  * minutes OF THE OWNER'S OWN activity, on host shutdown (`onClose`) and when connecting fails; every command re-loads the application and re-resolves its registry (nothing is cached for the session,
@@ -44,11 +55,13 @@ import type { Candidate } from "./inspector.js";
 import { classifyControl, classifyManaged, pageOfUrl, routeOfPage, selectFactRefs } from "./managed-inspector.js";
 import type { ManagedCandidate, ManagedRegistryView } from "./managed-inspector.js";
 import type { RegistryCatalog } from "./registries.js";
-import { MAX_ROUTES_PER_APPLICATION, MAX_TARGETS_PER_APPLICATION, validateTargetRegistration } from "./registry-targets.js";
+import { MAX_ROUTES_PER_APPLICATION, MAX_TARGETS_PER_APPLICATION, snapshotRoleToTargetRole, validateTargetRegistration, validateTargetRepair } from "./registry-targets.js";
 import { createRegistryResolver } from "./registry-resolver.js";
 import type { RegistryResolver } from "./registry-resolver.js";
-import { REGISTER_TARGET_ACTION_ID, withRegistrationReceipt } from "./target-capabilities.js";
-import type { TargetStore } from "./target-store.js";
+import { REGISTER_TARGET_ACTION_ID, REPAIR_TARGET_ACTION_ID, TARGET_HEALTH_ACTION_ID, withRegistrationReceipt, withRepairReceipt } from "./target-capabilities.js";
+import { evaluateHealth } from "./target-health.js";
+import { impactOf, registryAfterRepair, verifyRepair } from "./repair-impact.js";
+import type { RepairFields, TargetStore } from "./target-store.js";
 
 const idleMs = 5 * 60_000;
 const busyRecheckMs = 1_000;
@@ -169,6 +182,8 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       if (command.action === "refresh") return await (session.source === "studio-managed" ? refreshManaged(session, principal.tenantId) : refreshBuiltIn(session, record, principal.tenantId));
 
       if (command.action === "register") return await register(command, session, record, principal, deny);
+      if (command.action === "check") return await check(session, principal, deny);
+      if (command.action === "repair") return await repair(command, session, principal, deny);
 
       // highlight and capture: the ref must be one of the LAST refresh's candidates; trusted (both) or registrable (highlight only).
       const snapshot = session.snapshot;
@@ -249,7 +264,8 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     return { routes: listing.routes, targets: listing.targets };
   }
 
-  async function refreshManaged(session: Session, tenantId: string) {
+  /** One fresh observation of the page for a managed session: the registry, the snapshot, the markers, the privacy facts of the controls that could be listed, and the classification. It becomes the session's last refresh. */
+  async function observeManaged(session: Session, tenantId: string) {
     const registry = await registryView(tenantId, session.applicationId);
     delete session.snapshot;
     session.candidates = new Map();
@@ -260,10 +276,110 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     const inspection = classifyManaged({ routing: session.routing, snapshot, ids, facts, registry });
     session.snapshot = snapshot;
     session.candidates = new Map(inspection.elements.map((candidate) => [candidate.ref, candidate]));
+    return { registry, snapshot, ids, facts, inspection };
+  }
+
+  async function refreshManaged(session: Session, tenantId: string) {
+    const { registry, snapshot, inspection } = await observeManaged(session, tenantId);
     const page = pageOfUrl(snapshot.url, session.routing);
     // A history application's query string and fragment are never stored or returned (they may carry tokens or ids): its URL is reported without them.
     const url = session.routing === "history" ? withoutQueryAndFragment(snapshot.url) : snapshot.url.slice(0, MAX_URL_CHARS);
     return { url, route: routeOfPage(page, registry.routes), page, elements: inspection.elements, hidden: inspection.hidden, truncated: inspection.truncated };
+  }
+
+  /**
+   * `check`: verifies every ACTIVE target of the current page against a FRESH observation (marker present exactly once, the mapped role, public by facts and name) and persists the verdicts that
+   * changed through the Gateway (`healthy` is only ever written here and by a repair). The reply names registered targets only, never a hidden control. It is also a refresh: the session's refs are
+   * those of this observation.
+   */
+  async function check(session: Session, principal: Principal, deny: Deny) {
+    if (session.source !== "studio-managed") return deny(409, "REGISTRY_NOT_MANAGED");
+    const { registry, snapshot, ids, facts } = await observeManaged(session, principal.tenantId);
+    const report = evaluateHealth({ routing: session.routing, snapshot, ids, facts, registry });
+    for (const result of report.results) {
+      if (result.state === "unverified") continue;
+      const stored = registry.targets.find((target) => target.id === result.targetId);
+      if (stored === undefined || stored.health === result.state) continue;
+      const written = await submitGatewayWrite(principal, TARGET_HEALTH_ACTION_ID, { applicationId: session.applicationId, targetId: result.targetId, health: result.state });
+      if (written === "refused") return deny(403, "FORBIDDEN");
+      if (written !== "ok") return deny(503, "BROWSER_UNAVAILABLE");
+    }
+    return { page: report.page, route: report.route, results: report.results };
+  }
+
+  type Principal = NonNullable<Awaited<ReturnType<AuthoringRouteDeps["resolvePrincipal"]>>>;
+
+  /**
+   * `repair`: re-binds a registered target to a live control. The trust chain is the registration's: the owner's session, a ref of the LAST refresh whose candidate is `registrable` (a new marker) or
+   * `mismatched` (the target's own marker on another role or route), a FRESH observation (marker and privacy facts re-read, ambiguity re-checked, the classification re-run against the fresh registry),
+   * the target's PAGE (route identity never changes), a marker that no other target owns, the maintainer's fields judged by the shared validator against the LIVE role. `confirm: false` is a dry run that
+   * writes nothing; `confirm: true` applies iff every workflow naming the target still validates against the registry as it would be after the repair (re-checked inside the transaction).
+   */
+  async function repair(command: Extract<StudioCommand, { action: "repair" }>, session: Session, principal: Principal, deny: Deny) {
+    if (session.source !== "studio-managed") return deny(409, "REGISTRY_NOT_MANAGED");
+    const snapshot = session.snapshot;
+    const candidate = session.candidates.get(command.ref);
+    if (!snapshot || !candidate) return deny(409, "REF_NOT_FOUND");
+    if (candidate.status !== "registrable" && candidate.status !== "mismatched") return deny(409, "TARGET_NOT_REGISTRABLE");
+    const element = snapshot.elements.find((item) => item.ref === command.ref);
+    if (!element) return deny(409, "REF_NOT_FOUND");
+    const registry = await registryView(principal.tenantId, session.applicationId);
+    const target = registry.targets.find((item) => item.id === command.targetId);
+    if (target === undefined) return deny(409, "TARGET_NOT_FOUND");
+    // A FRESH observation: the live marker, the live facts and the ids of the whole inspected set (ambiguity), classified against the fresh registry.
+    const ref = command.ref as ElementRef;
+    const liveMarker = await session.runtime.inspectSemanticId(ref, snapshot);
+    if (liveMarker === null) return deny(409, "TARGET_NOT_REGISTRABLE");
+    const liveFacts = (await session.runtime.inspectElementFacts([ref], snapshot)).get(ref) ?? null;
+    const liveIds = new Map(await session.runtime.inspectSemanticIds(snapshot));
+    liveIds.set(ref, liveMarker);
+    const live = classifyControl({ routing: session.routing, snapshot, ids: liveIds, facts: new Map([[ref, liveFacts]]), registry }, element);
+    if (live === null || (live.status !== "registrable" && live.status !== "mismatched")) return deny(409, "TARGET_NOT_REGISTRABLE");
+    // A control that carries ANOTHER target's marker is not this target's replacement.
+    if (live.status === "mismatched" && live.targetId !== target.id) return deny(409, "MARKER_IN_USE");
+    // Route identity never changes: the control must be on the page the target is registered for.
+    const livePage = pageOfUrl(snapshot.url, session.routing);
+    if (livePage === null || livePage !== target.page) return deny(409, "REPAIR_ROUTE_MISMATCH");
+    const role = snapshotRoleToTargetRole(element.role);
+    const checked = validateTargetRepair({ marker: liveMarker, elementRole: role, operations: command.operations, label: command.label, description: command.description });
+    if (!checked.ok) return deny(422, "INVALID_TARGET", { issues: checked.issues });
+    const value = checked.value;
+    const current: RepairFields = { marker: target.marker, role: target.role, operations: [...target.operations], label: target.label, description: target.description };
+    const proposed: RepairFields = { marker: value.marker, role: value.role, operations: [...value.operations], label: value.label, description: value.description };
+    // The impact: every workflow that names the target (drafts and published content), validated against the registry as it would be AFTER the repair.
+    const definitions = await targets.definitionsUsing(principal.tenantId, session.applicationId, target.id);
+    const after = registryAfterRepair(await targets.registry(principal.tenantId, session.applicationId), target.id, proposed);
+    const problems = verifyRepair(definitions, after, target);
+    const impact = { ...impactOf(definitions), compatible: problems.length === 0, problems };
+    if (!command.confirm) return { target, current, proposed, impact };
+    if (JSON.stringify(current) === JSON.stringify(proposed)) return deny(409, "REPAIR_UNCHANGED");
+    if (!impact.compatible) return deny(409, "REPAIR_INCOMPATIBLE", { problems });
+    const { result, repaired, problems: refused } = await withRepairReceipt({ tenantId: principal.tenantId, applicationId: session.applicationId, targetId: target.id }, () => submitGatewayWrite(principal, REPAIR_TARGET_ACTION_ID, {
+      applicationId: session.applicationId, targetId: target.id, marker: value.marker, elementRole: value.role, operations: [...value.operations], label: value.label, description: value.description,
+    }));
+    if (result === "refused") return deny(403, "FORBIDDEN");
+    if (result === "failed") return await diagnoseRepair(principal.tenantId, session, target.id, value.marker, refused, deny);
+    if (result !== "ok") return deny(503, "BROWSER_UNAVAILABLE");
+    const stored = repaired?.target ?? await targets.get(principal.tenantId, session.applicationId, target.id);
+    if (stored === null || stored === undefined) return deny(503, "BROWSER_UNAVAILABLE");
+    // The control is the target's trusted control from now on.
+    session.candidates = new Map([...session.candidates].map(([key, item]) => [key, key === command.ref
+      ? { ref: item.ref, name: item.name, role: item.role, route: stored.route, status: "trusted" as const, targetId: stored.id, operations: stored.operations, privacy: "public" as const } : item]));
+    return { target: stored, impact: { ...(repaired?.impact ?? impactOf(definitions)), compatible: true, problems: [] } };
+  }
+
+  /** Why the repair executor refused, from the state as it is NOW (never from the executor's text). */
+  async function diagnoseRepair(tenantId: string, session: Session, targetId: string, marker: string, refused: readonly string[] | undefined, deny: Deny) {
+    if (refused !== undefined && refused.length > 0) return deny(409, "REPAIR_INCOMPATIBLE", { problems: refused });
+    let record: ApplicationRecord | null;
+    let registry: ManagedRegistryView;
+    try { record = await applications.get(tenantId, session.applicationId); registry = await registryView(tenantId, session.applicationId); }
+    catch { return deny(503, "BROWSER_UNAVAILABLE"); }
+    if (record === null) { await close().catch(() => {}); return deny(404, "APPLICATION_NOT_FOUND"); }
+    if (!record.enabled) { await close().catch(() => {}); return deny(409, "APPLICATION_DISABLED"); }
+    if (!registry.targets.some((target) => target.id === targetId)) return deny(409, "TARGET_NOT_FOUND");
+    if (registry.targets.some((target) => target.id !== targetId && (target.id === marker || target.marker === marker))) return deny(409, "MARKER_IN_USE");
+    return deny(503, "BROWSER_UNAVAILABLE");
   }
 
   async function register(command: Extract<StudioCommand, { action: "register" }>, session: Session, record: ApplicationRecord, principal: NonNullable<Awaited<ReturnType<AuthoringRouteDeps["resolvePrincipal"]>>>, deny: Deny) {

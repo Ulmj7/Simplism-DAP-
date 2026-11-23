@@ -14,8 +14,8 @@ describe("parseStudioCommand: exact keys per action", () => {
     expect(parseStudioCommand({ action: "disconnect", sessionId: "s" })).toEqual({ action: "disconnect", sessionId: "s" });
     expect(parseStudioCommand({ action: "disconnect", sessionId: "s", applicationId: APP })).toEqual({ action: "disconnect", sessionId: "s", applicationId: APP });
   });
-  it("covers all seven actions and no other", () => {
-    expect([...STUDIO_ACTIONS]).toEqual(["connect", "resume", "refresh", "highlight", "capture", "register", "disconnect"]);
+  it("covers all nine actions and no other", () => {
+    expect([...STUDIO_ACTIONS]).toEqual(["connect", "resume", "refresh", "highlight", "capture", "register", "check", "repair", "disconnect"]);
     for (const action of ["navigate", "click", "type", "eval", "screenshot", "CONNECT", ""]) expect(parseStudioCommand({ action })).toBeNull();
   });
   it.each([
@@ -51,5 +51,23 @@ describe("parseStudioCommand: exact keys per action", () => {
     expect(REF_PATTERN.test("x@e1")).toBe(false);
     expect(SESSION_ID_PATTERN.test("\u0000")).toBe(false);
     expect(SESSION_ID_PATTERN.test("550e8400-e29b-41d4-a716-446655440000")).toBe(true);
+  });
+});
+
+describe("check and repair commands (Studio COMPLETION)", () => {
+  const base = { sessionId: "session-1", applicationId: APP };
+  const repair = { action: "repair", ...base, targetId: "orders.submitButton", ref: "@e3", operations: ["highlight", "click"], label: "L", description: "D", confirm: false };
+  it("check has exactly action, sessionId and applicationId", () => {
+    expect(parseStudioCommand({ action: "check", ...base })).toEqual({ action: "check", ...base });
+    for (const bad of [{ action: "check", sessionId: "session-1" }, { action: "check", ...base, ref: "@e1" }, { action: "check", ...base, confirm: true }, { action: "check", sessionId: "", applicationId: APP }, { action: "check", ...base, applicationId: "nope" }]) expect(parseStudioCommand(bad)).toBeNull();
+  });
+  it("repair has exactly its keys, a real boolean confirm and bounded values", () => {
+    expect(parseStudioCommand(repair)).toEqual({ ...repair, operations: ["highlight", "click"] });
+    expect(parseStudioCommand({ ...repair, confirm: true })).toMatchObject({ confirm: true });
+    const missing: Record<string, unknown> = { ...repair }; delete missing.confirm;
+    for (const bad of [missing, { ...repair, confirm: "true" }, { ...repair, confirm: 0 }, { ...repair, marker: "a.b" }, { ...repair, role: "link" }, { ...repair, route: "x" }, { ...repair, privacy: "public" }, { ...repair, ref: "e3" }, { ...repair, ref: "@e0" },
+      { ...repair, targetId: "x".repeat(201) }, { ...repair, label: "x".repeat(1001) }, { ...repair, description: "x".repeat(2001) }, { ...repair, operations: Array(17).fill("highlight") }, { ...repair, operations: ["x".repeat(41)] }, { ...repair, operations: "highlight" }, { ...repair, targetId: 5 }]) {
+      expect(parseStudioCommand(bad), JSON.stringify(bad).slice(0, 60)).toBeNull();
+    }
   });
 });
