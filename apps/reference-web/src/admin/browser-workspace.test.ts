@@ -14,8 +14,8 @@ const stray: Candidate = { status: "unregistered", ref: "@e30", name: "Newslette
 type Reply = AdminResult<StudioReply>;
 const ok = (value: StudioReply): Reply => ({ kind: "ok", value });
 const refused = (code: string): Reply => ({ kind: "browser-error", code });
-const connected = (app = APP, sessionId = "session"): Reply => ok({ kind: "connected", sessionId, applicationId: app.id, application: app.name, origin: "http://127.0.0.1:5173" });
-const snapshot = (elements: readonly Candidate[], route: string | null = "profile", url = "http://127.0.0.1:5173/#/profile"): Reply => ok({ kind: "snapshot", url, route, elements });
+const connected = (app = APP, sessionId = "session"): Reply => ok({ kind: "connected", sessionId, applicationId: app.id, application: app.name, origin: "http://127.0.0.1:5173", registrySource: "built-in", resumed: false });
+const snapshot = (elements: readonly Candidate[], route: string | null = "profile", url = "http://127.0.0.1:5173/#/profile"): Reply => ok({ kind: "snapshot", url, route, elements, page: "/#/profile", hidden: 0, truncated: false });
 const closed = (): Reply => ok({ kind: "closed" });
 const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 function deferred<T>() {
@@ -36,6 +36,7 @@ function setup(script: Partial<Record<StudioCommand["action"], (command: StudioC
       case "highlight": return ok({ kind: "highlighted", ref: command.ref });
       case "capture": return ok({ kind: "captured", target });
       case "disconnect": return closed();
+      case "resume": case "register": throw new Error(`Unexpected ${command.action} command`);
     }
   });
   const apply = vi.fn<(applied: StudioTarget) => boolean>(() => true);
@@ -53,7 +54,7 @@ function setup(script: Partial<Record<StudioCommand["action"], (command: StudioC
   const press = async (label: string) => { named(label).click(); await settle(); };
   const states = () => ({ connect: named("Connect Chrome").disabled, inspect: named("Inspect current page").disabled, disconnect: named("Disconnect").disabled });
   const line = (label: string) => [...panel.querySelectorAll("dt")].find(item => item.textContent === label)?.nextElementSibling?.textContent;
-  const notice = () => panel.querySelector('[role="status"]')?.textContent;
+  const notice = () => panel.querySelector('[role="alert"]')?.textContent || panel.querySelector('[role="status"]')?.textContent;
   const rows = () => [...panel.querySelectorAll("li.studio-candidate")] as HTMLElement[];
   const commands = (action: string) => call.mock.calls.map(([command]) => command).filter(command => command.action === action);
   return { abort, call, apply, bindTarget, workspace, panel, named, press, states, line, notice, rows, commands };

@@ -20,10 +20,14 @@ export const writeError = (result: AdminResult<unknown>) => result.kind === "ove
 export const backLink = () => h("a", { class: "button", href: "#/walkthroughs" }, c.listBack);
 
 export function confirmPublish(trigger: HTMLButtonElement, page: HTMLElement, publish: () => void) {
+  confirmAction(trigger, page, c.publishTitle, c.publishMessage, c.publish, publish);
+}
+
+export function confirmAction(trigger: HTMLButtonElement, page: HTMLElement, title: string, message: string, action: string, submit: () => void) {
   if (page.querySelector("dialog[open]")) return;
   const dialog = h("dialog", { class: "dap-result", "aria-labelledby": "dap-publish-title", "aria-describedby": "dap-publish-message", "aria-modal": "true", "data-ai-ignore": true }) as HTMLDialogElement;
   const cancel = button(c.cancel);
-  const accept = button(c.publish, true);
+  const accept = button(action, true);
   const close = () => {
     if (!dialog.isConnected) return false;
     if (typeof dialog.close === "function") dialog.close();
@@ -32,7 +36,7 @@ export function confirmPublish(trigger: HTMLButtonElement, page: HTMLElement, pu
     return true;
   };
   cancel.addEventListener("click", close);
-  accept.addEventListener("click", () => { if (close()) publish(); });
+  accept.addEventListener("click", () => { if (close()) submit(); });
   dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
   dialog.addEventListener("keydown", event => {
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
@@ -40,7 +44,7 @@ export function confirmPublish(trigger: HTMLButtonElement, page: HTMLElement, pu
       event.preventDefault(); (event.shiftKey ? accept : cancel).focus();
     }
   });
-  dialog.append(h("h2", { id: "dap-publish-title" }, c.publishTitle), h("p", { id: "dap-publish-message" }, c.publishMessage), h("div", { class: "result-actions" }, cancel, accept));
+  dialog.append(h("h2", { id: "dap-publish-title" }, title), h("p", { id: "dap-publish-message" }, message), h("div", { class: "result-actions" }, cancel, accept));
   page.append(dialog);
   if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", "");
   cancel.focus();

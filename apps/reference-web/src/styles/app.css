@@ -93,3 +93,10 @@ input { min-height: var(--touch); width: var(--full); min-width: var(--zero); bo
 .studio-candidate p { margin: var(--zero) var(--zero) var(--space-1); }
 .studio-candidate .admin-actions { margin-top: var(--space-2); }
 .studio-evidence { color: var(--dap-text-muted); }
+.studio-workspace, .studio-candidate, .studio-register { overflow-wrap: anywhere; }
+.studio-register { display: grid; gap: var(--space-3); min-width: 0; }
+.studio-register-section, .studio-register fieldset, .studio-register .field { min-width: 0; }
+.studio-register input:not([type="checkbox"]), .studio-register textarea { width: 100%; box-sizing: border-box; }
+.studio-facts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--space-1) var(--space-2); }
+.studio-facts dd { margin: 0; }
+.studio-check { display: flex; align-items: center; gap: var(--space-2); }

@@ -5,6 +5,7 @@ import { ENVIRONMENTS } from "../applications.js";
 import type { ApplicationInput, ApplicationList, ApplicationView } from "../applications.js";
 import type { AdminResult } from "../client.js";
 import { newEditSession } from "../session.js";
+import { registrySection } from "./application-targets.js";
 import { adminPage, readError, writeError } from "./shared.js";
 import type { AdminPageOptions } from "./shared.js";
 
@@ -23,7 +24,8 @@ export function applicationsPage({ client, signal, navigate }: AdminPageOptions)
 
   const table = h("div");
   const formCard = card();
-  page.append(card(table), formCard);
+  const targets = registrySection(client, signal);
+  page.append(card(table), formCard, targets.element);
 
   async function load() {
     const loaded = await client.applications();
@@ -33,6 +35,7 @@ export function applicationsPage({ client, signal, navigate }: AdminPageOptions)
     // Only the initial "Loading…" goes away: a result message from the write that triggered this reload stays.
     if (notice.textContent === c.loading) notice.textContent = "";
     renderList(); renderForm();
+    targets.refresh(list.applications);
   }
 
   function renderList() {
@@ -43,13 +46,14 @@ export function applicationsPage({ client, signal, navigate }: AdminPageOptions)
     const body = h("tbody", { role: "rowgroup" });
     for (const application of applications) {
       const controls = h("div", { class: "admin-actions" });
-      const action = (label: string, run: () => void, disabled = false) => {
+      const action = (label: string, run: (trigger: HTMLButtonElement) => void, disabled = false) => {
         const control = button(label);
         control.setAttribute("aria-label", `${label}: ${application.name}`);
         control.disabled = disabled || busy;
-        control.addEventListener("click", () => { if (!busy && !signal.aborted && !control.disabled) run(); });
+        control.addEventListener("click", () => { if (!busy && !signal.aborted && !control.disabled) run(control); });
         controls.append(control);
       };
+      action("View registry", () => targets.select(application));
       action(p.edit, () => { editing = application; notice.textContent = ""; renderForm(); form()?.querySelector<HTMLElement>("input")?.focus(); });
       action(application.enabled ? p.disable : p.enable, () => { void setEnabled(application); });
       action(p.use, () => { newEditSession(application.id); navigate("editor"); }, !application.enabled);
@@ -71,7 +75,7 @@ export function applicationsPage({ client, signal, navigate }: AdminPageOptions)
     const allowed = h("textarea", { id: "application-allowed", rows: "3", spellcheck: "false", "aria-describedby": "application-allowed-help" }) as HTMLTextAreaElement;
     const environment = h("select", { id: "application-environment" }, ...ENVIRONMENTS.map(value => h("option", { value }, value))) as HTMLSelectElement;
     const registry = h("select", { id: "application-registry" }, h("option", { value: "" }, p.choose),
-      ...list.registries.map(choice => h("option", { value: choice.id }, choice.label))) as HTMLSelectElement;
+      ...list.registries.filter(choice => !editing || choice.source === editing.source).map(choice => h("option", { value: choice.id }, choice.label))) as HTMLSelectElement;
     if (editing) {
       name.value = editing.name; origin.value = editing.origin; allowed.value = editing.allowedOrigins.join("\n");
       environment.value = editing.environment; registry.value = editing.registryId;

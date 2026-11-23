@@ -3,13 +3,13 @@ import { parseStudioReply } from "./studio-client.js";
 
 const trusted = { ref: "@e12", name: "Profile", role: "link", route: "dashboard", status: "trusted", targetId: "nav.profile", operations: ["highlight", "click"], privacy: "public" };
 const unregistered = { ref: "@e30", name: "Newsletter", role: "button", route: "profile", status: "unregistered" };
-const snapshot = (elements: unknown[] = [trusted, unregistered], extra: object = {}) => ({ url: "http://127.0.0.1:5173/#/dashboard", route: "dashboard", elements, ...extra });
-const connected = { sessionId: "s1", applicationId: "app-0123456789ab", application: "Reference application", origin: "http://127.0.0.1:5173" };
+const snapshot = (elements: unknown[] = [trusted, unregistered], extra: object = {}) => ({ url: "http://127.0.0.1:5173/#/dashboard", route: "dashboard", page: "/#/dashboard", hidden: 0, truncated: false, elements, ...extra });
+const connected = { sessionId: "s1", applicationId: "app-0123456789ab", application: "Reference application", origin: "http://127.0.0.1:5173", registrySource: "built-in" };
 const captured = { targetId: "nav.profile", route: "dashboard", name: "Profile", role: "link", operations: ["highlight", "click"] };
 
 describe("connect", () => {
   it("accepts exactly the contract shape", () => {
-    expect(parseStudioReply("connect", connected)).toEqual({ kind: "connected", ...connected });
+    expect(parseStudioReply("connect", connected)).toEqual({ kind: "connected", ...connected, resumed: false });
   });
   it.each<[string, unknown]>([
     ["not an object", "x"], ["null", null], ["an array", []],
@@ -32,11 +32,11 @@ describe("connect", () => {
 describe("refresh", () => {
   it("accepts trusted and unregistered candidates, a null route and an empty list", () => {
     const parsed = parseStudioReply("refresh", snapshot());
-    expect(parsed).toEqual({ kind: "snapshot", url: "http://127.0.0.1:5173/#/dashboard", route: "dashboard", elements: [
+    expect(parsed).toEqual({ kind: "snapshot", url: "http://127.0.0.1:5173/#/dashboard", route: "dashboard", page: "/#/dashboard", hidden: 0, truncated: false, elements: [
       { ...trusted }, { ...unregistered },
     ] });
     expect(parseStudioReply("refresh", snapshot([], { route: null }) as never)).not.toBeNull();
-    expect(parseStudioReply("refresh", { url: "http://127.0.0.1:5173/", route: null, elements: [{ ...unregistered, route: null }] })).not.toBeNull();
+    expect(parseStudioReply("refresh", { url: "http://127.0.0.1:5173/", route: null, page: null, hidden: 0, truncated: false, elements: [{ ...unregistered, route: null }] })).not.toBeNull();
   });
   it("accepts a long page url (250 characters) while origins keep their 200-character bound", () => {
     const base = "http://long-origin.example.test:5173/#/";

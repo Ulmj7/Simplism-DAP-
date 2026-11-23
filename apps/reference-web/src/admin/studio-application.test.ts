@@ -18,9 +18,9 @@ const OFF = "app-00000000000c";
 const savedId = "wt-000000000001";
 const stamp = "2026-11-23T10:00:00.000Z";
 
-interface App { id: string; name: string; origin: string; allowedOrigins: string[]; environment: string; registryId: string; enabled: boolean; updatedAt: string }
+interface App { id: string; name: string; origin: string; allowedOrigins: string[]; environment: string; registryId: string; source: "built-in" | "studio-managed"; enabled: boolean; updatedAt: string }
 const app = (id: string, name: string, port: number, registryId: string, enabled = true): App => ({
-  id, name, origin: `http://127.0.0.1:${port}`, allowedOrigins: [`http://127.0.0.1:${port}`], environment: "development", registryId, enabled, updatedAt: stamp,
+  id, name, origin: `http://127.0.0.1:${port}`, allowedOrigins: [`http://127.0.0.1:${port}`], environment: "development", registryId, source: registryId === "studio-managed" ? "studio-managed" : "built-in", enabled, updatedAt: stamp,
 });
 const demo = createDemoRegistry();
 // A second application with its own, different targets: proves the editor follows the SELECTED application's registry.
@@ -31,9 +31,9 @@ const ordersElements: SemanticElementDef[] = [
 ];
 const ordersRegistry = createSemanticRegistry({ routes: ["home", "orders"], elements: ordersElements });
 const registryReply: Record<string, object> = {
-  [REF]: { routes: demo.routes, elements: demo.list().filter(item => item.privacy === "public"), postconditionNames: [...POSTCONDITION_NAMES], previewable: true },
-  [ORD]: { routes: ["home", "orders"], elements: ordersElements, postconditionNames: ["order.submitted", "route.orders"], previewable: false },
-  [OFF]: { routes: ["home", "orders"], elements: ordersElements, postconditionNames: ["order.submitted"], previewable: false },
+  [REF]: { routes: demo.routes, elements: demo.list().filter(item => item.privacy === "public"), postconditionNames: [...POSTCONDITION_NAMES], previewable: true, source: "built-in", pages: {}, previewMode: "in-app" },
+  [ORD]: { routes: ["home", "orders"], elements: ordersElements, postconditionNames: ["order.submitted", "route.orders"], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" },
+  [OFF]: { routes: ["home", "orders"], elements: ordersElements, postconditionNames: ["order.submitted"], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" },
 };
 const ordersDraft = (id: string): WalkthroughDef => draftToDefinition({
   title: "Orders tour", description: "Submit an order.", completion: "Order submitted.",
@@ -68,7 +68,7 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
     studio: (action?: string) => requests.filter(request => request.path === "/api/studio/browser" && (action === undefined || request.body?.action === action)).map(request => request.body!),
     session: () => session,
   };
-  const registries = [{ id: "reference", label: "Reference application" }, { id: "fixture-b", label: "Fixture application B" }];
+  const registries = [{ id: "reference", label: "Reference application", source: "built-in" }, { id: "fixture-b", label: "Fixture application B", source: "built-in" }];
   const fetch: FetchLike = async (path, init) => {
     const method = init.method!;
     const role = new Headers(init.headers).get("x-demo-role");
@@ -88,8 +88,8 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
           if (!target.enabled) return json({ error: "APPLICATION_DISABLED" }, 409);
           if (session) return json({ error: "BROWSER_BUSY" }, 409);
           session = { id: `session-${target.id.slice(-1)}`, applicationId: target.id };
-          return json({ sessionId: session.id, applicationId: target.id, application: target.name, origin: target.origin });
-        case "refresh": return json({ url: `${target?.origin}/#/page`, route: String((candidates[session?.applicationId ?? ""]?.[0] as { route?: string } | undefined)?.route ?? "home"), elements: candidates[session?.applicationId ?? ""] ?? [] });
+          return json({ sessionId: session.id, applicationId: target.id, application: target.name, origin: target.origin, registrySource: target.source });
+        case "refresh": return json({ url: `${target?.origin}/#/page`, route: String((candidates[session?.applicationId ?? ""]?.[0] as { route?: string } | undefined)?.route ?? "home"), page: "/#/page", hidden: 0, truncated: false, elements: candidates[session?.applicationId ?? ""] ?? [] });
         case "highlight": return json({ highlighted: true, ref: command.ref });
         case "capture": {
           const found = (candidates[session?.applicationId ?? ""] ?? []).find(item => (item as { ref: string }).ref === command.ref) as { targetId: string; route: string; name: string; role: string; operations: string[] };
@@ -103,7 +103,7 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
     if (path === "/api/admin/applications" && method === "POST") {
       const input = body as unknown as Omit<App, "id" | "enabled" | "updatedAt">;
       if (input.name === "") return json({ kind: "invalid", message: "Invalid application", issues: ["name: <b>must not be empty</b>", "origin: must be https"] }, 422);
-      const created = { ...input, id: `app-${String(apps.size + 100).padStart(12, "0")}`, enabled: true, updatedAt: stamp };
+      const created = { ...input, source: input.registryId === "studio-managed" ? "studio-managed" as const : "built-in" as const, id: `app-${String(apps.size + 100).padStart(12, "0")}`, enabled: true, updatedAt: stamp };
       apps.set(created.id, created); return json(created, 201);
     }
     const application = /^\/api\/admin\/applications\/(app-[a-f0-9]{12})(\/status|\/registry)?$/u.exec(path);
@@ -198,7 +198,7 @@ it("lists every application with its origins, environment, registry label and st
   const row = rowFor(root, "<img src=x onerror=bad()>");
   expect([...row.querySelectorAll("td")].map(cell => cell.textContent)).toEqual([
     "<img src=x onerror=bad()>", "http://127.0.0.1:5199", "http://127.0.0.1:5199\nhttp://localhost:5199", "development", "Fixture application B", p.disabledLabel,
-    "EditEnableUse for authoring",
+    "View registryEditEnableUse for authoring",
   ]);
   expect(root.querySelector("img")).toBeNull();
   expect(rowFor(root, "Reference application").textContent).toContain("Reference application" + "http://127.0.0.1:5173");
@@ -520,7 +520,7 @@ it("shows an unregistered element as display-only and refuses a reply that gives
   expect(root.textContent).not.toContain("Highlight: Newsletter");
   const poisoned = candidates[REF]!.map(item => ({ ...item }));
   (poisoned[1] as Record<string, unknown>).targetId = "nav.profile";
-  host.overrides.set("POST /api/studio/browser", () => json({ url: "http://127.0.0.1:5173/#/page", route: "dashboard", elements: poisoned }));
+  host.overrides.set("POST /api/studio/browser", () => json({ url: "http://127.0.0.1:5173/#/page", route: "dashboard", page: "/#/page", hidden: 0, truncated: false, elements: poisoned }));
   await click(root, "Inspect current page");
   expect(root.querySelector(".studio-workspace")?.getAttribute("data-state")).toBe("ERROR");
   expect(root.querySelectorAll("li.studio-candidate")).toHaveLength(0);
@@ -559,7 +559,7 @@ it("keeps manual authoring fully usable when the browser workspace is unavailabl
   fill(root, "editor-application", ORD, "change"); await turn();
   await click(root, "Connect Chrome");
   expect(root.querySelector(".studio-workspace")?.getAttribute("data-state")).toBe("ERROR");
-  expect(root.querySelector(".studio-workspace [role=status]")?.textContent).toBe("The browser workspace is unavailable. You can still select a registry target.");
+  expect(root.querySelector(".studio-workspace [role=alert]")?.textContent).toBe("The browser workspace is unavailable. You can still select a registry target.");
   fill(root, "editor-title", "Manual tour"); fill(root, "editor-description", "Picked by hand."); fill(root, "editor-completion", "Done.");
   fill(root, "editor-target", "orders.note", "change"); fill(root, "editor-wait", "input", "change"); fill(root, "editor-text", "Type a note.");
   expect(control<HTMLElement>(root, "#editor-problems").hidden).toBe(true);
@@ -585,11 +585,11 @@ it("reports a disabled or unknown application on Connect without leaving a sessi
   fill(root, "editor-application", ORD, "change"); await turn();
   host.apps.get(ORD)!.enabled = false;
   await click(root, "Connect Chrome");
-  expect(root.querySelector(".studio-workspace [role=status]")?.textContent).toBe("That application is disabled. Enable it in Applications first.");
+  expect(root.querySelector(".studio-workspace [role=alert]")?.textContent).toBe("That application is disabled. Enable it in Applications first.");
   expect(root.querySelector(".studio-workspace")?.getAttribute("data-state")).toBe("ERROR");
   host.apps.delete(ORD);
   await click(root, "Connect Chrome");
-  expect(root.querySelector(".studio-workspace [role=status]")?.textContent).toBe("That application is no longer available.");
+  expect(root.querySelector(".studio-workspace [role=alert]")?.textContent).toBe("That application is no longer available.");
   expect(host.session()).toBeUndefined();
 });
 
@@ -640,13 +640,13 @@ it("follows the host when it has closed the session because the application chan
   await click(root, "Inspect current page");
   const workspace = control(root, ".studio-workspace");
   expect(workspace.getAttribute("data-state")).toBe("DISCONNECTED");
-  expect(workspace.querySelector("[role=status]")?.textContent).toContain("The browser session was closed");
+  expect(workspace.querySelector("[role=alert]")?.textContent).toContain("The browser session was closed");
   expect(workspace.querySelectorAll("li.studio-candidate")).toHaveLength(0);
   host.overrides.delete("POST /api/studio/browser");
   host.overrides.set("POST /api/studio/browser", () => json({ error: "APPLICATION_MISMATCH" }, 409));
   await click(root, "Connect Chrome");
   expect(workspace.getAttribute("data-state")).toBe("ERROR");
-  expect(workspace.querySelector("[role=status]")?.textContent).toBe("This browser session no longer matches the application. Disconnect and connect again.");
+  expect(workspace.querySelector("[role=alert]")?.textContent).toBe("This browser session no longer matches the application. Disconnect and connect again.");
   expect(control<HTMLSelectElement>(root, "#editor-target").disabled).toBe(false);
 });
 

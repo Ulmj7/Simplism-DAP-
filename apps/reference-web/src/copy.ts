@@ -48,6 +48,8 @@ export const copy = {
    failures: {
     APPLICATION_NOT_FOUND: "The application for this walkthrough is no longer available.",
     APPLICATION_DISABLED: "This application is disabled. Enable it in Applications, then try again.",
+    TARGET_NOT_FOUND: "That target is no longer available.",
+    REGISTRY_NOT_MANAGED: "This application uses a built-in registry.",
     APPLICATION_MISMATCH: "This walkthrough belongs to a different application and cannot be moved.",
    },
    limit: "You can enroll at most 20 applications.",

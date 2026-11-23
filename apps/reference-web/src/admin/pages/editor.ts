@@ -16,8 +16,8 @@ import type { AdminPageOptions } from "./shared.js";
 
 const c = copy.admin;
 /** What an application contributes to the editor: its targets, the checks it declares, and whether Preview can run it. */
-export interface RegistryData { registry: SemanticRegistry; postconditions: readonly string[]; previewable: boolean }
-const EMPTY: RegistryData = { registry: createSemanticRegistry({ routes: [], elements: [] }), postconditions: [], previewable: false };
+export interface RegistryData { registry: SemanticRegistry; postconditions: readonly string[]; previewable: boolean; previewMode: "in-app" | "application-window" }
+const EMPTY: RegistryData = { registry: createSemanticRegistry({ routes: [], elements: [] }), postconditions: [], previewable: false, previewMode: "in-app" };
 
 export function editorPage(options: AdminPageOptions) {
   const { client, registry: referenceRegistry, signal } = options;
@@ -28,11 +28,11 @@ export function editorPage(options: AdminPageOptions) {
   const requested = takeRequestedEdit();
   const current = getEditSession();
   // The legacy default: a draft that predates applications is validated against the reference registry, like the host does.
-  const reference: RegistryData = { registry: referenceRegistry, postconditions: POSTCONDITION_NAMES, previewable: true };
+  const reference: RegistryData = { registry: referenceRegistry, postconditions: POSTCONDITION_NAMES, previewable: true, previewMode: "in-app" };
   async function registryFor(applicationId: string | undefined, legacy: boolean): Promise<RegistryData | AdminResult<never>> {
     if (applicationId === undefined) return legacy ? reference : EMPTY;
     const loaded = await client.applicationRegistry(applicationId);
-    return loaded.kind === "ok" ? { registry: loaded.value.registry, postconditions: loaded.value.postconditionNames, previewable: loaded.value.previewable } : loaded;
+    return loaded.kind === "ok" ? { registry: loaded.value.registry, postconditions: loaded.value.postconditionNames, previewable: loaded.value.previewable, previewMode: loaded.value.previewMode } : loaded;
   }
   const resumed = requested !== undefined && current?.id === requested && current.saving !== undefined;
   void Promise.all([client.list(), client.applications(), requested === undefined || resumed ? undefined : client.get(requested)]).then(async ([access, applications, loaded]) => {
@@ -76,7 +76,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   const { client, signal, preview, navigate, refresh } = options;
   const { draft } = session;
   // The registry belongs to the SELECTED application and is replaced when a new draft selects another one.
-  let { registry, postconditions, previewable } = initial;
+  let { registry, postconditions, previewable, previewMode } = initial;
   const save = button(c.save, true);
   const showPreview = button(c.preview);
   const publish = button(c.publish);
@@ -217,9 +217,11 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
       hint.hidden = hint.textContent === "";
     }
     // Preview runs the reference application's own runtime, so only its registry can be previewed in this release.
-    previewHint.hidden = previewable || unassigned;
+    const inAppPreview = previewable && previewMode === "in-app";
+    previewHint.textContent = previewMode === "application-window" ? "Preview in the application window is added in the next step." : c.application.noPreview;
+    previewHint.hidden = inAppPreview || unassigned;
     save.disabled = busy || !validation.ok || unassigned;
-    showPreview.disabled = busy || !validation.ok || !previewable;
+    showPreview.disabled = busy || !validation.ok || !inAppPreview;
     publish.disabled = busy || !validation.ok || session.dirty || session.id === undefined;
     publishHint.hidden = !session.dirty && session.id !== undefined;
     return validation;
@@ -237,6 +239,18 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   // ---- the application this draft is written for
   const workspace = client.studio ? browserWorkspace({
     call: client.studio, signal, application: workspaceApplication(), walkthroughId: () => session.id,
+    async onRegistered() {
+      const id = session.applicationId;
+      if (!id) return;
+      const loaded = await client.applicationRegistry(id);
+      if (signal.aborted || session.applicationId !== id) return;
+      if (loaded.kind === "ok") {
+        ({ registry, postconditionNames: postconditions, previewable, previewMode } = loaded.value);
+        renderInspector(); update();
+      } else {
+        notice.textContent = c.application.registryFailed;
+      }
+    },
     bindTarget: () => {
       const step = draft.steps[session.selected];
       return evidence => {
@@ -263,14 +277,14 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     const attempt = ++loads;
     if (id === "") delete session.applicationId; else session.applicationId = id;
     workspace?.setApplication(workspaceApplication());
-    ({ registry, postconditions, previewable } = EMPTY);
+    ({ registry, postconditions, previewable, previewMode } = EMPTY);
     changed();
     if (id === "") { stepControls(); update(); return; }
     setBusy(true); notice.textContent = c.application.loadingRegistry;
     const loaded = await client.applicationRegistry(id);
     if (signal.aborted || attempt !== loads) return;
     busy = false;
-    if (loaded.kind === "ok") ({ registry, postconditions, previewable } = { registry: loaded.value.registry, postconditions: loaded.value.postconditionNames, previewable: loaded.value.previewable });
+    if (loaded.kind === "ok") ({ registry, postconditions, previewable, previewMode } = { registry: loaded.value.registry, postconditions: loaded.value.postconditionNames, previewable: loaded.value.previewable, previewMode: loaded.value.previewMode });
     else {
       // A failed load leaves NO application selected (the selector shows its placeholder), so choosing the same application again is a real change and retries the load.
       delete session.applicationId;
