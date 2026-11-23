@@ -1,5 +1,6 @@
 /**
- * C01 dev server (`npm run dev:host`): the reference host composed with the guidance capability, behind the narrow browser transport, on 127.0.0.1 only.
+ * C01 dev server (`npm run dev:host`): the reference host composed with the guidance capability, behind the narrow browser transport.
+ * DAP_HTTP_HOST defaults to 127.0.0.1. The Docker lab binds to 0.0.0.0 inside the container and publishes to host loopback.
  *
  * DEV-ONLY DEMO LIMITATION: the browser supplies no identity. The host opens its OWN demo session server-side from `DAP_DEMO_SESSION_TOKEN` (dev-auth
  * evidence, read from the environment, never from a request), so every browser that can reach 127.0.0.1 shares that one session. A real deployment needs
@@ -44,6 +45,10 @@ const env = process.env;
 let close: (() => Promise<void>) | undefined;
 let phase: StartupPhase = "config";
 try {
+  const bindHost = env.DAP_HTTP_HOST ?? HTTP_HOST;
+  if (bindHost !== HTTP_HOST && bindHost !== "0.0.0.0") {
+    throw new GuidanceConfigError("DAP_HTTP_HOST must be 127.0.0.1 or 0.0.0.0");
+  }
   const port = parseHttpPort(env.DAP_HTTP_PORT);
   if (port === null) throw new GuidanceConfigError("DAP_HTTP_PORT must be a port number from 1 to 65535");
   const token = env.DAP_DEMO_SESSION_TOKEN;
@@ -82,8 +87,8 @@ try {
   registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: store });
   close = async () => { await app.close(); await host.close(); await authoringPool.end(); };
   phase = "listen";
-  await app.listen({ host: HTTP_HOST, port });
-  console.log(`DAP guidance host listening on http://${HTTP_HOST}:${port} (dev only)`);
+  await app.listen({ host: bindHost, port });
+  console.log(`DAP guidance host listening on http://${bindHost}:${port} (dev only)`);
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void close?.().finally(() => process.exit(0)); });
 } catch (error) {
   console.error(startupFailureMessage(error, phase));
