@@ -173,13 +173,13 @@ describe("managed refresh", () => {
     });
     expect(res.raw, "a secret-named control and an unmarked one are never named").not.toMatch(/Password|Save|orders\.pw/u);
   });
-  it("reads the privacy facts only for the controls that could be registered (never for a hidden or already registered one)", async () => {
+  it("reads the privacy facts for every control that could be listed, registered or not (never for a hidden one: no marker, a non-registrable role)", async () => {
     const h = await harness();
     await h.connect();
     await h.targets.register({ tenantId: TENANT_A, actor: "seed" }, MANAGED, { targetId: "orders.exportButton", route: "orders", page: "/#/orders", role: "button", label: "Export", description: "Export.", operations: ["highlight", "click"], privacy: "public" });
     await h.command(refresh());
     const asked = (h.runtimes[0]!.inspectElementFacts as ReturnType<typeof vi.fn>).mock.calls[0]![0] as ElementRef[];
-    expect(asked).toEqual(["@e2", "@e3"]); // Save has no marker, Export is already a target
+    expect(asked).toEqual(["@e1", "@e2", "@e3"]); // Save has no marker; Export is registered but its facts are re-read like any other
   });
   it("re-resolves the registry on EVERY refresh: a target registered or disabled meanwhile is seen without reconnecting", async () => {
     const h = await ready();
@@ -568,5 +568,79 @@ describe("resume (D13): a reloaded page re-adopts its own running session", () =
       await vi.advanceTimersByTimeAsync(minutes(1) + 1);
       expect(h.runtimes[0]!.close).toHaveBeenCalledOnce();
     });
+  });
+});
+
+describe("a registered control that became private or secret-looking is hidden and unusable (E2)", () => {
+  async function registered(): Promise<H> {
+    const h = await harness();
+    await h.targets.register({ tenantId: TENANT_A, actor: "seed" }, MANAGED, { targetId: "orders.exportButton", route: "orders", page: "/#/orders", role: "button", label: "Export", description: "Export.", operations: ["highlight", "click"], privacy: "public" });
+    await h.connect();
+    expect((await h.command(refresh())).body.elements).toEqual(expect.arrayContaining([expect.objectContaining({ ref: "@e1", status: "trusted" })]));
+    return h;
+  }
+  const FACTS: [string, ElementFacts][] = [["data-ai-private", { ...PUBLIC, dataAiPrivate: true }], ["data-ai-ignore", { ...PUBLIC, dataAiIgnore: true }], ["data-ai-redact", { ...PUBLIC, dataAiRedact: true }], ["a password type", { ...PUBLIC, inputType: "password" }], ["autocomplete cc-csc", { ...PUBLIC, autocomplete: "cc-csc" }]];
+  it.each(FACTS)("the next refresh hides the control that became %s: not listed, not named, counted as hidden", async (_why, facts) => {
+    const h = await registered();
+    h.runtimes[0]!.controls[0]!.facts = facts;
+    const res = await h.command(refresh());
+    expect((res.body.elements as { name: string }[]).map((element) => element.name)).not.toContain("Export");
+    expect(res.raw).not.toMatch(/Export|orders\.exportButton/u);
+    expect(res.body.hidden).toBe(3);
+  });
+  it.each(FACTS)("highlight and capture of the previously trusted ref refuse with TARGET_UNAVAILABLE once the live element became %s", async (_why, facts) => {
+    const h = await registered();
+    h.runtimes[0]!.controls[0]!.facts = facts;
+    for (const action of ["highlight", "capture"]) expect((await h.command({ action, sessionId: "session-1", applicationId: MANAGED, ref: "@e1" })).body, action).toEqual({ error: "TARGET_UNAVAILABLE" });
+    expect(h.runtimes[0]!.highlight).not.toHaveBeenCalled();
+  });
+  it("facts that cannot be read refuse highlight and capture of a trusted control", async () => {
+    const h = await registered();
+    h.runtimes[0]!.controls[0]!.facts = null;
+    for (const action of ["highlight", "capture"]) expect((await h.command({ action, sessionId: "session-1", applicationId: MANAGED, ref: "@e1" })).body, action).toEqual({ error: "TARGET_UNAVAILABLE" });
+  });
+  it("a registrable control that turned private after the refresh cannot be highlighted either", async () => {
+    const h = await ready();
+    h.runtimes[0]!.controls[1]!.facts = { ...PUBLIC, dataAiPrivate: true };
+    expect((await h.command({ action: "highlight", sessionId: "session-1", applicationId: MANAGED, ref: "@e2" })).body).toEqual({ error: "TARGET_UNAVAILABLE" });
+  });
+  it("a still-public registered control keeps working and its facts are read once for the single ref in the fresh observation", async () => {
+    const h = await registered();
+    const before = (h.runtimes[0]!.inspectElementFacts as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect((await h.command({ action: "highlight", sessionId: "session-1", applicationId: MANAGED, ref: "@e1" })).body).toEqual({ highlighted: true, ref: "@e1" });
+    const calls = (h.runtimes[0]!.inspectElementFacts as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(before + 1);
+    expect(calls.at(-1)![0]).toEqual(["@e1"]);
+  });
+});
+
+describe("capture returns the STORED semantic role, the inspector keeps the live browser role as evidence (E1)", () => {
+  const CASES: [string, string, RegistrableRole, string[]][] = [
+    ["searchbox", "Find orders", "textbox", ["highlight", "input", "focus"]], ["combobox", "Status", "select", ["highlight", "click"]], ["textbox", "Note", "textbox", ["highlight", "input"]],
+    ["button", "Export", "button", ["highlight", "click"]], ["link", "Orders", "link", ["highlight", "click"]], ["checkbox", "Agree", "checkbox", ["highlight", "click"]],
+  ];
+  it.each(CASES)("a registered %s control: the refresh shows the browser role, capture the stored %s role (%s)", async (browserRole, name, stored, operations) => {
+    const h = await harness({ controls: [control(name, browserRole, "orders.thing")] });
+    await h.targets.register({ tenantId: TENANT_A, actor: "seed" }, MANAGED, { targetId: "orders.thing", route: "orders", page: "/#/orders", role: stored, label: name, description: `${name}.`, operations: operations as never, privacy: "public" });
+    await h.connect();
+    const refreshed = await h.command(refresh());
+    expect(refreshed.body.elements).toEqual([expect.objectContaining({ ref: "@e1", name, role: browserRole, status: "trusted" })]);
+    const captured = await h.command({ action: "capture", sessionId: "session-1", applicationId: MANAGED, ref: "@e1" });
+    expect(captured.body).toEqual({ targetId: "orders.thing", route: "orders", name, role: stored, operations });
+  });
+  it("register -> refresh -> capture end to end for a search box and a combobox: the candidate updated in place also carries the browser role while capture returns the stored one", async () => {
+    const h = await ready({ controls: [control("Find orders", "searchbox", "orders.search"), control("Status", "combobox", "orders.status")] });
+    const a = await h.command(registerBody({ ref: "@e1", targetId: "orders.search", operations: ["highlight", "input"], label: "Find orders", description: "Searches." }));
+    expect(a.body).toMatchObject({ target: { role: "textbox" } });
+    const b = await h.command(registerBody({ ref: "@e2", targetId: "orders.status", operations: ["highlight", "click"], label: "Status", description: "Filters." }));
+    expect(b.body).toMatchObject({ target: { role: "select" } });
+    const capture = (ref: string) => h.command({ action: "capture", sessionId: "session-1", applicationId: MANAGED, ref });
+    expect((await capture("@e1")).body).toMatchObject({ role: "textbox", name: "Find orders" });
+    expect((await capture("@e2")).body).toMatchObject({ role: "select", name: "Status" });
+    // reopen: a brand new refresh (a reopened editor) lists them trusted with the browser role and capture still answers the stored role
+    const again = await h.command(refresh());
+    expect((again.body.elements as { role: string; status: string }[]).map((e) => [e.role, e.status])).toEqual([["searchbox", "trusted"], ["combobox", "trusted"]]);
+    expect((await capture("@e1")).body).toMatchObject({ role: "textbox" });
+    expect((await capture("@e2")).body).toMatchObject({ role: "select" });
   });
 });

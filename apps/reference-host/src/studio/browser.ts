@@ -169,17 +169,30 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       if (!snapshot || !candidate) return deny(409, "REF_NOT_FOUND");
       const expectedId = candidate.status === "trusted" ? candidate.targetId : candidate.status === "registrable" && command.action === "highlight" ? candidate.proposal.targetId : null;
       if (expectedId === null) return deny(409, "TARGET_UNAVAILABLE");
-      if (candidate.status === "trusted" && session.source === "studio-managed") {
-        // Targets can change while the session is open: a target disabled since the refresh is no longer usable.
-        const listing = await targets.list(principal.tenantId, session.applicationId);
-        if (!listing.targets.some((target) => target.id === candidate.targetId && target.status === "active")) return deny(409, "TARGET_UNAVAILABLE");
-      }
-      // Re-verify against a FRESH observation: the live element must still carry the same marker (a stale snapshot is REF_NOT_FOUND from the adapter).
-      const id = await session.runtime.inspectSemanticId(command.ref as ElementRef, snapshot);
+      // The adapter checks the observation is still current before reading the marker and facts.
+      const ref = candidate.ref;
+      const id = await session.runtime.inspectSemanticId(ref, snapshot);
       if (id !== expectedId) return deny(409, "TARGET_UNAVAILABLE");
-      await session.runtime.highlight(command.ref as ElementRef, snapshot);
-      if (command.action === "highlight") return { highlighted: true, ref: command.ref };
-      return { targetId: expectedId, route: candidate.route, name: candidate.name, role: candidate.role, operations: candidate.status === "trusted" ? candidate.operations : [] };
+      let currentCandidate = candidate;
+      let captureRole = candidate.role;
+      if (session.source === "studio-managed") {
+        const element = snapshot.elements.find((item) => item.ref === ref);
+        if (!element) return deny(409, "REF_NOT_FOUND");
+        const registry = await registryView(principal.tenantId, session.applicationId);
+        const facts = await session.runtime.inspectElementFacts([ref], snapshot);
+        const live = classifyControl({ snapshot, ids: new Map([[ref, id]]), facts, registry }, element);
+        if (live === null || live.status !== candidate.status) return deny(409, "TARGET_UNAVAILABLE");
+        currentCandidate = live;
+        if (live.status === "trusted") {
+          const target = registry.targets.find((item) => item.id === live.targetId);
+          if (!target) return deny(409, "TARGET_UNAVAILABLE");
+          captureRole = target.role;
+        }
+      }
+      await session.runtime.highlight(ref, snapshot);
+      if (command.action === "highlight") return { highlighted: true, ref };
+      if (currentCandidate.status !== "trusted") return deny(409, "TARGET_UNAVAILABLE");
+      return { targetId: expectedId, route: currentCandidate.route, name: currentCandidate.name, role: captureRole, operations: currentCandidate.operations };
     } catch (error) {
       if (error instanceof BrowserRuntimeError) {
         // A stale element is always a conflict the UI recovers from by refreshing; a closed session is cleared here; everything else keeps the session open (the user can navigate back).
@@ -230,7 +243,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     session.candidates = new Map();
     const snapshot = await session.runtime.snapshot();
     const ids = await session.runtime.inspectSemanticIds(snapshot);
-    const refs = selectFactRefs(snapshot, ids, registry);
+    const refs = selectFactRefs(snapshot, ids);
     const facts: ReadonlyMap<ElementRef, ElementFacts | null> = refs.length === 0 ? new Map() : await session.runtime.inspectElementFacts(refs, snapshot);
     const inspection = classifyManaged({ snapshot, ids, facts, registry });
     session.snapshot = snapshot;

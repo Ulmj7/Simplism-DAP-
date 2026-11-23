@@ -136,10 +136,31 @@ describe("classifyManaged: what is listed and in which state", () => {
     expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.save" }], `${ORIGIN}/#/unknown`, reg)).elements, "unregistered page").toEqual([]);
     expect(classifyManaged(input([{ name: "Save", role: "radio", id: "orders.save" }], undefined, reg)).elements, "non-registrable role").toEqual([]);
   });
-  it("an existing target's privacy facts are not consulted (it is already public by construction): the facts may be missing", () => {
-    const reg = registry({ targets: [target("orders.save", "orders", "button")] });
-    const res = classifyManaged(input([{ name: "Save", role: "button", id: "orders.save", facts: null }], undefined, reg));
-    expect(res.elements).toHaveLength(1);
+  describe("a registered control passes the SAME privacy and name gate on every inspection (E2)", () => {
+    const reg = () => registry({ targets: [target("orders.save", "orders", "button"), target("orders.off", "orders", "button", "disabled")] });
+    const FACTS: [string, ElementFacts][] = [
+      ["data-ai-ignore", { ...PUBLIC, dataAiIgnore: true }], ["data-ai-private", { ...PUBLIC, dataAiPrivate: true }], ["data-ai-redact", { ...PUBLIC, dataAiRedact: true }],
+      ["a password input", { ...PUBLIC, inputType: "password" }], ["a hidden input", { ...PUBLIC, inputType: "hidden" }],
+      ["autocomplete cc-number", { ...PUBLIC, autocomplete: "cc-number" }], ["autocomplete current-password", { ...PUBLIC, autocomplete: "current-password" }],
+      ["autocomplete new-password", { ...PUBLIC, autocomplete: "new-password" }], ["autocomplete one-time-code", { ...PUBLIC, autocomplete: "one-time-code" }],
+    ];
+    it.each(FACTS)("a trusted and a disabled control that became %s is hidden, never named and never trusted", (_why, facts) => {
+      const res = classifyManaged(input([{ name: "Save", role: "button", id: "orders.save", facts }, { name: "Old", role: "button", id: "orders.off", facts }], undefined, reg()));
+      expect(res).toEqual({ elements: [], hidden: 2, truncated: false });
+      expect(JSON.stringify(res)).not.toMatch(/Save|Old|orders\.save|orders\.off/u);
+    });
+    it("facts that could not be read (null) or are missing hide a registered control too", () => {
+      expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.save", facts: null }], undefined, reg()))).toEqual({ elements: [], hidden: 1, truncated: false });
+      const bare = input([{ name: "Save", role: "button", id: "orders.save" }], undefined, reg());
+      expect(classifyManaged({ ...bare, facts: new Map() })).toEqual({ elements: [], hidden: 1, truncated: false });
+    });
+    it.each(["Password", "Reveal your API key", "Card number", "OTP"])("a registered control whose accessible name is now secret-looking (%s) is hidden", (name) => {
+      expect(classifyManaged(input([{ name, role: "button", id: "orders.save" }], undefined, reg()))).toEqual({ elements: [], hidden: 1, truncated: false });
+    });
+    it("a registered control with public facts stays trusted or disabled (the gate does not hide good controls)", () => {
+      const res = classifyManaged(input([{ name: "Save", role: "button", id: "orders.save" }, { name: "Old", role: "button", id: "orders.off" }], undefined, reg()));
+      expect(res.elements.map((element) => element.status)).toEqual(["trusted", "disabled"]);
+    });
   });
   it("registry caps: at 200 targets nothing new is registrable; at 20 routes a NEW page is not, a known page still is", () => {
     const full = Array.from({ length: MAX_TARGETS_PER_APPLICATION }, (_, i) => target(`orders.t${i}`, "orders", "button"));
@@ -182,19 +203,19 @@ describe("classifyManaged: what is listed and in which state", () => {
   });
 });
 
-describe("selectFactRefs: facts are read only where they can matter", () => {
-  it("selects registrable-role controls with a valid marker that no target carries, at most 64, in document order", () => {
+describe("selectFactRefs: facts are read for every control that could be listed", () => {
+  it("selects registrable-role controls with a valid marker, registered or not, at most 64, in document order", () => {
     const reg = registry({ targets: [target("orders.known", "orders", "button")] });
     const { snapshot, ids } = input([
       { name: "A", role: "button", id: "orders.a" }, { name: "Known", role: "button", id: "orders.known" }, { name: "R", role: "radio", id: "orders.r" }, { name: "N", role: "button" }, { name: "Bad", role: "button", id: "Orders.bad" },
       { name: "B", role: "textbox", id: "orders.b" },
     ], undefined, reg);
-    expect(selectFactRefs(snapshot, ids, reg)).toEqual(["@e1", "@e6"]);
+    expect(selectFactRefs(snapshot, ids)).toEqual(["@e1", "@e2", "@e6"]);
   });
   it("never selects past the 64th control", () => {
     const controls: Control[] = Array.from({ length: 70 }, (_, i) => ({ name: `C${i}`, role: "button", id: `orders.c${i}` }));
     const { snapshot, ids } = input(controls);
-    expect(selectFactRefs(snapshot, ids, registry())).toHaveLength(64);
+    expect(selectFactRefs(snapshot, ids)).toHaveLength(64);
   });
 });
 

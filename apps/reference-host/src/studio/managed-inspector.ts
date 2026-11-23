@@ -81,12 +81,11 @@ export function suggestLabel(name: string, targetId: string): string {
 const inBounds = (name: string, role: string): boolean => name.length <= MAX_NAME_CHARS && role.length <= MAX_ROLE_CHARS;
 
 /** The refs whose facts are worth reading: inspected controls with a registrable role and a VALID marker that no target of this registry already carries. At most 64, document order. */
-export function selectFactRefs(snapshot: BrowserSnapshot, ids: ReadonlyMap<ElementRef, string | null>, registry: ManagedRegistryView): readonly ElementRef[] {
-  const known = new Set(registry.targets.map((target) => target.id));
+export function selectFactRefs(snapshot: BrowserSnapshot, ids: ReadonlyMap<ElementRef, string | null>): readonly ElementRef[] {
   const refs: ElementRef[] = [];
   for (const element of snapshot.elements.slice(0, MAX_INSPECTED)) {
     const marker = ids.get(element.ref);
-    if (snapshotRoleToTargetRole(element.role) === null || !isTargetId(marker) || known.has(marker)) continue;
+    if (snapshotRoleToTargetRole(element.role) === null || !isTargetId(marker)) continue;
     refs.push(element.ref);
   }
   return Object.freeze(refs);
@@ -108,6 +107,9 @@ export function classifyControl(input: ManagedInput, element: BrowserSnapshot["e
   if (targetRole === null || !isTargetId(marker)) return null;
   const page = pageOfUrl(input.snapshot.url);
   const route = routeOfPage(page, input.registry.routes);
+  const facts = input.facts.get(element.ref);
+  if (facts === undefined || facts === null || effectivePrivacyOfFacts(facts) !== "public") return null;
+  if (secretNameHit(element.name)) return null;
   const existing = input.registry.targets.find((target) => target.id === marker);
   if (existing !== undefined) {
     if (route === null || existing.route !== route || existing.role !== targetRole) return null; // a target of another route or role: not this element
@@ -115,10 +117,6 @@ export function classifyControl(input: ManagedInput, element: BrowserSnapshot["e
       ? Object.freeze({ ref: element.ref, name: element.name, role: element.role, route, status: "trusted" as const, targetId: existing.id, operations: Object.freeze([...existing.operations]), privacy: "public" as const })
       : Object.freeze({ ref: element.ref, name: element.name, role: element.role, route, status: "disabled" as const, targetId: existing.id });
   }
-  // A new marker: registrable only when every gate passes.
-  const facts = input.facts.get(element.ref);
-  if (facts === undefined || facts === null || effectivePrivacyOfFacts(facts) !== "public") return null;
-  if (secretNameHit(element.name)) return null;
   if (page === null) return null; // not a hash-routed page
   if (input.registry.targets.length >= MAX_TARGETS_PER_APPLICATION) return null;
   const routeIsNew = route === null;
