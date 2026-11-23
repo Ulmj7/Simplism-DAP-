@@ -1019,7 +1019,8 @@ describe("repair: re-bind a registered target to a live control", () => {
     for (const bad of [{ confirm: "true" }, { confirm: 1 }, { marker: "x.y" }, { role: "link" }, { route: "orders" }, { page: "/" }, { privacy: "public" }, { revision: 2 }, { ref: "e1" }, { targetId: "x".repeat(201) }, { label: "x".repeat(1001) }]) {
       expect((await h.command(repairBody(bad))).body, JSON.stringify(bad)).toEqual({ error: "INVALID_REQUEST" });
     }
-    const { confirm: _confirm, ...noConfirm } = repairBody();
+    const noConfirm: Record<string, unknown> = repairBody();
+    delete noConfirm.confirm;
     expect((await h.command(noConfirm)).body).toEqual({ error: "INVALID_REQUEST" });
   });
   it("ownership and state: another maintainer or tenant, a disabled application, a built-in application, an unavailable Gateway", async () => {
