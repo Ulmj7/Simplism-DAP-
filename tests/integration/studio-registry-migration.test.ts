@@ -40,17 +40,22 @@ async function ready(): Promise<{ tenant: string; id: string }> { const tenant =
 
 describe("ownership, row-level security and grants", () => {
   it("both tables are owned by dap_owner with forced RLS; targets grant SELECT, INSERT, UPDATE, routes only SELECT, INSERT; nothing for PUBLIC; no DELETE, no TRUNCATE", async () => {
-    await assertStateAcl(app, "studio_registry_targets", ["SELECT", "INSERT", "UPDATE"]);
+    // Since migration 077 dap_app's UPDATE on targets is COLUMN-level only (no table-level UPDATE): see studio-target-health-migration.test.ts for the exact columns.
+    await assertStateAcl(app, "studio_registry_targets", ["SELECT", "INSERT"]);
+    expect((await app.query("SELECT has_any_column_privilege('dap_app', 'public.studio_registry_targets', 'UPDATE') AS any_update")).rows).toEqual([{ any_update: true }]);
     await assertStateAcl(app, "studio_registry_routes", ["SELECT", "INSERT"]);
   });
   it("has the planned columns and primary keys", async () => {
     const columns = (table: string) => app.query("SELECT column_name, is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position", [table]);
     expect((await columns("studio_registry_routes")).rows.map((row) => row.column_name)).toEqual(["tenant_id", "application_id", "registry_id", "route", "page", "created_by", "created_at"]);
     expect((await columns("studio_registry_targets")).rows.map((row) => row.column_name)).toEqual(
-      ["tenant_id", "application_id", "registry_id", "target_id", "route", "role", "label", "description", "operations", "privacy", "status", "created_by", "created_at", "updated_by", "updated_at"]);
+      ["tenant_id", "application_id", "registry_id", "target_id", "route", "role", "label", "description", "operations", "privacy", "status", "created_by", "created_at", "updated_by", "updated_at",
+        // migration 077 (Studio completion): marker, health, health_checked_at, revision
+        "marker", "health", "health_checked_at", "revision"]);
     const keys = (table: string) => app.query("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid=$1::regclass AND contype IN ('p','u','f') ORDER BY conname", [`public.${table}`]);
     expect((await keys("studio_registry_targets")).rows.map((row) => row.def)).toEqual([
       "FOREIGN KEY (tenant_id, application_id, registry_id) REFERENCES studio_applications(tenant_id, application_id, registry_id)",
+      "UNIQUE (tenant_id, application_id, marker)", // migration 077
       "PRIMARY KEY (tenant_id, application_id, target_id)",
       "FOREIGN KEY (tenant_id, application_id, route) REFERENCES studio_registry_routes(tenant_id, application_id, route)",
     ]);
@@ -184,7 +189,7 @@ describe("target checks", () => {
   });
 });
 
-describe("immutability: only the status of a target can change", () => {
+describe("immutability: a target changes only its status and health, or through a repair (migration 077 widens 074's rule)", () => {
   const change = (set: string, params: unknown[] = []) => async () => {
     const { tenant, id } = await ready();
     await target(tenant, id);
@@ -192,17 +197,29 @@ describe("immutability: only the status of a target can change", () => {
   };
   it.each([
     ["label", "label = 'Other'"], ["description", "description = 'Other'"], ["role", "role = 'link'"], ["operations", "operations = ARRAY['highlight']"],
-    ["target_id", "target_id = 'orders.other'"], ["created_by", "created_by = 'mallory'"], ["created_at", "created_at = now() - interval '1 day'"],
-  ])("refuses a change of %s", async (_column, set) => {
-    await expect(change(set)()).rejects.toThrow(/cannot be changed, only enabled or disabled/);
+  ])("refuses a change of %s outside a repair", async (_column, set) => {
+    await expect(change(set)()).rejects.toThrow(/only by a repair/);
   });
-  it("refuses moving a target to another route and re-targeting its application", async () => {
+  it.each([
+    ["target_id", "target_id = 'orders.other'"], ["created_by", "created_by = 'mallory'"], ["created_at", "created_at = now() - interval '1 day'"],
+  ])("refuses a change of %s: dap_app holds no UPDATE grant on that column at all", async (_column, set) => {
+    await expect(change(set)()).rejects.toThrow(/permission denied/);
+  });
+  it("refuses moving a target to another route and re-targeting its application (no grant on those columns)", async () => {
     const { tenant, id } = await ready();
     await route(tenant, id, "home", "/");
     await target(tenant, id);
-    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_registry_targets SET route='home' WHERE application_id=$1", [id]))).rejects.toThrow(/cannot be changed/);
+    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_registry_targets SET route='home' WHERE application_id=$1", [id]))).rejects.toThrow(/permission denied/);
     const other = await enroll(tenant);
-    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_registry_targets SET application_id=$2 WHERE application_id=$1", [id, other]))).rejects.toThrow(/cannot be changed/);
+    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_registry_targets SET application_id=$2 WHERE application_id=$1", [id, other]))).rejects.toThrow(/permission denied/);
+  });
+  it("even the owner (with every column privilege) cannot move a target, change its id or its route: the trigger refuses it", async () => {
+    const { tenant, id } = await ready();
+    await route(tenant, id, "home", "/");
+    await target(tenant, id);
+    for (const set of ["route='home'", "target_id='orders.other'", "created_by='mallory'", "privacy='public', created_at = now() - interval '1 day'"]) {
+      await expect(asTenant(owner, tenant, (q) => q(`UPDATE public.studio_registry_targets SET ${set} WHERE application_id=$1`, [id])), set).rejects.toThrow(/cannot be changed/);
+    }
   });
   it("lets the status, updated_by and updated_at change (disable and re-enable)", async () => {
     const { tenant, id } = await ready();
@@ -214,7 +231,7 @@ describe("immutability: only the status of a target can change", () => {
   it("refuses a status update that smuggles a change into the same statement", async () => {
     const { tenant, id } = await ready();
     await target(tenant, id);
-    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_registry_targets SET status='disabled', label='Smuggled' WHERE application_id=$1", [id]))).rejects.toThrow(/cannot be changed/);
+    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_registry_targets SET status='disabled', label='Smuggled' WHERE application_id=$1", [id]))).rejects.toThrow(/only by a repair/);
     expect((await asTenant(app, tenant, (q) => q("SELECT status, label FROM public.studio_registry_targets WHERE application_id=$1", [id]))).rows).toEqual([{ status: "active", label: "Submit" }]);
   });
 });
@@ -241,14 +258,22 @@ describe("the caps are enforced in the database, race-safely", () => {
 describe("the migration file", () => {
   it("is idempotent (runs again as dap_owner without error or change) and applies only as dap_owner", async () => {
     const sql = await readFile(MIGRATION, "utf8");
-    const snapshot = async () => (await app.query("SELECT c.relname, c.relacl::text AS acl, c.relrowsecurity, c.relforcerowsecurity FROM pg_class c WHERE c.relname IN ('studio_registry_routes','studio_registry_targets') ORDER BY 1")).rows;
-    const before = await snapshot();
-    await owner.query(sql);
-    await owner.query(sql);
-    expect(await snapshot()).toEqual(before);
+    // The replay runs in a transaction that is ROLLED BACK: 074's `CREATE OR REPLACE FUNCTION studio_registry_targets_immutable()` would otherwise overwrite migration 077's version for every other
+    // test sharing this database (migrations are applied once by the ledger and never replayed in production).
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      const snapshot = async () => (await client.query("SELECT c.relname, c.relacl::text AS acl, c.relrowsecurity, c.relforcerowsecurity FROM pg_class c WHERE c.relname IN ('studio_registry_routes','studio_registry_targets') ORDER BY 1")).rows;
+      const before = await snapshot();
+      await client.query(sql);
+      await client.query(sql);
+      // 074 alone gives the owner's table-level UPDATE back to dap_app: inside the rolled-back transaction the ACL differs only by that, which 077 narrows again.
+      expect((await snapshot()).map((row) => row.relname)).toEqual(before.map((row) => row.relname));
+      expect((await client.query("SELECT count(*)::int AS n FROM pg_policies WHERE tablename IN ('studio_registry_routes','studio_registry_targets')")).rows).toEqual([{ n: 2 }]);
+    } finally { await client.query("ROLLBACK"); client.release(); }
     expect((await app.query("SELECT count(*)::int AS n FROM pg_policies WHERE tablename IN ('studio_registry_routes','studio_registry_targets')")).rows).toEqual([{ n: 2 }]);
-    expect((await app.query("SELECT count(*)::int AS n FROM pg_trigger WHERE tgrelid IN ('public.studio_registry_routes'::regclass,'public.studio_registry_targets'::regclass) AND NOT tgisinternal")).rows).toEqual([{ n: 5 }]); // + the page-grammar trigger of migration 076
-    await assertStateAcl(app, "studio_registry_targets", ["SELECT", "INSERT", "UPDATE"]);
+    expect((await app.query("SELECT count(*)::int AS n FROM pg_trigger WHERE tgrelid IN ('public.studio_registry_routes'::regclass,'public.studio_registry_targets'::regclass) AND NOT tgisinternal")).rows).toEqual([{ n: 7 }]); // 074: 4, 076: +1 (page grammar), 077: +2 (marker rules, repair history)
+    await assertStateAcl(app, "studio_registry_targets", ["SELECT", "INSERT"]);
     await assertStateAcl(app, "studio_registry_routes", ["SELECT", "INSERT"]);
     await expect(app.query(sql)).rejects.toThrow(/requires dap_owner/);
   });
