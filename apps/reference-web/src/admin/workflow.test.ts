@@ -27,10 +27,10 @@ const published = "/api/walkthroughs/published";
 const appId = "app-000000000001";
 const referenceApplication = {
   id: appId, name: "Reference application", origin: "http://127.0.0.1:5173", allowedOrigins: ["http://127.0.0.1:5173"],
-  environment: "development", registryId: "reference", enabled: true, updatedAt: "2026-11-20T00:00:00.000Z",
+  environment: "development", registryId: "reference", source: "built-in", enabled: true, updatedAt: "2026-11-20T00:00:00.000Z",
 };
 const referenceRegistry = () => ({
-  routes: registry.routes, previewable: true, postconditionNames: [...POSTCONDITION_NAMES],
+  routes: registry.routes, previewable: true, source: "built-in", pages: {}, previewMode: "in-app", postconditionNames: [...POSTCONDITION_NAMES],
   elements: registry.list().filter(item => item.privacy === "public"),
 });
 const guide = (id: string, status: GuideStatus, definition: WalkthroughDef, applicationId: string | null = appId): GuideRecord => ({ id, status, applicationId, definition });
@@ -55,7 +55,7 @@ function fakeHost(seed: GuideRecord[] = []) {
     if (path === "/api/admin/analytics" && method === "GET") return json({
       totals: { started: 0, completed: 0, cancelled: 0, completionRate: null }, guides: [],
     });
-    if (path === "/api/admin/applications" && method === "GET") return json({ applications: [referenceApplication], registries: [{ id: "reference", label: "Reference application" }] });
+    if (path === "/api/admin/applications" && method === "GET") return json({ applications: [referenceApplication], registries: [{ id: "reference", label: "Reference application", source: "built-in" }] });
     if (path === `/api/admin/applications/${appId}/registry` && method === "GET") return json(referenceRegistry());
     if (path === admin && method === "GET") return json({
       builtIn: builtinList, authored: [...rows.values()].map(({ id, status, applicationId, definition }) => ({

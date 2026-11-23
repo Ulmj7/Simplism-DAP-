@@ -1,4 +1,4 @@
-import { createWalkthroughCatalog } from "@dap/walkthrough";
+import { createSemanticRegistry, createWalkthroughCatalog } from "@dap/walkthrough";
 import { expect, it } from "vitest";
 import { POSTCONDITION_NAMES } from "../postconditions.js";
 import { createDemoRegistry } from "../semantic-ui.js";
@@ -45,4 +45,12 @@ it("uses the catalog to reject admin routes and targets, unsupported waits and u
     { step: 0, field: "target", message: "Select an available target." },
     { step: 1, field: "wait", message: "This interaction is not available for this target." },
   ] });
+});
+
+it("reopens a canonical draft when its first target is disabled and reports the missing target", () => {
+  const candidate = draftToDefinition(draft, registry);
+  const disabled = createSemanticRegistry({ routes: registry.routes, elements: registry.list().filter(target => target.id !== draft.steps[0]!.target) });
+  const reopened = definitionToDraft(candidate, disabled);
+  expect(reopened).toEqual(draft);
+  expect(validateDraft(reopened!, disabled)).toMatchObject({ ok: false, problems: [expect.objectContaining({ field: "target", step: 0 })] });
 });

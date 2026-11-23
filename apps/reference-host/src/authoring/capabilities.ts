@@ -24,10 +24,14 @@ import { saveInputSchema, statusInputSchema } from "./schema.js";
 import type { SaveInput, StatusInput } from "./schema.js";
 import type { StatusOutcome, WalkthroughStore } from "./store.js";
 import type { TrustedRegistryData } from "./trusted-registry.js";
+import type { ApplicationRecord } from "../studio/applications.js";
 import { validateAuthoredDefinition } from "./validate.js";
 import type { ApplicationStore } from "../studio/application-store.js";
-import { REFERENCE_REGISTRY_ID, registryDataFor } from "../studio/registries.js";
 import type { RegistryCatalog } from "../studio/registries.js";
+import { createRegistryResolver } from "../studio/registry-resolver.js";
+import type { RegistryResolver } from "../studio/registry-resolver.js";
+import type { TargetStore } from "../studio/target-store.js";
+import { emptyTargetStore } from "../studio/empty-target-store.js";
 
 export const MAINTAIN_PERMISSION = "perm.walkthrough.maintain";
 export const SAVE_ACTION_ID = "saveWalkthroughDraft";
@@ -89,8 +93,12 @@ export interface AuthoringDeps {
   readonly store: WalkthroughStore;
   /** The tenant's enrolled applications: where a guide's registry and enabled state come from. */
   readonly applications: ApplicationStore;
-  /** The host-trusted registry catalog (default: the built-in `reference` entry only). */
+  /** The host-trusted registry catalog (built-in registries). */
   readonly catalog: RegistryCatalog;
+  /** The Studio-managed registries (Studio V1B). Without it the executors see no managed targets: a managed application then validates nothing. Production composition always passes it. */
+  readonly targets?: TargetStore;
+  /** The registry resolver; built from `catalog`, `targets` and `registryData` when omitted. */
+  readonly resolver?: RegistryResolver;
   /** TEST SEAM: replaces the registry data of the built-in `reference` entry only, so a test injects a drifted registry through the REAL validator. Production code omits it. */
   readonly registryData?: TrustedRegistryData;
 }
@@ -98,11 +106,12 @@ export interface AuthoringDeps {
 const MAX_RECORDED = 100;
 const failure = (code: AuthoringFailureCode) => ({ status: "failure" as const, code });
 const STATUS_FAILURES: Readonly<Record<Exclude<StatusOutcome, "changed" | "unchanged">, AuthoringFailureCode>> = Object.freeze({
-  not_found: "not_found", invalid_definition: "invalid_definition", limit_reached: "limit_reached", id_refused: "id_refused",
+  not_found: "not_found", invalid_definition: "invalid_definition", limit_reached: "limit_reached", id_refused: "id_refused", application_not_found: "application_not_found", application_disabled: "application_disabled",
 });
 
 export function createAuthoringExecutors(deps: AuthoringDeps): { readonly executors: readonly ActionExecutor[]; readonly trusted: AuthoringTrustedHandle } {
-  const { store, applications, catalog } = deps;
+  const { store, applications } = deps;
+  const resolver = deps.resolver ?? createRegistryResolver({ catalog: deps.catalog, targets: deps.targets ?? emptyTargetStore, ...(deps.registryData === undefined ? {} : { referenceOverride: deps.registryData }) });
   const received = new Map<string, unknown[]>();
   let total = 0;
   const record = (actionId: string, params: unknown): void => {
@@ -124,13 +133,21 @@ export function createAuthoringExecutors(deps: AuthoringDeps): { readonly execut
         const application = await applications.get(scope.tenantId, call.params.applicationId);
         if (application === null) return failure("application_not_found");
         if (!application.enabled) return failure("application_disabled");
-        const registryData = registryDataFor(catalog, application.registryId, deps.registryData);
-        if (registryData === undefined) return failure("store_unavailable"); // the catalog no longer holds the application's registry: a configuration error, not a maintainer's
-        const checked = validateAuthoredDefinition(call.params.walkthroughId, call.params.definition, registryData);
+        const resolved = await resolver.resolve(scope.tenantId, application);
+        if (resolved === undefined) return failure("store_unavailable"); // the registry of the application cannot be found: a configuration error, not a maintainer's
+        const checked = validateAuthoredDefinition(call.params.walkthroughId, call.params.definition, resolved.registry);
         if (!checked.ok) return failure(checked.code);
-        const outcome = await store.saveDraft(scope, call.params.walkthroughId, checked.definition, application.id);
+        // The application row is locked and the registry is read AGAIN inside the write transaction (D14): the check above is the fast, fixed-phrase refusal, this is the authority.
+        const outcome = await store.saveDraft(scope, call.params.walkthroughId, checked.definition, application.id, async (tx, locked) => {
+          if (locked.registryId !== application.registryId) return "invalid_definition"; // re-pointed since the read above
+          const again = await resolver.resolveIn(tx, scope.tenantId, application);
+          return again !== undefined && validateAuthoredDefinition(call.params.walkthroughId, call.params.definition, again.registry).ok ? "ok" : "invalid_definition";
+        });
         switch (outcome) {
           case "created": case "updated": return { status: "success", affected: { type: "walkthrough", id: call.params.walkthroughId } };
+          case "application_not_found": return failure("application_not_found");
+          case "application_disabled": return failure("application_disabled");
+          case "invalid_definition": return failure("invalid_definition");
           case "not_a_draft": return failure("not_a_draft");
           case "application_mismatch": return failure("application_mismatch");
           case "too_large": return failure("invalid_definition");
@@ -148,28 +165,33 @@ export function createAuthoringExecutors(deps: AuthoringDeps): { readonly execut
       const { walkthroughId } = call.params;
       if (!isAuthoredId(walkthroughId)) return failure("id_refused");
       try {
-        let registryData: TrustedRegistryData | undefined;
+        let boundApplication: ApplicationRecord | null = null;
         let boundTo: string | null = null;
+        let resolvedFirst = false;
         if (call.params.status === "published") {
           // Publish: the registry is the application's. A guide without an application (written before Studio) is the built-in `reference` one and has no record that can be
           // disabled. Unpublishing never needs the application, so it stays possible when the application is disabled or its registry is gone.
           const stored = await store.get(scope.tenantId, walkthroughId);
           if (stored === null) return failure("not_found");
           boundTo = stored.applicationId;
-          let registryId = REFERENCE_REGISTRY_ID;
           if (boundTo !== null) {
-            const application = await applications.get(scope.tenantId, boundTo);
-            if (application === null) return failure("application_not_found");
-            if (stored.status !== "published" && !application.enabled) return failure("application_disabled");
-            registryId = application.registryId;
+            boundApplication = await applications.get(scope.tenantId, boundTo);
+            if (boundApplication === null) return failure("application_not_found");
+            if (stored.status !== "published" && !boundApplication.enabled) return failure("application_disabled");
           }
-          registryData = registryDataFor(catalog, registryId, deps.registryData);
-          if (registryData === undefined) return failure("store_unavailable");
+          const first = await resolver.resolve(scope.tenantId, boundApplication);
+          if (first === undefined) return failure("store_unavailable");
+          resolvedFirst = true;
         }
-        // The store loads the STORED definition and its application under a row lock and asks this check, so the guide is re-validated against the application's CURRENT
-        // registry data, and only if it still belongs to the application this executor resolved.
-        const outcome = await store.setStatus(scope, walkthroughId, call.params.status, (stored, applicationId) =>
-          registryData !== undefined && applicationId === boundTo && validateAuthoredDefinition(walkthroughId, stored, registryData).ok);
+        // The store locks the application row and loads the STORED definition under a row lock, then asks this check inside the SAME transaction: the guide is re-validated against the
+        // application's registry as that transaction sees it, and only if it still belongs to the application this executor resolved.
+        const outcome = await store.setStatus(scope, walkthroughId, call.params.status, async (stored, applicationId, tx, locked) => {
+          if (!resolvedFirst || applicationId !== boundTo || (locked !== null && boundApplication !== null && locked.registryId !== boundApplication.registryId)) return false;
+          const resolved = await resolver.resolveIn(tx, scope.tenantId, boundApplication);
+          return resolved !== undefined && validateAuthoredDefinition(walkthroughId, stored, resolved.registry).ok;
+        });
+        if (outcome === "application_not_found") return failure("application_not_found");
+        if (outcome === "application_disabled") return failure("application_disabled");
         if (outcome === "changed" || outcome === "unchanged") return { status: "success", affected: { type: "walkthrough", id: walkthroughId } };
         return failure(STATUS_FAILURES[outcome]);
       } catch { return failure("store_unavailable"); }

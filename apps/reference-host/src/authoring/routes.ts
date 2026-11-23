@@ -33,10 +33,14 @@ import { exactBody } from "../http/transport.js";
 import { DEMO_WALKTHROUGH_SUMMARIES } from "../guidance/walkthrough-summaries.js";
 import { MAINTAIN_PERMISSION, SAVE_ACTION_ID, STATUS_ACTION_ID } from "./capabilities.js";
 import type { ApplicationRecord } from "../studio/applications.js";
+import type { WalkthroughDef } from "@dap/walkthrough/authoring";
 import { isApplicationId } from "../studio/applications.js";
 import type { ApplicationStore } from "../studio/application-store.js";
-import { REFERENCE_REGISTRY_ID, registryDataFor } from "../studio/registries.js";
 import type { RegistryCatalog } from "../studio/registries.js";
+import { createRegistryResolver } from "../studio/registry-resolver.js";
+import type { RegistryResolver, ResolvedRegistry } from "../studio/registry-resolver.js";
+import type { TargetStore } from "../studio/target-store.js";
+import { emptyTargetStore } from "../studio/empty-target-store.js";
 import { generateWalkthroughId, isAuthoredId } from "./ids.js";
 import { STATUSES } from "./schema.js";
 import type { WalkthroughStatus } from "./schema.js";
@@ -62,8 +66,12 @@ export interface AuthoringRouteDeps {
   readonly store: WalkthroughStore;
   /** The tenant's enrolled applications (the source of every guide's registry and enabled state). */
   readonly applications: ApplicationStore;
-  /** The host-trusted registry catalog (default: the built-in `reference` entry only). */
+  /** The host-trusted registry catalog (built-in registries). */
   readonly catalog: RegistryCatalog;
+  /** The Studio-managed registries (Studio V1B); without it every managed application resolves to an empty registry. */
+  readonly targets?: TargetStore;
+  /** The registry resolver; built from `catalog`, `targets` and `registryData` when omitted. */
+  readonly resolver?: RegistryResolver;
   /** The host's session for this request, or `null` (no valid session). Never derived from the request body. */
   readonly resolvePrincipal: (headers: RequestHeaders) => Promise<AuthoringPrincipal | null>;
   /** The built-in guides listed (read-only) for the admin list. Defaults to the host's three summaries. */
@@ -110,7 +118,8 @@ export async function submitGatewayWrite(principal: AuthoringPrincipal, action: 
 }
 
 export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRouteDeps): void {
-  const { store, resolvePrincipal, applications, catalog } = deps;
+  const { store, resolvePrincipal, applications } = deps;
+  const resolver = deps.resolver ?? createRegistryResolver({ catalog: deps.catalog, targets: deps.targets ?? emptyTargetStore, ...(deps.registryData === undefined ? {} : { referenceOverride: deps.registryData }) });
   const builtIn = Object.freeze((deps.builtIn ?? DEMO_WALKTHROUGH_SUMMARIES).map((summary) => Object.freeze({ id: summary.id, title: summary.title, description: summary.description })));
   const newId = deps.newId ?? (() => generateWalkthroughId());
 
@@ -137,31 +146,69 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
   const appNotFound = (reply: FastifyReply) => send(reply, 404, failure("not_found", AUTHORING_MESSAGES.applicationNotFound, "APPLICATION_NOT_FOUND"));
   const appDisabled = (reply: FastifyReply) => send(reply, 409, failure("conflict", AUTHORING_MESSAGES.applicationDisabled, "APPLICATION_DISABLED"));
   const appMismatch = (reply: FastifyReply) => send(reply, 409, failure("conflict", AUTHORING_MESSAGES.applicationMismatch, "APPLICATION_MISMATCH"));
-  /** The registry data of an application (`null` = a guide written before Studio, which is the built-in reference one). `undefined`: the catalog has no such registry. */
-  const registryOf = (application: ApplicationRecord | null) => registryDataFor(catalog, application === null ? REFERENCE_REGISTRY_ID : application.registryId, deps.registryData);
+  /** The registry of an application (`null` = a guide written before Studio, which is the built-in reference one). `undefined`: no such registry. Tenant-scoped. */
+  const registryOf = (tenantId: string, application: ApplicationRecord | null) => resolver.resolve(tenantId, application);
 
   const isDefinition = (definition: unknown): definition is Record<string, unknown> =>
     definition !== null && typeof definition === "object" && !Array.isArray(definition);
   const tooLarge = (id: string, applicationId: string, definition: unknown): boolean => Buffer.byteLength(JSON.stringify({ action: SAVE_ACTION_ID, params: { walkthroughId: id, applicationId, definition } })) > MAX_PROPOSAL_BYTES;
+
+  interface PublishedGuide { readonly definition: WalkthroughDef; readonly source: "built-in" | "studio-managed"; readonly application: ApplicationRecord | null; readonly resolved: ResolvedRegistry }
+  /**
+   * The tenant's published guides, each re-validated against ITS application's CURRENT registry (a guide without an application is the built-in `reference` one; for a Studio-managed
+   * application that is the active targets only, so a disabled target drops the guide). One that no longer validates, or whose application or registry is unknown, is left out (the others
+   * still load). A disabled application does not hide its published guides. Never a draft.
+   */
+  async function publishedGuides(tenantId: string): Promise<readonly PublishedGuide[]> {
+    const rows = await store.listPublished(tenantId);
+    const byId = new Map((await applications.list(tenantId)).map((application) => [application.id, application] as const));
+    const resolved = new Map<string, Promise<ResolvedRegistry | undefined>>();
+    const guides: PublishedGuide[] = [];
+    for (const row of rows) {
+      const application = row.applicationId === null ? null : byId.get(row.applicationId);
+      if (application === undefined) continue;
+      const key = application === null ? "" : application.id;
+      if (!resolved.has(key)) resolved.set(key, registryOf(tenantId, application));
+      const registry = await resolved.get(key);
+      if (registry === undefined) continue;
+      const checked = validateAuthoredDefinition(row.id, row.definition, registry.registry);
+      if (checked.ok) guides.push({ definition: checked.definition, source: registry.source, application, resolved: registry });
+    }
+    return guides;
+  }
 
   // --- reads --------------------------------------------------------------------------------------------------------------------------------------
   app.get("/api/walkthroughs/published", async (request, reply) => {
     const principal = await gate(request, reply, false);
     if (principal === null) return;
     try {
-      const rows = await store.listPublished(principal.tenantId);
-      const byId = new Map((await applications.list(principal.tenantId)).map((application) => [application.id, application] as const));
-      // Every stored definition is re-validated against ITS application's CURRENT registry data (a guide without an application is the built-in `reference` one); one that is no
-      // longer valid, or whose application is unknown, is left out (the others still load). A disabled application does not hide its published guides.
-      const walkthroughs = rows.map((row) => {
-        const application = row.applicationId === null ? null : byId.get(row.applicationId);
-        const registryData = application === undefined ? undefined : registryOf(application);
-        return registryData === undefined ? { ok: false as const } : validateAuthoredDefinition(row.id, row.definition, registryData);
-      }).flatMap((result) => (result.ok ? [result.definition] : [])).slice(0, MAX_PUBLISHED_PER_TENANT);
-      return send(reply, 200, { walkthroughs });
+      const published = await publishedGuides(principal.tenantId);
+      const walkthroughs = published.filter((guide) => guide.source === "built-in").map((guide) => guide.definition).slice(0, MAX_PUBLISHED_PER_TENANT);
+      const external = published.filter((guide) => guide.source === "studio-managed").map((guide) => ({
+        id: guide.definition.id, title: guide.definition.title, description: guide.definition.description,
+        application: { id: guide.application!.id, name: guide.application!.name, origin: guide.application!.origin },
+      })).slice(0, MAX_PUBLISHED_PER_TENANT);
+      return send(reply, 200, { walkthroughs, external });
     } catch { return unavailable(reply); }
   });
 
+  app.get("/api/walkthroughs/published/:id/bundle", async (request, reply) => {
+    const principal = await gate(request, reply, false);
+    if (principal === null) return;
+    const id = idParam(request);
+    if (id === null) return notFound(reply);
+    try {
+      const guide = (await publishedGuides(principal.tenantId)).find((candidate) => candidate.definition.id === id);
+      if (guide === undefined || guide.source !== "studio-managed" || guide.application === null) return notFound(reply);
+      const { registry, pages } = guide.resolved;
+      // The bundle the application's embed runs (D11): the definition, the application and the CURRENT active public registry. Nothing else of the host leaves.
+      return send(reply, 200, {
+        definition: guide.definition,
+        application: { id: guide.application.id, name: guide.application.name, origin: guide.application.origin },
+        registry: { routes: registry.routes, elements: registry.elements.filter((element) => element.privacy === "public"), postconditionNames: registry.postconditionNames, pages },
+      });
+    } catch { return unavailable(reply); }
+  });
   app.get("/api/admin/walkthroughs", async (request, reply) => {
     const principal = await gate(request, reply, true);
     if (principal === null) return;
@@ -217,9 +264,10 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
     try { application = await applications.get(principal.tenantId, applicationId); } catch { unavailable(reply); return null; }
     if (application === null) { appNotFound(reply); return null; }
     if (!application.enabled) { appDisabled(reply); return null; }
-    const registryData = registryOf(application);
-    if (registryData === undefined) { unavailable(reply); return null; }
-    return { application, registryData };
+    let resolved: ResolvedRegistry | undefined;
+    try { resolved = await registryOf(principal.tenantId, application); } catch { unavailable(reply); return null; }
+    if (resolved === undefined) { unavailable(reply); return null; }
+    return { application, registryData: resolved.registry };
   };
 
   app.post("/api/admin/walkthroughs", async (request, reply) => {
@@ -300,8 +348,10 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
         if (application === null) return appNotFound(reply);
         if (!application.enabled) return appDisabled(reply);
       }
-      const registryData = registryOf(application);
-      if (registryData === undefined) return unavailable(reply);
+      let resolved: ResolvedRegistry | undefined;
+      try { resolved = await registryOf(principal.tenantId, application); } catch { return unavailable(reply); }
+      if (resolved === undefined) return unavailable(reply);
+      const registryData = resolved.registry;
       // Pre-validate the STORED definition against the application's CURRENT registry data: the clear 422 for a stale or invalid draft (the executor re-checks inside the transaction).
       const checked = validateAuthoredDefinition(id, existing.definition, registryData);
       if (!checked.ok) return invalid(reply, checked.issues);

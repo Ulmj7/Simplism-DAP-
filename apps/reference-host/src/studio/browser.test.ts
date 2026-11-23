@@ -45,6 +45,7 @@ function fakeRuntime(snapshot: BrowserSnapshot = profileSnapshot, ids: Record<st
     snapshot: vi.fn(async () => runtime.snapshotValue),
     inspectSemanticId: vi.fn(async (ref: ElementRef) => runtime.ids[ref] ?? null),
     inspectSemanticIds: vi.fn(async (from: BrowserSnapshot) => new Map(from.elements.map((element) => [element.ref, runtime.ids[element.ref] ?? null] as const))),
+    inspectElementFacts: vi.fn(async (refs: readonly ElementRef[]) => new Map(refs.map((ref) => [ref, { tagName: null, inputType: null, autocomplete: null, dataAiPrivate: false, dataAiIgnore: false, dataAiRedact: false }] as const))),
     highlight: vi.fn(async () => {}), clearHighlight: vi.fn(async () => {}), getUrl: vi.fn(async () => runtime.snapshotValue.url), waitForChange: vi.fn(async () => ({ status: "timeout" as const })),
     close: vi.fn(async () => {}),
   };
@@ -115,12 +116,12 @@ const expectNoLeak = (raw: string) => {
 describe("Studio browser boundary", () => {
   it("captures a public registry ID using a current snapshot and closes the browser", async () => {
     const { runtime, command, configs } = await harness();
-    expect((await command({ action: "connect", applicationId: APP_A })).body).toEqual({ sessionId: "session", applicationId: APP_A, application: "Reference application", origin: "http://127.0.0.1:5173" });
+    expect((await command({ action: "connect", applicationId: APP_A })).body).toEqual({ sessionId: "session", applicationId: APP_A, application: "Reference application", origin: "http://127.0.0.1:5173", registrySource: "built-in" });
     expect(runtime.start).toHaveBeenCalledWith({ url: "http://127.0.0.1:5173/", headed: true });
     expect(configs).toHaveLength(1);
     const refreshed = (await command(refresh())).body;
     expect(refreshed).toEqual({
-      url: "http://127.0.0.1:5173/#/profile", route: "profile",
+      url: "http://127.0.0.1:5173/#/profile", route: "profile", page: "/#/profile", hidden: 0, truncated: false,
       elements: [
         { ref: "@e21", name: "Display name", role: "textbox", route: "profile", status: "trusted", targetId: "profile.nameInput", operations: ["highlight", "input", "focus"], privacy: "public" },
         { ref: "@e22", name: "Save", role: "button", route: "profile", status: "trusted", targetId: "profile.saveButton", operations: ["highlight", "click"], privacy: "public" },
@@ -360,7 +361,7 @@ describe("the policy is derived per application", () => {
     const { command, configs, runtimes } = await harness({ ids: ["session-a", "session-b"] });
     expect((await command({ action: "connect", applicationId: APP_A })).body).toMatchObject({ sessionId: "session-a", origin: "http://127.0.0.1:5173" });
     await command(disconnect(APP_A, "session-a"));
-    expect((await command({ action: "connect", applicationId: APP_B })).body).toEqual({ sessionId: "session-b", applicationId: APP_B, application: "Second application", origin: "http://127.0.0.1:5185" });
+    expect((await command({ action: "connect", applicationId: APP_B })).body).toEqual({ sessionId: "session-b", applicationId: APP_B, application: "Second application", origin: "http://127.0.0.1:5185", registrySource: "built-in" });
     expect(configs).toHaveLength(2);
     expect(configs[0]).toEqual({
       origins: ["http://127.0.0.1:5173"], routes: ["/", "/#/dashboard", "/#/profile", "/#/settings"],
@@ -392,7 +393,7 @@ describe("the policy is derived per application", () => {
     expect((await command(refresh(APP_A, "session-a"))).body).toEqual({ error: "SESSION_CLOSED" });
     expect((await command(target("highlight", "@e21", APP_B, "session-b"))).body, "@e21 was A's candidate; B has not refreshed").toEqual({ error: "REF_NOT_FOUND" });
     const b = (await command(refresh(APP_B, "session-b"))).body;
-    expect(b).toEqual({ url: "http://127.0.0.1:5185/#/orders", route: "orders", elements: [{ ref: "@e5", name: "Export", role: "button", route: "orders", status: "trusted", targetId: "orders.exportButton", operations: ["highlight", "click"], privacy: "public" }] });
+    expect(b).toEqual({ url: "http://127.0.0.1:5185/#/orders", route: "orders", page: "/#/orders", hidden: 0, truncated: false, elements: [{ ref: "@e5", name: "Export", role: "button", route: "orders", status: "trusted", targetId: "orders.exportButton", operations: ["highlight", "click"], privacy: "public" }] });
     expect((await command(target("highlight", "@e21", APP_B, "session-b"))).body, "A's ref is still not one of B's candidates").toEqual({ error: "REF_NOT_FOUND" });
     expect(runtimes[0]!.close).toHaveBeenCalledOnce();
     expect(runtimes[1]!.highlight).not.toHaveBeenCalled();
@@ -469,7 +470,7 @@ describe("refresh: the inspector", () => {
   });
   it("a page that is not one of the application's pages has route null and EVERY candidate is unregistered, even with a registered id", async () => {
     const res = await classes({ url: "http://127.0.0.1:5173/#/not-a-page", elements: [{ ref: "@e1", name: "Display name", role: "textbox" }] }, { "@e1": "profile.nameInput" });
-    expect(res.body).toEqual({ url: "http://127.0.0.1:5173/#/not-a-page", route: null, elements: [{ ref: "@e1", name: "Display name", role: "textbox", route: null, status: "unregistered" }] });
+    expect(res.body).toEqual({ url: "http://127.0.0.1:5173/#/not-a-page", route: null, page: "/#/not-a-page", hidden: 0, truncated: false, elements: [{ ref: "@e1", name: "Display name", role: "textbox", route: null, status: "unregistered" }] });
   });
   it("a URL with a query string is not a page either (route null)", async () => {
     const res = await classes({ url: "http://127.0.0.1:5173/?x=1#/profile", elements: [{ ref: "@e1", name: "Display name", role: "textbox" }] }, { "@e1": "profile.nameInput" });
@@ -507,7 +508,7 @@ describe("refresh: the inspector", () => {
     const h = await harness({ first: fakeRuntime({ ...profileSnapshot, observation: "profile.saved" } as BrowserSnapshot) });
     await h.connect();
     const res = await h.command(refresh());
-    expect(Object.keys(res.body).sort()).toEqual(["elements", "route", "url"]);
+    expect(Object.keys(res.body).sort()).toEqual(["elements", "hidden", "page", "route", "truncated", "url"]);
     expect(res.raw).not.toContain("observation");
     expect(res.raw).not.toContain("allowedOrigins");
     expect(res.raw).not.toContain("labels");

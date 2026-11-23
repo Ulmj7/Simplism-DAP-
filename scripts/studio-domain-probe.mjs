@@ -12,6 +12,9 @@
 //   (iv)  configured for [A, B]: B is observable, so the policy is configuration, not code
 //   (v)   CLI level: an unlisted host is refused, and the CLI allow-list is host-level only
 //   (vi)  every browser session this probe opened is closed and every process it started is gone
+//   (vii) Studio V1B managed modes (`labels: "all"`, `routes: "any"`): the controls of the page are exposed with bounded names only, element facts are
+//         read, any hash-routed page is accepted, and the origin policy holds exactly as before (a query, another port and another host stay refused)
+// Ports: ephemeral by default; set DAP_PROBE_PORT_A and DAP_PROBE_PORT_B to pin the two fixture applications (the V1B reviewer uses 5186 and 5187).
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -43,7 +46,8 @@ const labels = fixtureB.browser.labels.map(label => ({ ...label }));
 const blockedMessage = "The browser URL is outside the approved app origin.";
 const results = [];
 const latency = {};
-const expectedChecks = 7;
+const expectedChecks = 8;
+const port = name => { const value = Number(process.env[`DAP_PROBE_PORT_${name}`] ?? 0); assert.ok(Number.isInteger(value) && value >= 0 && value <= 65_535, `DAP_PROBE_PORT_${name}`); return value; };
 const say = message => console.log(message);
 const record = (id, ok, detail) => { results.push({ id, ok, detail }); say(`${ok ? "PASS" : "FAIL"} ${id} ${detail}`); };
 const ms = start => Math.round(performance.now() - start);
@@ -105,8 +109,8 @@ const started = [];      // { session, pids:Set }
 const adapters = [];
 const servers = [];
 
-async function trackedAdapter(origins) {
-  const adapter = createAgentBrowserAdapter({ labels, routes, origins });
+async function trackedAdapter(origins, policy = { labels, routes }) {
+  const adapter = createAgentBrowserAdapter({ ...policy, origins });
   const handle = { adapter, session: undefined, pids: new Set() };
   adapters.push(handle);
   return handle;
@@ -140,9 +144,9 @@ const fixtureTitle = "Fixture application";
 let failedHard;
 try {
   say(`agent-browser ${(await run(cli, ["--version"], { env })).stdout.trim()} | headless | redirect delay ${redirectDelayMs} ms`);
-  const b = await startFixtureApp({ name: "B", redirectDelayMs });
+  const b = await startFixtureApp({ name: "B", redirectDelayMs, port: port("B") });
   servers.push(b);
-  const a = await startFixtureApp({ name: "A", leaveOrigin: b.origin, redirectDelayMs });
+  const a = await startFixtureApp({ name: "A", leaveOrigin: b.origin, redirectDelayMs, port: port("A") });
   servers.push(a);
   const alias = new URL(a.origin);
   alias.hostname = "localhost";
@@ -265,6 +269,44 @@ try {
     const ok = moved.snapshot?.url === `${b.origin}/#/home` && [...ids.values()].join() === "nav.orders";
     record("(iv) configured [A, B] observes B", ok,
       ok ? `snapshot at ${moved.snapshot.url}, batch ${[...ids.values()]}` : `never observed B; last ${moved.last?.code ?? "none"}; saw ${moved.seen.length} snapshot(s)`);
+    await handle.adapter.close();
+  }
+
+
+  // (vii) Studio V1B managed modes -------------------------------------------------------------------------------
+  {
+    const handle = await trackedAdapter([a.origin], { labels: "all", routes: "any" });
+    await begin(handle, a.origin + "/");
+    const home = await handle.adapter.snapshot();
+    const homeNames = home.elements.map(element => `${element.role}:${element.name}`);
+    const homeIds = await handle.adapter.inspectSemanticIds(home);
+    // The same page as (i), but nothing is pre-approved: the decoy "Admin" link is exposed by name too (the host forwards only marked controls).
+    assert.equal((await cliJson(handle.session, ["click", '[data-ai-id="nav.orders"]'])).success, true);
+    await sleep(300);
+    const orders = await handle.adapter.snapshot();
+    const refs = orders.elements.map(element => element.ref);
+    let t = performance.now();
+    const found = await handle.adapter.inspectElementFacts(refs, orders);
+    latency.factsMs = ms(t);
+    latency.factsRefs = refs.length;
+    const byName = Object.fromEntries(orders.elements.map(element => [element.name, found.get(element.ref)]));
+    const factsOk = byName["Order note"]?.inputType === "text" && byName["Order note"]?.autocomplete === null && byName["Order note"]?.dataAiPrivate === false
+      && byName["Submit order"]?.inputType === "button" && byName["Order note"]?.tagName === null;
+    // Any hash-routed page is accepted; a query is not; another port and another host are not (the origin policy is unchanged).
+    await cliJson(handle.session, ["open", `${a.origin}/#/anywhere-at-all`]);
+    await sleep(300);
+    const anywhere = await handle.adapter.snapshot().then(snapshot => snapshot.url, error => error.code);
+    await cliJson(handle.session, ["open", `${a.origin}/?token=canary#/orders`]);
+    await sleep(300);
+    const withQuery = await handle.adapter.snapshot().then(() => "accepted", error => error.code);
+    await cliJson(handle.session, ["open", `${a.origin}/#/leave-origin`]);
+    const { seen, last } = await watch(handle.adapter, redirectDelayMs + 6000);
+    const otherPort = refusal(last) && seen.every(url => new URL(url).origin === a.origin);
+    const ok = JSON.stringify(homeNames) === JSON.stringify(["link:Orders", "link:Admin"]) && homeIds.get(home.elements[0].ref) === "nav.orders" && homeIds.get(home.elements[1].ref) === null
+      && factsOk && anywhere === `${a.origin}/#/anywhere-at-all` && withQuery === "DOMAIN_BLOCKED" && otherPort;
+    record("(vii) managed modes (all + any)", ok,
+      `home ${JSON.stringify(homeNames)}; facts for ${refs.length} refs in ${latency.factsMs} ms (Order note: ${JSON.stringify(byName["Order note"])}); /#/anywhere-at-all: ${anywhere}; query: ${withQuery}; `
+      + `redirect to B's origin refused: ${otherPort}`);
     await handle.adapter.close();
   }
 

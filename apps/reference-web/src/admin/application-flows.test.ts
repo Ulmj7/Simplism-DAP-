@@ -11,12 +11,12 @@ const ORD = "app-00000000000b";
 const stamp = "2026-11-23T10:00:00.000Z";
 const apps = [REF, ORD].map((id, index) => ({
   id, name: index === 0 ? "Reference application" : "Orders application", origin: `http://127.0.0.1:${5173 + index}`, allowedOrigins: [`http://127.0.0.1:${5173 + index}`],
-  environment: "development", registryId: index === 0 ? "reference" : "fixture-b", enabled: true, updatedAt: stamp,
+  environment: "development", registryId: index === 0 ? "reference" : "fixture-b", source: "built-in", enabled: true, updatedAt: stamp,
 }));
 const element = (id: string, route: string, role: string, label: string) => ({ id, route, role, label, description: `${label} control`, operations: ["highlight", "click"], privacy: "public" });
 const registries: Record<string, object> = {
-  [REF]: { routes: ["dashboard"], elements: [element("nav.profile", "dashboard", "link", "Profile link")], postconditionNames: ["route.profile"], previewable: true },
-  [ORD]: { routes: ["home", "orders"], elements: [element("orders.submit", "orders", "button", "Submit order")], postconditionNames: ["order.submitted"], previewable: false },
+  [REF]: { routes: ["dashboard"], elements: [element("nav.profile", "dashboard", "link", "Profile link")], postconditionNames: ["route.profile"], previewable: true, source: "built-in", pages: {}, previewMode: "in-app" },
+  [ORD]: { routes: ["home", "orders"], elements: [element("orders.submit", "orders", "button", "Submit order")], postconditionNames: ["order.submitted"], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" },
 };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
@@ -30,7 +30,7 @@ function fakeHost() {
     if (path === "/api/admin/walkthroughs") return json({ builtIn: [], authored: [] });
     if (path === "/api/admin/analytics") return json({ totals: { started: 0, completed: 0, cancelled: 0, completionRate: null }, guides: [] });
     if (path === "/api/admin/applications" && init.method === "POST") return json({ kind: "invalid", message: "Invalid", issues: ["origin: must use http or https"] }, 422);
-    if (path === "/api/admin/applications") return json({ applications: apps, registries: [{ id: "reference", label: "Reference" }, { id: "fixture-b", label: "B" }] });
+    if (path === "/api/admin/applications") return json({ applications: apps, registries: [{ id: "reference", label: "Reference", source: "built-in" }, { id: "fixture-b", label: "B", source: "built-in" }] });
     const registry = /^\/api\/admin\/applications\/(app-[a-f0-9]{12})\/registry$/u.exec(path);
     if (registry) return failRegistry.has(registry[1]!) ? json({ message: "down" }, 503) : json(registries[registry[1]!]);
     return json({}, 404);
@@ -134,7 +134,7 @@ it("the 422 issues of the Application Manager are announced to assistive technol
 
 it("the strict registry parser still refuses a reply whose postcondition names are not dotted (the host catalog refuses such an entry at composition time, so it can never be served)", async () => {
   const { parseApplicationRegistry } = await import("./applications.js");
-  const reply = (name: string) => ({ routes: ["home"], elements: [element("nav.home", "home", "link", "Home link")], postconditionNames: [name], previewable: false });
+  const reply = (name: string) => ({ routes: ["home"], elements: [element("nav.home", "home", "link", "Home link")], postconditionNames: [name], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" });
   expect(parseApplicationRegistry(reply("saved"))).toBeNull();
   expect(parseApplicationRegistry(reply(`orders.${"a".repeat(74)}`))).toBeNull();
   expect(parseApplicationRegistry(reply("order.saved"))).not.toBeNull();

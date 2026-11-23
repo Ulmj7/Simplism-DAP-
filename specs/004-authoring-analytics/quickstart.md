@@ -23,7 +23,7 @@ In the terminal with the database URLs, configure the reference host. The fixtur
 ```bash
 export NODE_ENV=development DAP_ALLOW_DEV_AUTH=1 DAP_GUIDANCE_MODEL=fake
 export DAP_HTTP_PORT=8791
-export DAP_ENABLED_ACTIONS=startWalkthrough,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled
+export DAP_ENABLED_ACTIONS=startWalkthrough,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus
 export DAP_DEMO_SESSION_TOKEN=local-user-token DAP_DEMO_MAINTAINER_TOKEN=local-maintainer-token
 export DEV_SESSIONS="$(node -e '
 const e = process.env;
@@ -39,7 +39,7 @@ console.log(JSON.stringify([
 npm run dev:host
 ```
 
-Enable `saveWalkthroughDraft` and `setWalkthroughStatus` for draft and publication writes, and `saveStudioApplication` and `setStudioApplicationEnabled` for enrollment and application status. Studio V1A requires an enabled application before authoring. Use the same origin as Vite when enrolling the reference app in the demo tenant. You can enroll from Applications after opening the web app, or send this request while the host is running.
+Enable `saveWalkthroughDraft` and `setWalkthroughStatus` for draft and publication writes, and `saveStudioApplication` and `setStudioApplicationEnabled` for enrollment and application status. Studio requires an enabled application before authoring. Use the same origin as Vite when enrolling the reference app in the demo tenant. You can enroll from Applications after opening the web app, or send this request while the host is running.
 
 ```bash
 curl --fail-with-body --request POST http://127.0.0.1:8791/api/admin/applications \
@@ -47,7 +47,7 @@ curl --fail-with-body --request POST http://127.0.0.1:8791/api/admin/application
   --data '{"name":"Reference application","origin":"http://127.0.0.1:5173","allowedOrigins":["http://127.0.0.1:5173"],"environment":"development","registryId":"reference"}'
 ```
 
-Use the returned application ID when authoring. The draft API takes `{applicationId, definition}`. Legacy guides use the reference registry. [Studio V1A application and browser setup](../../docs/studio-v1.md)
+Use the returned application ID when authoring. The draft API takes `{applicationId, definition}`. Legacy guides use the reference registry. [Studio V1B application and browser setup](../../docs/studio-v1.md)
 
 In another terminal, use the same port for Vite's same-origin `/api` proxy. Both processes default to host port 8787 when `DAP_HTTP_PORT` is unset.
 
@@ -56,6 +56,16 @@ DAP_HTTP_PORT=8791 npm run dev:web
 ```
 
 Open `http://127.0.0.1:5173`. Restart the host with refreshed fixture sessions if the demo role session expires.
+
+## Onboard a managed application
+
+Build the embed with `npm run build:embed` and serve the resulting `dap-embed.js` on the enrolled application. Set the attribute to the web origin serving Studio.
+
+```html
+<script src="/dap-embed.js" data-dap-origin="http://127.0.0.1:5173"></script>
+```
+
+Enroll the application with **Studio-managed** as its registry. Give public controls stable markers such as `data-ai-id="orders.submit"` and use hash routes. Choose **Use for authoring**, connect Chrome, inspect a page and register eligible targets. Enable `registerStudioTarget` for registration and `setStudioTargetStatus` for the manager's disable and enable actions. Select registry IDs in the editor and preview in the enrolled application window. Published managed guides launch from the external guides list. [Managed inspector and embed setup](../../docs/studio-v1.md#preview-and-run-a-managed-guide)
 
 ## A — Create a walkthrough
 

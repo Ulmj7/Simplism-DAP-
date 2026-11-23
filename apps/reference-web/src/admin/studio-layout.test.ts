@@ -37,3 +37,10 @@ it("uses only the existing tokens: no raw colours, motion or fixed pixel widths 
   expect(studio).not.toMatch(/transition:|animation:|gradient\(/u);
   expect(studio.replace(/@media \(max-width: 899px\)/u, "")).not.toMatch(/\bwidth:\s*\d+px|min-width:\s*\d+px/u);
 });
+
+it("lets registration fields and read-only live evidence fit the narrow workspace grid", () => {
+  expect(rule(".studio-register")).toContain("min-width: 0");
+  expect(rule('.studio-register input:not([type="checkbox"]), .studio-register textarea')).toContain("width: 100%");
+  expect(rule(".studio-facts")).toContain("minmax(0, 1fr) minmax(0, 2fr)");
+  expect(css).toMatch(/:focus-visible[^}]*outline/u);
+});

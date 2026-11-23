@@ -287,7 +287,7 @@ describe("create application -> create workflow -> save -> publish -> published 
     expect(edited.status).toBe(200);
     expect(edited.body).toMatchObject({ applicationId: appId, definition: { title: "Edited title" } });
 
-    expect((await t.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [] });
+    expect((await t.call("GET", "/api/walkthroughs/published", "user")).body).toEqual({ walkthroughs: [], external: [] });
     const published = await t.call("POST", `/api/admin/walkthroughs/${draft.id}/status`, "maintainer", { status: "published" });
     expect(published.status).toBe(200);
     expect(published.body).toMatchObject({ status: "published", applicationId: appId });
@@ -295,7 +295,7 @@ describe("create application -> create workflow -> save -> publish -> published 
     expect((served.body.walkthroughs as { id: string; title: string }[]).map((g) => [g.id, g.title])).toEqual([[draft.id, "Edited title"]]);
     expect((await t.call("GET", `/api/admin/walkthroughs/${draft.id}`, "maintainer")).body).toMatchObject({ applicationId: appId });
     expect(((await t.call("GET", "/api/admin/walkthroughs", "maintainer")).body.authored as { applicationId: string }[])[0]?.applicationId).toBe(appId);
-    expect((await t.call("GET", "/api/admin/applications", "maintainer")).body).toMatchObject({ applications: [{ id: appId }], registries: [{ id: "reference" }, { id: "fixture" }] });
+    expect((await t.call("GET", "/api/admin/applications", "maintainer")).body).toMatchObject({ applications: [{ id: appId }], registries: [{ id: "reference" }, { id: "fixture" }, { id: "studio-managed" }] });
   });
   it("the audit trail shows one MEDIUM allowed execution per write, application writes carry only /applicationId, workflow writes only /walkthroughId", async () => {
     const t = await start();

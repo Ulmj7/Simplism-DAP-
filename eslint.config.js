@@ -106,7 +106,7 @@ const MODULE_LOADERS = [
 ];
 
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**", "vendor/agent-browser/**", ".specify/**", ".claude/**", ".agents/**", "specs/**"] },
+  { ignores: ["**/dist/**", "apps/reference-web/dist-embed/**", "**/node_modules/**", "**/coverage/**", "vendor/agent-browser/**", ".specify/**", ".claude/**", ".agents/**", "specs/**"] },
   ...tseslint.configs.recommended,
   {
     files: ["**/*.{ts,tsx,js,mjs,cjs}"],

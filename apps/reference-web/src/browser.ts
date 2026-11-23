@@ -1,5 +1,7 @@
 import { createWalkthroughCatalog } from "@dap/walkthrough";
 import type { WalkthroughDef } from "@dap/walkthrough";
+import { createExternalGuides } from "./external-guides.js";
+import type { ExternalGuide } from "./admin/client.js";
 import { createAdminClient } from "./admin/client.js";
 import { PREVIEW_ID } from "./admin/draft.js";
 import { readRole, setEditSession, takeRequestedEdit, writeRole } from "./admin/session.js";
@@ -21,6 +23,7 @@ export async function boot(root: HTMLElement, options: { fetch?: FetchLike; trus
   const usage = createUsageClient(fetcher);
   let role = options.demoRoleEnabled ? readRole(win) : undefined;
   let walkthroughs: readonly WalkthroughDef[] = WALKTHROUGHS;
+  let external: readonly ExternalGuide[] = [];
   let app: MountedApp | undefined;
   let revision = 0;
   let previewing = false;
@@ -48,10 +51,12 @@ export async function boot(root: HTMLElement, options: { fetch?: FetchLike; trus
 
   function mountNormal(state?: AppState) {
     app?.destroy();
+    const client = createAdminClient({ fetch: fetcher, role });
     app = mountApp(root, {
       ...mountOptions, walkthroughs, usage,
+      ...(external.length > 0 ? { externalGuides: () => createExternalGuides(win, external, client) } : {}),
       admin: {
-        client: createAdminClient({ fetch: fetcher, role }), role, preview,
+        client, role, preview,
         changeRole(next) {
           if (role === undefined || next === role) return;
           role = next; writeRole(win, next); setEditSession(); takeRequestedEdit();
@@ -70,11 +75,11 @@ export async function boot(root: HTMLElement, options: { fetch?: FetchLike; trus
   async function remount(focus?: string) {
     if (disposed) return;
     const attempt = ++revision;
-    const response = await createAdminClient({ fetch: fetcher, role }).published();
+    const response = await createAdminClient({ fetch: fetcher, role }).publishedCatalog();
     if (attempt !== revision) return;
     const accepted: WalkthroughDef[] = [...WALKTHROUGHS];
     const seen = new Set(accepted.map(def => def.id));
-    if (response.kind === "ok") for (const def of response.value) {
+    if (response.kind === "ok") for (const def of response.value.walkthroughs) {
       if (seen.has(def.id)) continue;
       try {
         const validated = createWalkthroughCatalog(registry, POSTCONDITION_NAMES, [def]).get(def.id);
@@ -82,6 +87,7 @@ export async function boot(root: HTMLElement, options: { fetch?: FetchLike; trus
       } catch { /* One invalid definition does not hide the others. */ }
     }
     walkthroughs = accepted;
+    external = response.kind === "ok" ? response.value.external : [];
     if (previewing) return;
     const replace = () => {
       if (attempt !== revision) return;

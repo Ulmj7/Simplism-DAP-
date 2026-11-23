@@ -13,7 +13,7 @@
  */
 import { TRUSTED_REGISTRY } from "../authoring/trusted-registry.js";
 import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
-import { REGISTRY_ID } from "./applications.js";
+import { REGISTRY_ID, STUDIO_MANAGED_REGISTRY_ID } from "./applications.js";
 
 /** The built-in registry id every legacy (application-less) walkthrough resolves to. */
 export const REFERENCE_REGISTRY_ID = "reference";
@@ -97,6 +97,7 @@ export class RegistryCatalogError extends Error {
 function checkEntry(entry: RegistryEntry): void {
   const fail = (why: string): never => { throw new RegistryCatalogError(`registry entry refused: ${why}`); };
   if (typeof entry.id !== "string" || !REGISTRY_ID.test(entry.id)) fail("id must be lower-case letters, digits and hyphens");
+  if (entry.id === STUDIO_MANAGED_REGISTRY_ID) fail("the id studio-managed is reserved for Studio-managed registries");
   if (typeof entry.label !== "string" || entry.label.length < 1 || entry.label.length > MAX_REGISTRY_LABEL_CHARS) fail("label must be 1 to 60 characters");
   if (!Array.isArray(entry.registry?.routes) || !Array.isArray(entry.registry?.elements) || !Array.isArray(entry.registry?.postconditionNames)) fail("registry data is incomplete");
   if (!Array.isArray(entry.browser?.labels) || entry.browser.labels.length > MAX_BROWSER_LABELS) fail("browser labels must be a bounded list");

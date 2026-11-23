@@ -1,23 +1,31 @@
+import { parseBundle } from "../embed/protocol.js";
+import type { ManagedBundle } from "../embed/protocol.js";
 import { MAX_DESCRIPTION as MAX_TEXT, MAX_LABEL as MAX_TITLE } from "@dap/walkthrough";
 import type { WalkthroughDef } from "@dap/walkthrough";
 import { readReply } from "../help/client.js";
 import type { FetchLike } from "../help/client.js";
 import { parseApplication, parseApplicationList, parseApplicationRegistry } from "./applications.js";
 import type { ApplicationInput, ApplicationList, ApplicationRegistry, ApplicationView } from "./applications.js";
+import { parseTargetList, parseTargetView } from "./targets.js";
+import type { TargetList, TargetView } from "./targets.js";
+import { LIMITS, applicationIdOf, normalizedOrigin, targetIdOf } from "./wire.js";
 
 export type DemoRole = "user" | "maintainer";
 export type GuideStatus = "draft" | "published";
 export interface GuideSummary { id: string; title: string; description: string }
 export interface AuthoredSummary extends GuideSummary { status: GuideStatus; stepCount: number; updatedAt: string; applicationId: string | null }
 export interface GuideList { authored: readonly AuthoredSummary[]; builtIn: readonly GuideSummary[] }
-import { APPLICATION_ID, parseStudioReply, studioPath } from "./studio-client.js";
+import { parseStudioError, parseStudioReply, studioPath } from "./studio-client.js";
 import type { StudioCommand, StudioReply } from "./studio-client.js";
 
 /** `applicationId` is null only for a legacy draft written before applications existed; it is assigned on its first save. */
 export interface GuideRecord { id: string; status: GuideStatus; applicationId: string | null; definition: WalkthroughDef }
-export type ApplicationFailureCode = "APPLICATION_NOT_FOUND" | "APPLICATION_DISABLED" | "APPLICATION_MISMATCH";
-export type AdminResult<T> = { kind: "ok"; value: T } | { kind: "denied" | "failed" | "oversize" | "published" | "limit" } | { kind: "invalid"; issues: readonly string[] }
-  | { kind: "browser-error"; code: string } | { kind: "application"; code: ApplicationFailureCode };
+export type ApplicationFailureCode = "APPLICATION_NOT_FOUND" | "APPLICATION_DISABLED" | "APPLICATION_MISMATCH" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED";
+/** `browser-error` carries the host's closed `{error: CODE}`; only a 422 INVALID_TARGET adds `issues` (at most 20 fixed phrases of at most 200 characters). */
+export type AdminResult<T> = { kind: "ok"; value: T } | { kind: "denied" | "failed" | "oversize" | "published" | "limit" | "not-found" } | { kind: "invalid"; issues: readonly string[] }
+  | { kind: "browser-error"; code: string; issues?: readonly string[] } | { kind: "application"; code: ApplicationFailureCode };
+/** Metadata of a published guide of a Studio-managed application (its definition is delivered by the bundle route, a later step). */
+export interface ExternalGuide { id: string; title: string; description: string; application: { id: string; name: string; origin: string } }
 
 export interface UsageCounts {
   started: number;
@@ -33,6 +41,7 @@ export interface UsageSummary {
 export interface AdminClient {
   studio?(command: StudioCommand): Promise<AdminResult<StudioReply>>;
   analytics(): Promise<AdminResult<UsageSummary>>;
+  publishedCatalog(): Promise<AdminResult<{ walkthroughs: readonly WalkthroughDef[]; external: readonly ExternalGuide[] }>>;
   published(): Promise<AdminResult<readonly WalkthroughDef[]>>;
   list(): Promise<AdminResult<GuideList>>;
   get(id: string): Promise<AdminResult<GuideRecord>>;
@@ -45,6 +54,10 @@ export interface AdminClient {
   updateApplication(id: string, input: ApplicationInput): Promise<AdminResult<ApplicationView>>;
   setApplicationEnabled(id: string, enabled: boolean): Promise<AdminResult<ApplicationView>>;
   applicationRegistry(id: string): Promise<AdminResult<ApplicationRegistry>>;
+  targets(applicationId: string): Promise<AdminResult<TargetList>>;
+  setTargetStatus(applicationId: string, targetId: string, status: "active" | "disabled"): Promise<AdminResult<TargetView>>;
+  publishedBundle(id: string): Promise<AdminResult<ManagedBundle>>;
+  externalGuides(): Promise<AdminResult<readonly ExternalGuide[]>>;
 }
 
 type Bag = Record<string, unknown>;
@@ -53,7 +66,7 @@ const only = (value: Bag, keys: readonly string[]) => Object.keys(value).every(k
 const text = (value: unknown, max: number): value is string => typeof value === "string" && value.length > 0 && value.length <= max;
 const status = (value: unknown): value is GuideStatus => value === "draft" || value === "published";
 const authoredId = (value: unknown): value is string => typeof value === "string" && /^wt-[a-f0-9]{12}$/.test(value);
-const applicationId = (value: unknown): value is string => typeof value === "string" && APPLICATION_ID.test(value);
+const applicationId = applicationIdOf;
 const summary = (value: Bag) => text(value.id, 64) && text(value.title, MAX_TITLE) && text(value.description, MAX_TEXT);
 const builtIn = (value: unknown): value is GuideSummary => object(value) && summary(value) && only(value, ["id", "title", "description"]);
 const authored = (value: unknown): value is AuthoredSummary => object(value) && summary(value) && authoredId(value.id)
@@ -82,8 +95,21 @@ const record = (value: unknown, id?: string, wanted?: GuideStatus): GuideRecord 
   && status(value.status) && (wanted === undefined || value.status === wanted) && (value.applicationId === null || applicationId(value.applicationId)) && definition(value.definition)
   && value.id === value.definition.id && (id === undefined || id === value.id)
   ? { id: value.definition.id, status: value.status, applicationId: value.applicationId, definition: value.definition } : null;
-const published = (value: unknown): readonly WalkthroughDef[] | null => object(value) && only(value, ["walkthroughs"])
-  && Array.isArray(value.walkthroughs) && value.walkthroughs.length <= 50 ? value.walkthroughs.filter(definition) : null;
+const externalGuide = (value: unknown): value is ExternalGuide => object(value) && only(value, ["id", "title", "description", "application"]) && Object.keys(value).length === 4
+  && authoredId(value.id) && text(value.title, MAX_TITLE) && text(value.description, MAX_TEXT) && object(value.application)
+  && only(value.application, ["id", "name", "origin"]) && Object.keys(value.application).length === 3
+  && applicationId(value.application.id) && text(value.application.name, LIMITS.applicationName) && normalizedOrigin(value.application.origin);
+// `external` (metadata of the guides of Studio-managed applications) is validated when present; the definitions of built-in guides are unchanged.
+const publishedBody = (value: unknown): Bag | null => object(value) && only(value, ["walkthroughs", "external"]) && Array.isArray(value.walkthroughs) && value.walkthroughs.length <= 50
+  && (value.external === undefined || (Array.isArray(value.external) && value.external.length <= 50 && value.external.every(externalGuide))) ? value : null;
+const published = (value: unknown): readonly WalkthroughDef[] | null => {
+  const body = publishedBody(value);
+  return body === null ? null : (body.walkthroughs as unknown[]).filter(definition);
+};
+const external = (value: unknown): readonly ExternalGuide[] | null => {
+  const body = publishedBody(value);
+  return body === null ? null : ((body.external ?? []) as ExternalGuide[]);
+};
 
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const countKeys = ["started", "completed", "cancelled", "completionRate"];
@@ -109,7 +135,7 @@ const ADMIN = "/api/admin/walkthroughs";
 const APPLICATIONS = "/api/admin/applications";
 const FAILED = { kind: "failed" } as const;
 // 404 and 409 can name an application problem in a closed `{kind, code, message?}` body. The message is never used.
-const APPLICATION_CODES: readonly ApplicationFailureCode[] = ["APPLICATION_NOT_FOUND", "APPLICATION_DISABLED", "APPLICATION_MISMATCH"];
+const APPLICATION_CODES: readonly ApplicationFailureCode[] = ["APPLICATION_NOT_FOUND", "APPLICATION_DISABLED", "APPLICATION_MISMATCH", "TARGET_NOT_FOUND", "REGISTRY_NOT_MANAGED"];
 function applicationFailure(raw: string | null): ApplicationFailureCode | null {
   try {
     const body: unknown = raw === null ? null : JSON.parse(raw);
@@ -133,13 +159,15 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
         ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
       });
       if (url === studioPath && !response.ok) {
-        const raw = await readReply(response, controller.signal, 512);
+        // Allow room for 20 bounded diagnostic strings including UTF-8 and JSON escaping.
+        const raw = await readReply(response, controller.signal, 24_576);
         const body: unknown = raw === null ? null : JSON.parse(raw);
-        return object(body) && typeof body.error === "string" && /^[A-Z_]{1,40}$/u.test(body.error)
-          ? { kind: "browser-error", code: body.error } : FAILED;
+        const error = parseStudioError(response.status, body);
+        return error === null ? FAILED : { kind: "browser-error", ...error };
       }
       if (method === "GET" && (response.status === 401 || response.status === 403)) return { kind: "denied" };
       if (method !== "GET" && response.status === 413) return { kind: "oversize" };
+      if (response.status === 404 && url.startsWith("/api/walkthroughs/published/")) return { kind: "not-found" };
       if (response.status === 404 || response.status === 409) {
         const code = applicationFailure(await readReply(response, controller.signal, 512));
         if (code !== null) return { kind: "application", code };
@@ -166,6 +194,10 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
   return {
     studio: command => request(studioPath, value => parseStudioReply(command.action, value), "POST", { ...command }),
     analytics: () => request("/api/admin/analytics", analytics),
+    publishedCatalog: () => request("/api/walkthroughs/published", value => {
+      const guides = published(value); const entries = external(value);
+      return guides && entries ? { walkthroughs: guides, external: entries } : null;
+    }),
     published: () => request("/api/walkthroughs/published", published),
     list: () => request(ADMIN, list),
     get: id => authoredId(id) ? request(`${ADMIN}/${id}`, value => record(value, id)) : Promise.resolve(FAILED),
@@ -184,5 +216,15 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
     setApplicationEnabled: (id, enabled) => applicationId(id)
       ? request(`${APPLICATIONS}/${id}/status`, value => { const parsed = parseApplication(value, id); return parsed?.enabled === enabled ? parsed : null; }, "POST", { enabled }) : Promise.resolve(FAILED),
     applicationRegistry: id => applicationId(id) ? request(`${APPLICATIONS}/${id}/registry`, parseApplicationRegistry) : Promise.resolve(FAILED),
+    targets: id => applicationId(id) ? request(`${APPLICATIONS}/${id}/targets`, parseTargetList) : Promise.resolve(FAILED),
+    // Exactly {status}: a target has no other editable field and no delete.
+    setTargetStatus: (id, targetId, wanted) => applicationId(id) && targetIdOf(targetId) && (wanted === "active" || wanted === "disabled")
+      ? request(`${APPLICATIONS}/${id}/targets/${targetId}/status`, value => { const parsed = parseTargetView(value, targetId); return parsed?.status === wanted ? parsed : null; }, "POST", { status: wanted })
+      : Promise.resolve(FAILED),
+    publishedBundle: id => authoredId(id) ? request(`/api/walkthroughs/published/${id}/bundle`, value => {
+      const parsed = parseBundle(value);
+      return parsed.ok && parsed.bundle.definition.id === id ? parsed.bundle : null;
+    }) : Promise.resolve(FAILED),
+    externalGuides: () => request("/api/walkthroughs/published", external),
   };
 }

@@ -18,9 +18,9 @@ const OFF = "app-00000000000c";
 const savedId = "wt-000000000001";
 const stamp = "2026-11-23T10:00:00.000Z";
 
-interface App { id: string; name: string; origin: string; allowedOrigins: string[]; environment: string; registryId: string; enabled: boolean; updatedAt: string }
+interface App { id: string; name: string; origin: string; allowedOrigins: string[]; environment: string; registryId: string; source: "built-in" | "studio-managed"; enabled: boolean; updatedAt: string }
 const app = (id: string, name: string, port: number, registryId: string, enabled = true): App => ({
-  id, name, origin: `http://127.0.0.1:${port}`, allowedOrigins: [`http://127.0.0.1:${port}`], environment: "development", registryId, enabled, updatedAt: stamp,
+  id, name, origin: `http://127.0.0.1:${port}`, allowedOrigins: [`http://127.0.0.1:${port}`], environment: "development", registryId, source: registryId === "studio-managed" ? "studio-managed" : "built-in", enabled, updatedAt: stamp,
 });
 const demo = createDemoRegistry();
 // A second application with its own, different targets: proves the editor follows the SELECTED application's registry.
@@ -31,9 +31,9 @@ const ordersElements: SemanticElementDef[] = [
 ];
 const ordersRegistry = createSemanticRegistry({ routes: ["home", "orders"], elements: ordersElements });
 const registryReply: Record<string, object> = {
-  [REF]: { routes: demo.routes, elements: demo.list().filter(item => item.privacy === "public"), postconditionNames: [...POSTCONDITION_NAMES], previewable: true },
-  [ORD]: { routes: ["home", "orders"], elements: ordersElements, postconditionNames: ["order.submitted", "route.orders"], previewable: false },
-  [OFF]: { routes: ["home", "orders"], elements: ordersElements, postconditionNames: ["order.submitted"], previewable: false },
+  [REF]: { routes: demo.routes, elements: demo.list().filter(item => item.privacy === "public"), postconditionNames: [...POSTCONDITION_NAMES], previewable: true, source: "built-in", pages: {}, previewMode: "in-app" },
+  [ORD]: { routes: ["home", "orders"], elements: ordersElements, postconditionNames: ["order.submitted", "route.orders"], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" },
+  [OFF]: { routes: ["home", "orders"], elements: ordersElements, postconditionNames: ["order.submitted"], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" },
 };
 const ordersDraft = (id: string): WalkthroughDef => draftToDefinition({
   title: "Orders tour", description: "Submit an order.", completion: "Order submitted.",
@@ -68,7 +68,7 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
     studio: (action?: string) => requests.filter(request => request.path === "/api/studio/browser" && (action === undefined || request.body?.action === action)).map(request => request.body!),
     session: () => session,
   };
-  const registries = [{ id: "reference", label: "Reference application" }, { id: "fixture-b", label: "Fixture application B" }];
+  const registries = [{ id: "reference", label: "Reference application", source: "built-in" }, { id: "fixture-b", label: "Fixture application B", source: "built-in" }];
   const fetch: FetchLike = async (path, init) => {
     const method = init.method!;
     const role = new Headers(init.headers).get("x-demo-role");
@@ -88,8 +88,8 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
           if (!target.enabled) return json({ error: "APPLICATION_DISABLED" }, 409);
           if (session) return json({ error: "BROWSER_BUSY" }, 409);
           session = { id: `session-${target.id.slice(-1)}`, applicationId: target.id };
-          return json({ sessionId: session.id, applicationId: target.id, application: target.name, origin: target.origin });
-        case "refresh": return json({ url: `${target?.origin}/#/page`, route: String((candidates[session?.applicationId ?? ""]?.[0] as { route?: string } | undefined)?.route ?? "home"), elements: candidates[session?.applicationId ?? ""] ?? [] });
+          return json({ sessionId: session.id, applicationId: target.id, application: target.name, origin: target.origin, registrySource: target.source });
+        case "refresh": return json({ url: `${target?.origin}/#/page`, route: String((candidates[session?.applicationId ?? ""]?.[0] as { route?: string } | undefined)?.route ?? "home"), page: "/#/page", hidden: 0, truncated: false, elements: candidates[session?.applicationId ?? ""] ?? [] });
         case "highlight": return json({ highlighted: true, ref: command.ref });
         case "capture": {
           const found = (candidates[session?.applicationId ?? ""] ?? []).find(item => (item as { ref: string }).ref === command.ref) as { targetId: string; route: string; name: string; role: string; operations: string[] };
@@ -103,7 +103,7 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
     if (path === "/api/admin/applications" && method === "POST") {
       const input = body as unknown as Omit<App, "id" | "enabled" | "updatedAt">;
       if (input.name === "") return json({ kind: "invalid", message: "Invalid application", issues: ["name: <b>must not be empty</b>", "origin: must be https"] }, 422);
-      const created = { ...input, id: `app-${String(apps.size + 100).padStart(12, "0")}`, enabled: true, updatedAt: stamp };
+      const created = { ...input, source: input.registryId === "studio-managed" ? "studio-managed" as const : "built-in" as const, id: `app-${String(apps.size + 100).padStart(12, "0")}`, enabled: true, updatedAt: stamp };
       apps.set(created.id, created); return json(created, 201);
     }
     const application = /^\/api\/admin\/applications\/(app-[a-f0-9]{12})(\/status|\/registry)?$/u.exec(path);
@@ -198,7 +198,7 @@ it("lists every application with its origins, environment, registry label and st
   const row = rowFor(root, "<img src=x onerror=bad()>");
   expect([...row.querySelectorAll("td")].map(cell => cell.textContent)).toEqual([
     "<img src=x onerror=bad()>", "http://127.0.0.1:5199", "http://127.0.0.1:5199\nhttp://localhost:5199", "development", "Fixture application B", p.disabledLabel,
-    "EditEnableUse for authoring",
+    "View registryEditEnableUse for authoring",
   ]);
   expect(root.querySelector("img")).toBeNull();
   expect(rowFor(root, "Reference application").textContent).toContain("Reference application" + "http://127.0.0.1:5173");
@@ -520,7 +520,7 @@ it("shows an unregistered element as display-only and refuses a reply that gives
   expect(root.textContent).not.toContain("Highlight: Newsletter");
   const poisoned = candidates[REF]!.map(item => ({ ...item }));
   (poisoned[1] as Record<string, unknown>).targetId = "nav.profile";
-  host.overrides.set("POST /api/studio/browser", () => json({ url: "http://127.0.0.1:5173/#/page", route: "dashboard", elements: poisoned }));
+  host.overrides.set("POST /api/studio/browser", () => json({ url: "http://127.0.0.1:5173/#/page", route: "dashboard", page: "/#/page", hidden: 0, truncated: false, elements: poisoned }));
   await click(root, "Inspect current page");
   expect(root.querySelector(".studio-workspace")?.getAttribute("data-state")).toBe("ERROR");
   expect(root.querySelectorAll("li.studio-candidate")).toHaveLength(0);
@@ -559,7 +559,7 @@ it("keeps manual authoring fully usable when the browser workspace is unavailabl
   fill(root, "editor-application", ORD, "change"); await turn();
   await click(root, "Connect Chrome");
   expect(root.querySelector(".studio-workspace")?.getAttribute("data-state")).toBe("ERROR");
-  expect(root.querySelector(".studio-workspace [role=status]")?.textContent).toBe("The browser workspace is unavailable. You can still select a registry target.");
+  expect(root.querySelector(".studio-workspace [role=alert]")?.textContent).toBe("The browser workspace is unavailable. You can still select a registry target.");
   fill(root, "editor-title", "Manual tour"); fill(root, "editor-description", "Picked by hand."); fill(root, "editor-completion", "Done.");
   fill(root, "editor-target", "orders.note", "change"); fill(root, "editor-wait", "input", "change"); fill(root, "editor-text", "Type a note.");
   expect(control<HTMLElement>(root, "#editor-problems").hidden).toBe(true);
@@ -585,11 +585,11 @@ it("reports a disabled or unknown application on Connect without leaving a sessi
   fill(root, "editor-application", ORD, "change"); await turn();
   host.apps.get(ORD)!.enabled = false;
   await click(root, "Connect Chrome");
-  expect(root.querySelector(".studio-workspace [role=status]")?.textContent).toBe("That application is disabled. Enable it in Applications first.");
+  expect(root.querySelector(".studio-workspace [role=alert]")?.textContent).toBe("That application is disabled. Enable it in Applications first.");
   expect(root.querySelector(".studio-workspace")?.getAttribute("data-state")).toBe("ERROR");
   host.apps.delete(ORD);
   await click(root, "Connect Chrome");
-  expect(root.querySelector(".studio-workspace [role=status]")?.textContent).toBe("That application is no longer available.");
+  expect(root.querySelector(".studio-workspace [role=alert]")?.textContent).toBe("That application is no longer available.");
   expect(host.session()).toBeUndefined();
 });
 
@@ -640,13 +640,13 @@ it("follows the host when it has closed the session because the application chan
   await click(root, "Inspect current page");
   const workspace = control(root, ".studio-workspace");
   expect(workspace.getAttribute("data-state")).toBe("DISCONNECTED");
-  expect(workspace.querySelector("[role=status]")?.textContent).toContain("The browser session was closed");
+  expect(workspace.querySelector("[role=alert]")?.textContent).toContain("The browser session was closed");
   expect(workspace.querySelectorAll("li.studio-candidate")).toHaveLength(0);
   host.overrides.delete("POST /api/studio/browser");
   host.overrides.set("POST /api/studio/browser", () => json({ error: "APPLICATION_MISMATCH" }, 409));
   await click(root, "Connect Chrome");
   expect(workspace.getAttribute("data-state")).toBe("ERROR");
-  expect(workspace.querySelector("[role=status]")?.textContent).toBe("This browser session no longer matches the application. Disconnect and connect again.");
+  expect(workspace.querySelector("[role=alert]")?.textContent).toBe("This browser session no longer matches the application. Disconnect and connect again.");
   expect(control<HTMLSelectElement>(root, "#editor-target").disabled).toBe(false);
 });
 
@@ -660,4 +660,141 @@ it("keeps Connect off with a hint for a draft whose application the editor knows
   expect(root.querySelector(".studio-workspace [role=status]")?.textContent).toBe("This application is disabled. Enable it in Applications to connect.");
   expect(control<HTMLSelectElement>(root, "#editor-target").value).toBe("orders.submit");
   expect(host.studio()).toEqual([]);
+});
+
+const managed = app(ORD, "Managed orders", 5187, "studio-managed");
+const managedTarget = {
+  id: "orders.submit", route: "orders", page: "/#/orders", role: "button", label: "Submit order", description: "Submits the order",
+  operations: ["highlight", "click"], privacy: "public", status: "active", references: { drafts: 2, published: 1 }, updatedAt: stamp,
+};
+const managedRegistry = (active: boolean) => ({
+  routes: active ? ["orders"] : [], elements: active ? [ordersElements[1]] : [], postconditionNames: active ? ["route.orders"] : [],
+  previewable: active, source: "studio-managed", pages: active ? { "/#/orders": "orders" } : {}, previewMode: "application-window",
+});
+const proposed = {
+  ref: "@e7", name: "Submit order", role: "button", route: null, status: "registrable",
+  proposal: { targetId: "orders.submit", role: "button", page: "/#/orders", route: "orders", routeIsNew: true,
+    suggestedLabel: "Submit order", allowedOperations: ["highlight", "click", "focus"], defaultOperations: ["highlight", "click"], privacy: "public" },
+};
+
+it("registers, refreshes the editor registry, and saves only the durable target ID in a managed draft", async () => {
+  const host = fakeHost({ apps: [managed] });
+  let registered = false;
+  host.overrides.set(`GET /api/admin/applications/${ORD}/registry`, () => json(managedRegistry(registered)));
+  const original = host.fetch;
+  const browserFetch: FetchLike = async (url, init) => {
+    if (url !== "/api/studio/browser") return original(url, init);
+    const command = JSON.parse(init.body as string);
+    if (command.action === "register") {
+      expect(command).toEqual({ action: "register", applicationId: ORD, sessionId: "session-b", ref: "@e7",
+        targetId: "orders.submit", route: "orders", operations: ["highlight", "click", "focus"],
+        label: "Submit order", description: "Submits the order", privacy: "public" });
+      registered = true;
+      return json({ target: { ...managedTarget, operations: ["highlight", "click", "focus"] }, route: { route: "orders", page: "/#/orders", created: true } });
+    }
+    if (command.action === "refresh") return json({ url: managed.origin + "/#/orders", route: registered ? "orders" : null,
+      page: "/#/orders", hidden: 8, truncated: true, elements: registered ? [candidates[ORD]![0]] : [proposed] });
+    return original(url, init);
+  };
+  const { root } = await setup("editor", { ...host, fetch: browserFetch });
+  expect(options(root, "editor-target")).toEqual([""]);
+  expect(button(root, c.preview).disabled).toBe(true);
+  await click(root, "Connect Chrome"); await click(root, "Inspect current page");
+  expect(root.querySelector(".studio-list-note")?.textContent).toContain("8 elements are not shown");
+  expect(root.querySelector(".studio-list-note")?.textContent).toContain("64");
+  await click(root, "Register target: Submit order");
+  const form = control<HTMLFormElement>(root, "form.studio-register");
+  const input = <T extends HTMLElement>(suffix: string) => control<T>(form, `[id$="-register-${suffix}"]`);
+  expect(document.activeElement).toBe(form.querySelector("h3"));
+  expect(form.textContent).toContain("Live evidence");
+  expect(form.textContent).toContain("What will be saved");
+  expect(input<HTMLInputElement>("id").readOnly).toBe(true);
+  expect(input<HTMLInputElement>("id").value).toBe("orders.submit");
+  input<HTMLInputElement>("route").value = "order-list";
+  input<HTMLTextAreaElement>("description").value = "Submits the order";
+  control<HTMLInputElement>(form, 'input[value="focus"]').checked = true;
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  expect(root.querySelector(".studio-alert")?.getAttribute("role")).toBe("alert");
+  expect(root.querySelector(".studio-alert")?.textContent).toContain("Check the highlighted fields");
+  expect(document.activeElement).toBe(input("route"));
+  expect(registered).toBe(false);
+  input<HTMLInputElement>("route").value = "orders";
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await turn();
+  expect(registered).toBe(true);
+  expect(root.querySelector('[data-status="trusted"]')?.textContent).toContain("orders.submit");
+  expect(options(root, "editor-target")).toContain("orders.submit");
+  expect(control<HTMLSelectElement>(root, "#editor-target").value).toBe("");
+  await click(root, "Use: Submit order");
+  fill(root, "editor-title", "Orders tour"); fill(root, "editor-description", "Submit orders."); fill(root, "editor-completion", "Done.");
+  fill(root, "editor-text", "Press Submit order."); fill(root, "editor-wait", "click", "change");
+  expect(button(root, c.preview).disabled).toBe(false);
+  const postMessage = vi.fn();
+  const child = { closed: false, postMessage } as unknown as Window;
+  const send = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin: managed.origin, source: child }));
+  const open = vi.spyOn(window, "open").mockReturnValueOnce(null).mockReturnValue(child);
+  try {
+    await click(root, c.preview);
+    expect(open).toHaveBeenCalledExactlyOnceWith(managed.origin + "/", "_blank");
+    expect(notice(root)).toContain("The application window was blocked.");
+    await click(root, c.preview);
+    expect(notice(root)).toBe("Opening the application window…");
+    expect(button(root, c.preview).disabled).toBe(true);
+    send({ type: "dap-embed-ready", version: 1 });
+    expect(postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      type: "dap-run", version: 1, bundle: expect.objectContaining({
+        application: { id: ORD, name: managed.name, origin: managed.origin },
+        definition: expect.objectContaining({ title: "Orders tour", steps: expect.arrayContaining([expect.objectContaining({ target: "orders.submit" })]) }),
+        registry: expect.objectContaining({ pages: { "/#/orders": "orders" }, postconditionNames: ["route.orders"] }),
+      }),
+    }), managed.origin);
+    send({ type: "dap-run-status", version: 1, status: "WAITING" });
+    expect(notice(root)).toBe("Walkthrough running in the application window.");
+    send({ type: "dap-run-status", version: 1, status: "COMPLETED" }); await turn();
+    expect(notice(root)).toBe("Walkthrough finished.");
+    expect(button(root, c.preview).disabled).toBe(false);
+    expect(host.writes()).toEqual([]);
+  } finally { open.mockRestore(); }
+  await click(root, c.save);
+  const body = JSON.stringify(host.writes().at(-1)?.body);
+  expect(body).toContain("orders.submit");
+  expect(body).not.toMatch(/@e\d/);
+  expect(JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage), location.href])).not.toMatch(/@e\d/);
+});
+
+it("shows managed routes and target references and confirms a referenced disable before sending the status", async () => {
+  let status = "active";
+  const host = fakeHost({ apps: [managed] });
+  const path = `/api/admin/applications/${ORD}/targets`;
+  host.overrides.set(`GET ${path}`, () => json({ targets: [{ ...managedTarget, status }],
+    routes: [{ route: "orders", page: "/#/orders" }], limits: { maxTargets: 200, maxRoutes: 20 } }));
+  host.overrides.set(`POST ${path}/orders.submit/status`, () => {
+    status = String(host.writes().at(-1)?.body?.status);
+    return json({ ...managedTarget, status });
+  });
+  const { root } = await setup("applications", host);
+  await click(root, "View registry: Managed orders");
+  expect(root.textContent).toContain("orders · /#/orders");
+  expect(root.textContent).toContain("2 drafts, 1 published");
+  await click(root, "Disable orders.submit");
+  const confirm = control(root, "dialog[open]");
+  expect(confirm.textContent).toContain("2 drafts and 1 published walkthroughs");
+  expect(host.writes()).toEqual([]);
+  expect(document.activeElement?.textContent).toBe(c.cancel);
+  await click(confirm, "Disable target");
+  expect(host.writes().at(-1)?.body).toEqual({ status: "disabled" });
+  await click(root, "Enable orders.submit");
+  expect(host.writes().at(-1)?.body).toEqual({ status: "active" });
+});
+
+it("uses the managed registry for list Publish and defers list Preview to the application window", async () => {
+  const host = fakeHost({ apps: [managed], guides: [guide(savedId, "draft", ordersDraft(savedId), ORD)] });
+  const registryForOrders = { ...managedRegistry(true), routes: ["home", "orders"], elements: ordersElements,
+    pages: { "/": "home", "/#/orders": "orders" }, postconditionNames: ["route.home", "route.orders"] };
+  host.overrides.set(`GET /api/admin/applications/${ORD}/registry`, () => json(registryForOrders));
+  const { root } = await setup("walkthroughs", host);
+  await click(root, "Preview: Orders tour");
+  expect(notice(root)).toBe(c.application.windowPreviewFromEditor);
+  expect(document.querySelector("[data-ai-overlay]")).toBeNull();
+  await click(root, "Publish: Orders tour");
+  expect(root.querySelector("dialog[open]")).not.toBeNull();
 });

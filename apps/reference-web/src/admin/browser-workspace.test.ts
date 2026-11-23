@@ -14,8 +14,8 @@ const stray: Candidate = { status: "unregistered", ref: "@e30", name: "Newslette
 type Reply = AdminResult<StudioReply>;
 const ok = (value: StudioReply): Reply => ({ kind: "ok", value });
 const refused = (code: string): Reply => ({ kind: "browser-error", code });
-const connected = (app = APP, sessionId = "session"): Reply => ok({ kind: "connected", sessionId, applicationId: app.id, application: app.name, origin: "http://127.0.0.1:5173" });
-const snapshot = (elements: readonly Candidate[], route: string | null = "profile", url = "http://127.0.0.1:5173/#/profile"): Reply => ok({ kind: "snapshot", url, route, elements });
+const connected = (app = APP, sessionId = "session"): Reply => ok({ kind: "connected", sessionId, applicationId: app.id, application: app.name, origin: "http://127.0.0.1:5173", registrySource: "built-in", resumed: false });
+const snapshot = (elements: readonly Candidate[], route: string | null = "profile", url = "http://127.0.0.1:5173/#/profile"): Reply => ok({ kind: "snapshot", url, route, elements, page: "/#/profile", hidden: 0, truncated: false });
 const closed = (): Reply => ok({ kind: "closed" });
 const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 function deferred<T>() {
@@ -36,6 +36,7 @@ function setup(script: Partial<Record<StudioCommand["action"], (command: StudioC
       case "highlight": return ok({ kind: "highlighted", ref: command.ref });
       case "capture": return ok({ kind: "captured", target });
       case "disconnect": return closed();
+      case "resume": case "register": throw new Error(`Unexpected ${command.action} command`);
     }
   });
   const apply = vi.fn<(applied: StudioTarget) => boolean>(() => true);
@@ -53,7 +54,7 @@ function setup(script: Partial<Record<StudioCommand["action"], (command: StudioC
   const press = async (label: string) => { named(label).click(); await settle(); };
   const states = () => ({ connect: named("Connect Chrome").disabled, inspect: named("Inspect current page").disabled, disconnect: named("Disconnect").disabled });
   const line = (label: string) => [...panel.querySelectorAll("dt")].find(item => item.textContent === label)?.nextElementSibling?.textContent;
-  const notice = () => panel.querySelector('[role="status"]')?.textContent;
+  const notice = () => panel.querySelector('[role="alert"]')?.textContent || panel.querySelector('[role="status"]')?.textContent;
   const rows = () => [...panel.querySelectorAll("li.studio-candidate")] as HTMLElement[];
   const commands = (action: string) => call.mock.calls.map(([command]) => command).filter(command => command.action === action);
   return { abort, call, apply, bindTarget, workspace, panel, named, press, states, line, notice, rows, commands };
@@ -637,4 +638,70 @@ it("switching to an application known to be disabled closes the session and keep
   expect(harness.workspace.state()).toBe("DISCONNECTED");
   expect(harness.states().connect).toBe(true);
   expect(harness.notice()).toBe("This application is disabled. Enable it in Applications to connect.");
+});
+
+it("recovers an owned session only after BROWSER_BUSY and disconnects the replacement id on exit", async () => {
+  const harness = setup({
+    connect: () => refused("BROWSER_BUSY"),
+    resume: () => ok({ kind: "connected", sessionId: "renewed", applicationId: APP.id, application: APP.name,
+      origin: "http://127.0.0.1:5173", registrySource: "studio-managed", resumed: true }),
+  });
+  expect(harness.named("Reconnect").hidden).toBe(true);
+  await harness.press("Connect Chrome");
+  expect(harness.named("Reconnect").hidden).toBe(false);
+  expect(harness.panel.querySelector('[role="alert"]')?.textContent).toBe("A browser workspace is already active.");
+  await harness.press("Reconnect");
+  expect(harness.workspace.state()).toBe("CONNECTED");
+  expect(harness.named("Reconnect").hidden).toBe(true);
+  harness.abort.abort(); await settle();
+  expect(harness.call.mock.calls.map(([command]) => command)).toEqual([{ action: "connect", applicationId: APP.id }, { action: "resume", applicationId: APP.id },
+    { action: "disconnect", sessionId: "renewed", applicationId: APP.id }]);
+});
+
+it.each([
+  ["TARGET_NOT_REGISTRABLE", "This element can no longer be registered. Inspect the current page again.", true],
+  ["TARGET_ID_MISMATCH", "The marker on the page changed since it was inspected. Inspect the current page again.", true],
+  ["TARGET_EXISTS", "A target with this ID is already registered for this application. Inspect the current page again.", true],
+  ["ROUTE_MISMATCH", "This page already has a route with another name. Inspect the current page again.", true],
+  ["REGISTRY_NOT_MANAGED", "This application's registry is built in, so targets cannot be registered from the browser.", false],
+  ["REGISTRY_FULL", "This application's registry is full. No additional targets or routes can be registered for this application.", false],
+  ["INVALID_TARGET", "The target was not registered. Fix these problems and try again.", false],
+] as const)("reports %s in the alert region and retires stale candidate rows as appropriate", async (code, message, stale) => {
+  const candidate: Candidate = { status: "registrable", ref: "@e50", name: "New", role: "button", route: "orders", proposal: {
+    targetId: "orders.new", route: "orders", routeIsNew: false, role: "button", page: "/#/orders", suggestedLabel: "New",
+    defaultOperations: ["highlight"], allowedOperations: ["highlight", "click"], privacy: "public",
+  } };
+  const harness = setup({
+    refresh: () => snapshot([candidate], "orders"),
+    register: () => ({ kind: "browser-error", code, ...(code === "INVALID_TARGET" ? { issues: ["description: must be plain text"] } : {}) }),
+  });
+  await harness.press("Connect Chrome"); await harness.press("Inspect current page"); await harness.press("Register target: New");
+  const form = harness.panel.querySelector<HTMLFormElement>("form")!;
+  expect(form.querySelector('[id$="-register-route"]')).toBeNull();
+  form.querySelector("textarea")!.value = "New order button.";
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await settle();
+  const alert = harness.panel.querySelector('[role="alert"]')!;
+  expect(alert.querySelector("p")?.textContent).toBe(message);
+  expect(alert.querySelector("li")?.textContent).toBe(code === "INVALID_TARGET" ? "description: must be plain text" : undefined);
+  expect(harness.rows()).toHaveLength(stale ? 0 : 1);
+  expect(harness.panel.querySelector("form") !== null).toBe(code === "INVALID_TARGET" || code === "REGISTRY_FULL");
+});
+
+it("keeps disabled targets display-only and restores keyboard focus on registration cancel", async () => {
+  const candidate: Candidate = { status: "registrable", ref: "@e50", name: "New", role: "button", route: null, proposal: {
+    targetId: "orders.new", route: "orders", routeIsNew: true, role: "button", page: "/#/orders", suggestedLabel: "New",
+    defaultOperations: ["highlight"], allowedOperations: ["highlight", "click"], privacy: "public",
+  } };
+  const harness = setup({ refresh: () => snapshot([candidate, { status: "disabled", ref: "@e51", name: "Previous", role: "button", route: "orders", targetId: "orders.previous" }]) });
+  document.body.append(harness.panel);
+  await harness.press("Connect Chrome"); await harness.press("Inspect current page"); await harness.press("Register target: New");
+  expect(harness.panel.querySelector('[data-status="disabled"] button')).toBeNull();
+  expect(harness.panel.querySelector('[data-status="registrable"] button[aria-label^="Use"]')).toBeNull();
+  const form = harness.panel.querySelector<HTMLFormElement>("form")!;
+  expect(form.querySelectorAll("label")).toHaveLength(6);
+  form.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(harness.panel.querySelector("form")).toBeNull();
+  expect(document.activeElement).toBe(harness.named("Register target: New"));
+  harness.abort.abort();
+  harness.panel.remove();
 });

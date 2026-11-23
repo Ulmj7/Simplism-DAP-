@@ -4,6 +4,9 @@ export interface FixtureAppOptions {
   readonly name?: string;
   readonly leaveOrigin?: string;
   readonly redirectDelayMs?: number;
+  readonly embedScriptPath?: string;
+  readonly dapOrigin?: string;
+  readonly extras?: boolean;
 }
 export interface FixtureApp {
   readonly origin: string;

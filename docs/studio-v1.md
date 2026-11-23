@@ -1,140 +1,118 @@
-# DAP Studio V1A
+# DAP Studio V1B
 
-Studio V1A lets a maintainer enroll an application, inspect its live browser targets and author a walkthrough against its semantic registry. The browser foundation supplied a single reference-app workspace. V1A derives the browser policy and draft validation from the application selected for authoring. Save, preview, publish and walkthrough execution still use the deterministic authoring and runtime model. [Browser foundation and vendor provenance](studio-browser-foundation.md)
+Studio lets maintainers enroll an application, inspect its live browser controls, register eligible targets and author deterministic walkthroughs. Built-in registries remain host-owned. New applications can use a Studio-managed registry stored in PostgreSQL. [Browser foundation and vendor provenance](studio-browser-foundation.md)
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    UI["Studio UI: Application Manager and Editor"] --> Host["Reference host"]
-    Host --> Apps["Tenant-scoped application store"]
-    Host --> Catalog["Trusted registry catalog"]
-    Host --> Session["Application-bound Studio session"]
-    Host --> Gateway["Authoring and Policy Gateway"]
-    Gateway --> Apps
-    Gateway --> Drafts["Tenant-scoped walkthrough definitions"]
-    Session --> Port["BrowserRuntime port"]
-    Port --> Adapter["agent-browser adapter: origins, routes, labels"]
-    Adapter --> CLI["Vendored agent-browser CLI"]
-    CLI --> Chrome["Chrome"]
-    Chrome --> Application["Enrolled application"]
+    UI["Studio editor and Application Manager"] --> Host["Reference host"]
+    Host --> Gateway["Policy Gateway"]
+    Gateway --> DB["Tenant-scoped applications, routes, targets and drafts"]
+    Host --> Catalog["Built-in registry catalog"]
+    Host --> Session["Application-bound inspection session"]
+    Session --> Adapter["BrowserRuntime and vendored CLI"]
+    Adapter --> Chrome["Chrome on the enrolled application"]
+    UI --> Embed["Deterministic embed in the application window"]
 ```
 
-## Enroll an application
+## Enrollment and ownership
 
-As a maintainer, open **Applications** at `#/applications` and choose **Enroll application**. The form sends exactly these fields to `POST /api/admin/applications`. The host assigns an `app-` ID with 12 hexadecimal digits and enables the application on creation.
+Open **Applications** as a maintainer. Supply a plain-text name of 1–80 characters, a primary origin, 1–5 distinct allowed origins including the primary, an environment (`development` or `test`), and a registry. The host normalizes origins to `scheme://host[:port]`, drops an optional trailing slash and rejects credentials, paths, queries and fragments. The full origin allows at most 200 characters, and the hostname and port together allow at most 190. DNS labels use letters, digits and hyphens after URL normalization, with each label starting and ending in a letter or digit. Non-loopback hosts require HTTPS and a DNS name. Local development also permits HTTP on `localhost`, `127.0.0.1` and `[::1]`.
 
-| Field | Accepted values |
+| Registry choice | Source and behavior |
 | --- | --- |
-| `name` | Plain text, 1–80 characters after trimming. |
-| `origin` | The primary `scheme://host[:port]` where Chrome starts. The host normalizes it and drops an optional trailing slash. Credentials, paths, queries and fragments are refused. A host is a DNS name of letters, digits, hyphens and dots (after conversion to punycode), `localhost`, `127.0.0.1` or `[::1]`: `*`, `,`, `;`, `%`, `_`, empty labels and a leading or trailing hyphen are refused because the browser CLI reads the host names as a comma-separated allow-list with `*.` wildcards. The part after `scheme://` (host and port) is at most 190 characters, the bound of the database check on `allowed_origins`, so a valid enrollment is always storable. |
-| `allowedOrigins` | 1–5 distinct normalized origins, including the primary origin. The same validation applies to each. |
-| `environment` | `development` or `test`. V1A is a staged rollout, with production enrollment deferred. |
-| `registryId` | An entry in the host's trusted registry catalog. The reference installation ships `reference`. |
+| Built-in, such as `reference` | The host catalog defines the pages, labels, targets and postconditions. The Application Manager shows a read-only registry. |
+| `studio-managed` | Starts empty. Maintainers register routes and targets from inspected controls. PostgreSQL stores them per application and tenant. |
 
-HTTP works on `localhost`, `127.0.0.1` and `[::1]` for local development and tests. Non-loopback hosts require HTTPS and a DNS name. Non-loopback IP literals are refused. Enrollment errors return fixed validation issues. Each tenant can have up to 20 applications. Disable an application with `POST /api/admin/applications/:id/status` and `{"enabled":false}`. Use `PUT /api/admin/applications/:id` to update its configuration.
+An application keeps its registry source after enrollment. Each tenant can enroll 20 applications. The host requires `perm.walkthrough.maintain` on maintainer endpoints and PostgreSQL forces row-level security for application, registry and authoring tables. Configure `DAP_ENABLED_ACTIONS` with `saveStudioApplication`, `setStudioApplicationEnabled`, `registerStudioTarget`, `setStudioTargetStatus`, `saveWalkthroughDraft` and `setWalkthroughStatus`. The Gateway denies these writes by default. Target audit parameters carry the application and target IDs, and the status when it changes. [Local setup](../specs/004-authoring-analytics/quickstart.md)
 
-The host scopes reads and writes to the authenticated principal's tenant. PostgreSQL forces row-level security on `studio_applications` and `walkthrough_definitions`. The application role can select, insert and update application rows. Maintainer writes go through the Policy Gateway and require `perm.walkthrough.maintain`. Enable the following capabilities explicitly in `DAP_ENABLED_ACTIONS`. The Gateway denies them by default. [Local setup and demo sessions](../specs/004-authoring-analytics/quickstart.md)
+## Inspect and register
 
-| Purpose | Capabilities |
-| --- | --- |
-| Save or enable an application | `saveStudioApplication`, `setStudioApplicationEnabled` |
-| Save or publish a walkthrough | `saveWalkthroughDraft`, `setWalkthroughStatus` |
+Choose **Use for authoring** in Applications or choose an enabled application in a new draft. A saved draft shows its bound application as a fixed label. **Connect Chrome** opens the enrolled application in a separate browser. Browse there and then choose **Inspect current page** in Studio.
 
-Application writes audit the application ID and, for status changes, the enabled flag. Application names and origins stay out of the audit parameter fields.
-
-## Registry and workflow binding
-
-An application points to a host-controlled catalog entry. The host refuses, when the catalog is composed, an entry the editor could not load: at most 20 routes, 200 elements and 50 postconditions, element ids and postcondition names of at most 80 characters, and postcondition names that are dotted (`area.name`) and unique. That entry defines semantic routes, public targets and their supported operations, and named postconditions. Its browser policy also maps page URLs to semantic routes and specifies which role and accessible-name pairs may appear in the inspector. Hosts provide registry entries in code. V1A has no target-registration UI. The maintainer can read the public-eligible registry via `GET /api/admin/applications/:id/registry`.
-
-New drafts require an enrolled, enabled application. Send `{applicationId, definition}` on create and save, omitting `definition.id` on create. A draft's application is immutable after it is assigned. Validation and publish-time validation use that application's registry. Legacy rows with a null application ID still use `reference` and can take an application on their first save in V1A. Disabling an application blocks save and publish. Unpublishing remains available, and already published definitions are still served if they validate against the current registry.
-
-## Browser session and inspection
-
-A maintainer starts a session with `POST /api/studio/browser`, sending `{action:"connect", applicationId}` and optionally a walkthrough ID. If the supplied walkthrough is already bound, it must belong to this application. The host binds the opaque session ID to the principal key, tenant, actor and application. Only one session and one command can be active per host. Switch applications by disconnecting and then explicitly connecting. Refresh, Highlight and Use require the session and application IDs. Disconnect accepts the session ID and an optional matching application ID.
-
-The host attempts to close the browser after five minutes of idle time and on shutdown. Idle time is measured from the **owner's last successful command** (a connect that opened the session, or a command whose owner, session ID and application ID matched). A rejected connect (`BROWSER_BUSY`), a command with another person's session ID, an unauthorized or malformed request never extends it, so nobody can keep a forgotten session open by probing it. After a page reload the UI has lost the session ID and can only offer **Connect**, which answers `BROWSER_BUSY` while the old session is open; the user waits until the session has been idle for five minutes (clicking Connect meanwhile does not restart the clock), after which Connect works. There is no endpoint to take over a session in V1A. If the application is missing, disabled or its browser policy changes, the next inspection command refuses the request and attempts to close the session. A rename leaves the browser policy intact.
-
-| Concept | What determines it |
-| --- | --- |
-| Navigation policy | Enrollment supplies the exact origins. The chosen registry supplies allowed page paths and fragments. The adapter checks both before exposing an observation. Each origin uses the same page map. |
-| Exposure policy | The registry supplies approved role and accessible-name pairs. The inspector returns at most 64 candidates. |
-| Persisted target | The walkthrough step stores the registry's stable semantic ID, for example `profile.nameInput`. |
-
-The inspector marks a candidate **Trusted** when its live `data-ai-id` matches a public entry on the current route, with the same role and the `highlight` operation. An approved-label candidate that fails these checks is **Unregistered**. It has no target ID or operations in the response. Other accessibility labels are omitted. Highlight and Use both re-check the current observation and semantic ID. Highlight draws an outline and writes nothing. Use returns the registry ID and target metadata so the editor can select it. Saving the draft persists the registry ID. Live refs such as `@e21` expire with the inspected page observation and session.
+Built-in inspection uses the catalog's approved labels and pages. Managed inspection considers up to 64 operable controls in document order. The host reevaluates privacy and the name deny-list for every candidate, including existing targets. A trusted row has an active registry ID matching the page's route and the control's mapped semantic role. A disabled row names an eligible control whose registry target is disabled. A registrable row is eligible and has a valid new marker. Other managed controls contribute only to the hidden count. A marker carried by more than one of the inspected controls is ambiguous, because the runtime resolves a marker to a single element: none of those controls is listed, whatever their role, privacy or name, and the register command refuses them with `TARGET_NOT_REGISTRABLE` (a twin beyond the 64 inspected controls cannot be seen). The built-in inspector is unchanged.
 
 ```mermaid
 flowchart TB
-    Application["Enrolled application in the principal's tenant"] --> Config["Trusted config: origins, pages and labels"]
-    Config --> Origin["Exact origin and approved page check"]
-    Origin --> Session["Application-bound browser session"]
-    Session --> Element["Live element with ephemeral ref"]
-    Element --> Lookup["Registry lookup: data-ai-id, route, role, public, highlight"]
-    Lookup --> Target["Persisted DAP target ID"]
-    Target --> Definition["Walkthrough definition"]
+    App["Enrolled application and tenant"] --> Origin["Exact allowed origin and page"]
+    Origin --> Live["Current observation and ephemeral ref"]
+    Live --> Checks["Marker, role, current privacy and accessible name"]
+    Checks --> Form["Maintainer confirms label, description, operations and route"]
+    Form --> Gateway["Gateway and in-transaction validation"]
+    Gateway --> Registry["Durable application route and target ID"]
+    Registry --> Guide["Application-bound walkthrough"]
 ```
 
-### Browser security boundary
+- Mark controls with stable `data-ai-id` values such as `orders.submit`. The live `@eN` ref is used within the session and expires with the observation. The draft stores the registry ID.
+- Select **Register target…** on an eligible row. The ID comes from the live marker. The host derives role and page from the observation. Button, link, textbox, searchbox, checkbox and combobox are registrable. Searchbox maps to textbox and combobox maps to select.
+- The marker must be a dotted semantic ID of at most 80 characters, starting with a lowercase letter and using letters and digits within each segment. Its first segment cannot be `dap`, `studio`, `admin`, `system` or `internal`. Only public controls pass. Current facts exclude ignored, private or redacted controls, password or hidden inputs, credit-card autocomplete fields, password autocomplete fields and one-time-code controls. A name heuristic also hides secret-looking names (see below). A control without a visible name (empty, whitespace or invisible characters only) is never listed. Missing facts fail closed. The check sees the element's own facts and does not propagate ancestor privacy markers. Application authors should mark sensitive controls directly.
+- Choose role-appropriate operations including `highlight`, a plain-text label up to 80 characters and a description up to 240 characters. Keep an existing page's route. For a new page, use a route matching `^[a-z][A-Za-z0-9]{0,39}$`, such as `orderList` for `/#/order-list`. Managed pages use `/` or a hash route under `/`. The registry holds up to 20 routes and 200 targets per application.
+- The host re-verifies the marker and facts against the current observation before registration, then submits the Gateway capability. The store commits the target and any new route together. The reply reports whether that transaction created the route.
+- **Highlight** draws an outline and persists nothing. **Use** binds the selected step to an active trusted ID. Its reply uses the stored semantic role. Before either action on a managed control, the host rechecks the current marker, privacy and registry. The inspector displays the observed browser role and labels live refs as session-only. The manual target picker is available for existing registry targets if Chrome is unavailable.
 
-The vendored CLI enforces a hostname allowlist. DAP separately checks the exact scheme, hostname and port and the approved page on the URLs it reads. A page on the same hostname and a different port can briefly load in the headed window. The adapter may read a raw accessibility snapshot locally before checking its URL. A blocked observation returns no page content to Studio, and the raw snapshot never leaves the host. Reverification applies the same URL checks before highlighting or returning a target.
 
-### Browser endpoint errors
+#### The accessible-name heuristic
 
-`POST /api/studio/browser` uses closed `{error: CODE}` replies. Application and authoring endpoints have their own error bodies.
+The name of every managed control (registrable, trusted and disabled alike) is checked against a fixed list of secret-looking words: password, passcode, secret, token, API key, card number, social security, one-time code (the *long* words) and CVV, CVC, SSN, OTP (the *short* words). The name is **normalised** first: Unicode NFKC (fullwidth and other compatibility forms become plain letters), lower-case, every format or invisible character removed (zero-width characters, soft hyphen, word joiner, byte-order mark, bidi marks) and every space-like or control character turned into a plain space. Two checks then run on the normalised text:
 
-| HTTP | Code | Meaning |
+1. **Whole word.** The word, with spaces, hyphens or underscores between the words of a phrase, an optional plural `s` and optional digits after it (`cvv2`, `password1`), and no letter directly before or after. `Totp` and `Passport` pass.
+2. **Squashed.** Every character that is not a letter or digit is removed. For the long words the squashed name is searched as a substring, which catches `mypassword`, `newPassword`, `p.a.s.s.w.o.r.d` and `p a s s w o r d`. For the short words the whole squashed name must equal the word (`s.s.n.`, `o t p`), so `mycvv` or `Hotspot` are not hidden.
+
+A false positive only hides a control, so the check fails closed: ordinary words that contain a long word (`secretary`, `tokenize`) are hidden as well. Not caught: look-alike letters from other scripts (a Cyrillic `a`), leet spellings (`p4ssword`), words in other languages, short words joined to a prefix (`mycvv`), and secrets whose name says nothing. Ancestor `data-ai-ignore` markers are not visible to the host either. The heuristic complements the facts check; mark sensitive controls directly in the application.
+
+## Binding, target status and publication
+
+A draft supplies `{applicationId, definition}` and keeps that application after its first bound save. A legacy unbound draft resolves through `reference`. A managed registry supplies `route.<route>` postconditions. Targets and routes are immutable. The manager can disable or re-enable a target and shows how many draft and published definitions reference it. Disabling removes it from validation and public bundles. A published managed guide that references it leaves the launcher until it validates again after re-enablement. Disabling an application blocks save, publish, registration and target enablement. Unpublish and target disable remain available.
+
+Previously a disable could commit between the application check and the write. Save, publish, target registration and target status changes now acquire a `FOR SHARE` lock on the application row inside their tenant transaction. If disable wins first, the write observes the new state. If the writer wins, disable waits for commit. Real two-connection tests verify both orderings. PostgreSQL also enforces application ownership, immutability, uniqueness, caps and distinct operation and origin arrays for new writes. Migration 075 leaves legacy rows in place.
+
+## Browser boundary and session recovery
+
+The vendored Rust and injected JavaScript filters enforce a hostname allowlist. DAP independently checks the exact scheme, hostname and port before exposing observations or acting on targets. Chrome can load a different port on an allowed hostname. The CLI snapshot is collected locally before the adapter checks its reported URL, so the host discards off-policy output before returning any observation or candidate. The approximately 20-line vendor-side origin-filter change was deferred.
+
+The host keeps one session and one in-flight command. The owner identity includes the principal, tenant and actor, and the session also binds the application and an opaque ID. Switching or leaving the editor requests a disconnect. If a reload leaves the old session open, **Connect** reports busy and **Reconnect** adopts it for the same owner and application under a new ID. The old ID stops working. Rejected connect and resume requests do not extend the five-minute idle timer. Host shutdown also closes the session.
+
+| HTTP | Browser error | Meaning |
 | --- | --- | --- |
-| 400 | `INVALID_REQUEST` | Invalid fields, extra fields, or an invalid or unavailable walkthrough ID. |
-| 401 | `SESSION_CLOSED` | No authenticated principal. |
-| 403 | `FORBIDDEN` | The principal lacks maintainer permission. |
-| 404 | `SESSION_CLOSED` | The session is gone, unknown or belongs to another principal. |
-| 404 | `APPLICATION_NOT_FOUND` | The application is missing or outside the tenant. |
-| 409 | `APPLICATION_DISABLED` | The application is disabled. |
-| 409 | `APPLICATION_MISMATCH` | The session or walkthrough is bound to a different application, or the session's policy changed. A wrong application ID in a command leaves the existing session open. |
-| 409 | `BROWSER_BUSY` | Connect encountered an existing session, or a browser command is in flight. |
-| 409 | `REF_NOT_FOUND`, `TARGET_UNAVAILABLE` | The ref is stale or unknown, or the candidate is unregistered or has changed semantic ID. |
-| 503 | `DOMAIN_BLOCKED` | The observed origin or page is outside the session policy. Return to an approved page and refresh. |
-| 503 | `BROWSER_UNAVAILABLE`, `BROWSER_NOT_STARTED`, `BROWSER_TIMEOUT`, `NAVIGATION_FAILED`, `SNAPSHOT_FAILED`, `HIGHLIGHT_FAILED`, `CLOSE_FAILED`, `INVALID_BROWSER_OUTPUT` | A configuration, store or runtime error prevented the command from completing. |
+| 400 | `INVALID_REQUEST` | The command shape is invalid. |
+| 401 / 403 | `SESSION_CLOSED` / `FORBIDDEN` | Authentication or maintainer permission is required. |
+| 404 | `SESSION_CLOSED`, `APPLICATION_NOT_FOUND` | The session or the tenant's application is unavailable. |
+| 409 | `BROWSER_BUSY`, `APPLICATION_DISABLED`, `APPLICATION_MISMATCH` | The slot is occupied or the application is disabled or mismatched. |
+| 409 | `REF_NOT_FOUND`, `TARGET_UNAVAILABLE`, `TARGET_NOT_REGISTRABLE` | Refresh stale evidence or choose an eligible control. |
+| 409 | `TARGET_ID_MISMATCH`, `TARGET_EXISTS`, `ROUTE_MISMATCH`, `REGISTRY_NOT_MANAGED`, `REGISTRY_FULL` | The marker, route, source or registry state prevents registration. |
+| 422 | `INVALID_TARGET` | The submitted fields failed validation. The reply includes fixed validation issues. |
+| 503 | `DOMAIN_BLOCKED`, `BROWSER_UNAVAILABLE` and runtime failures | The browser operation or store is unavailable, or the observed URL is outside policy. |
 
-## Author and inspect from the editor
+The workspace enables Connect when an enabled application is selected and the UI holds no session. Connected workspaces enable Inspect, Disconnect and applicable row actions. Connecting, inspecting or any pending command disables controls. Errors with a held session allow inspection and disconnect. A stale ref clears candidates. A closed session clears the UI's session, and explicit Disconnect always returns the UI to Disconnected.
 
-In **Applications**, enroll or edit an app, enable or disable it, or choose **Use for authoring** to open a new draft with that app selected. Under **Walkthroughs**, **New walkthrough** opens an editor with an application selector. The editor selects the sole enabled app automatically when only one is available. An existing bound draft displays its application as a read-only label. Disabled apps cannot be selected for a new draft, and Connect is off for an app the editor knows is disabled. A published guide remains available while its application is disabled.
+## Preview and run a managed guide
 
-The editor shows the step list, browser inspector and step properties side by side, stacking on narrow screens. **Connect Chrome** opens a separate browser window. Browse there, then choose **Inspect current page** in Studio. The workspace shows the application, connection status, observed URL, semantic route and candidate count. URL, route and count reflect the last successful inspection.
+Build the embed with `npm run build:embed` and serve `apps/reference-web/dist-embed/dap-embed.js` on the enrolled application. Set `data-dap-origin` to the Studio web origin.
 
-Each candidate shows its accessible name, role, route and a line such as **Live ref: @e21 Session only**. Trusted rows show **Trusted target ✓**, their DAP target ID, allowed operations and **Public**. **Highlight** draws an outline and shows “Highlighted in Chrome — nothing was saved.” **Use** sets the selected step’s semantic target and shows a confirmation such as “Captured target — Profile · link · dashboard · DAP target nav.profile.” Rows labeled **Not registered for walkthrough use** have no action buttons. Switching applications closes the old session, clears the candidates and requires an explicit reconnect. Leaving the editor requests a disconnect.
+```html
+<script src="/dap-embed.js" data-dap-origin="http://127.0.0.1:5186"></script>
+```
 
-Use the manual **Semantic target** picker when Chrome or the native browser binary is unavailable. It lists public eligible targets from the selected application's registry. Preview runs inside the reference web app and is available for the `reference` registry. Other registries show “Preview is available for the reference application in this release.”
+Built-in reference Preview runs in the reference app. Managed Preview opens the application window with the validated draft bundle. Published managed guides appear in the external launcher. The authenticated launcher loads `GET /api/walkthroughs/published/:id/bundle`, which revalidates the published definition against the active registry and returns the application identity, definition, routes, pages and public targets.
 
-### Workspace controls
+The application embed waits for a matching opener and exact Studio origin. The opener waits for a versioned ready message from the expected child at the enrolled origin, then sends the validated bundle using that exact origin. The embed checks sender and origin, validates the bundle and runs the deterministic overlay on the application page. Progress and terminal status return through the same handshake.
 
-| State | Connect Chrome | Inspect current page | Disconnect | Trusted row actions |
-| --- | --- | --- | --- | --- |
-| Disconnected | On with a selected application that is not known to be disabled | Off | Off | Off |
-| Connecting | Off | Off | Off | Off |
-| Connected | Off | On | On | On |
-| Inspecting | Off | Off | Off | Off |
-| Error | On with a connectable application and no session | On if the session is held | On if the session is held | Off |
-
-A pending command turns all controls off. Browser, navigation, inspection and highlight failures show **Error** and retain a held session. A closed session shows **Disconnected**. A stale ref clears the candidate list and leaves the workspace **Connected**. An unavailable target shows a message and leaves it **Connected**. If the host reports a disabled or missing application during an open session, the workspace clears it and becomes **Disconnected**. An application mismatch shows **Error** with **Disconnect** available while the UI still holds the session. An explicit **Disconnect** always returns the workspace to **Disconnected**. If the host cannot confirm closure, the UI mentions the idle timeout.
+The embed does not authenticate or fetch a bundle independently without the opener. A cross-origin delivery flow with its own authentication and CORS remains future work. The opener relationship needed for the handshake carries reverse-tabnabbing risk, so use applications you trust. Popup blocking or COOP can prevent the handshake. Strict CSP must permit the embed asset and its injected style element. The installer has no style nonce option. Managed playback supports hash routing and route postconditions only.
 
 ## Verify with Chromium
 
-Build and install the pinned native browser, then use the isolated Studio V1A Compose project and apply migrations. Both acceptance commands start the host on 8794, Vite on 5184 and fixture B on 5185. They use new tenants and leave their test data in this disposable database. Run the commands sequentially. They launch headed Chromium with a display and fall back to headless Chromium on Linux without one. [Native browser build](studio-browser-foundation.md#build-and-use)
+Use Compose project `dapstudiov1b` on PostgreSQL 54362 and apply migrations using `dap_owner`. The demo host runs as `dap_app`. Run the checks sequentially on host 8795, Vite 5186 and fixture 5187.
 
 ```bash
-DAP_POSTGRES_PORT=54359 docker compose -p dapstudiov1 -f deploy/compose.yaml up -d --wait
-export DAP_MIGRATE_DATABASE_URL=postgresql://dap_owner:dap_owner_local_only@127.0.0.1:54359/dap
-export DAP_DATABASE_URL=postgresql://dap_app:dap_app_local_only@127.0.0.1:54359/dap
+DAP_POSTGRES_PORT=54362 docker compose -p dapstudiov1b -f deploy/compose.yaml up -d --wait
+export DAP_MIGRATE_DATABASE_URL=postgresql://dap_owner:dap_owner_local_only@127.0.0.1:54362/dap
+export DAP_DATABASE_URL=postgresql://dap_app:dap_app_local_only@127.0.0.1:54362/dap
+export DAP_ACCEPTANCE_DB_PORT=54362
 npm run db:migrate
-npm run acceptance:studio-v1-host
-npm run acceptance:studio-v1-ui
-npm run test:studio
-npm run probe:studio-domains
+npm run acceptance:studio-v1b-host
+npm run acceptance:studio-v1b-ui -- --ordinary
+DAP_PROBE_PORT_A=5186 DAP_PROBE_PORT_B=5187 npm run probe:studio-domains
 ```
 
-Host acceptance exercises the HTTP API with the real Gateway and PostgreSQL. UI acceptance drives the editor in a separate Chromium session, completes Preview and the published guide, and checks application switching, domain refusal and session cleanup. Add `-- --measure-cap` to the UI command to measure a refresh of 64 of the fixture's 70 approved links with Chrome already connected. The domain probe checks the browser adapter directly. [Host acceptance](../scripts/studio-v1-host-acceptance.mjs) · [UI acceptance](../scripts/studio-browser-smoke.mjs) · [Domain probe](../scripts/studio-domain-probe.mjs)
-
-## V1A limits
-
-The host supports one browser session at a time, one shared route map per application across its origins, and no target-registration UI. Preview is limited to the `reference` registry. The enabled check and authoring write are separate operations, so a concurrent disable can race with a save or publication. Qdrant retrieval and LLM-assisted authoring are outside this release.
+Use `-- --headless` for the host command without a display, or add `--headless` after the UI arguments separator. Tests use separate fresh tenants on the isolated database. [Pinned browser build](studio-browser-foundation.md#build-and-use)

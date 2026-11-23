@@ -68,6 +68,7 @@ function fakeRuntime(snapshot: BrowserSnapshot, ids: Record<string, string | nul
     start: vi.fn(async () => {}), snapshot: vi.fn(async () => runtime.snapshotValue),
     inspectSemanticId: vi.fn(async (ref: ElementRef) => runtime.ids[ref] ?? null),
     inspectSemanticIds: vi.fn(async (from: BrowserSnapshot) => new Map(from.elements.map((e) => [e.ref, runtime.ids[e.ref] ?? null] as const))),
+    inspectElementFacts: vi.fn(async (refs: readonly ElementRef[]) => new Map(refs.map((ref) => [ref, { tagName: null, inputType: null, autocomplete: null, dataAiPrivate: false, dataAiIgnore: false, dataAiRedact: false }] as const))),
     highlight: vi.fn(async () => {}), clearHighlight: vi.fn(async () => {}), getUrl: vi.fn(async () => runtime.snapshotValue.url), waitForChange: vi.fn(async () => ({ status: "timeout" as const })),
     close: vi.fn(async () => {}),
   };
@@ -261,7 +262,7 @@ describe("the second application drives the inspector with its own registry (fix
     const session = connected.body.sessionId as string;
     const refreshed = await t.studioCall({ action: "refresh", sessionId: session, applicationId: second });
     expect(refreshed.body).toEqual({
-      url: "http://127.0.0.1:5185/#/orders", route: "orders",
+      url: "http://127.0.0.1:5185/#/orders", route: "orders", page: "/#/orders", hidden: 0, truncated: false,
       elements: [
         { ref: "@e5", name: "Submit order", role: "button", route: "orders", status: "trusted", targetId: "orders.submit", operations: ["highlight", "click"], privacy: "public" },
         { ref: "@e6", name: "Order note", role: "textbox", route: "orders", status: "trusted", targetId: "orders.note", operations: ["highlight", "input"], privacy: "public" },

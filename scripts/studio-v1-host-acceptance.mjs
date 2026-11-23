@@ -49,7 +49,7 @@ async function acceptance() {
   async function attach(application, target) {
     const reply = await studio("connect", { applicationId: application.id });
     assert.match(reply.sessionId, /^[0-9a-f-]{36}$/u);
-    assert.deepEqual(reply, { sessionId: reply.sessionId, applicationId: application.id, application: application.name, origin: application.origin });
+    assert.deepEqual(reply, { sessionId: reply.sessionId, applicationId: application.id, application: application.name, origin: application.origin, registrySource: "built-in" });
     assert.ok((await inventory()).has(browserSession()));
     await trackProcesses();
     await operator("wait", selector(target));
@@ -92,7 +92,7 @@ async function acceptance() {
       const record = await request("POST", "/api/admin/applications", 201, setup);
       assert.match(record.id, /^app-[0-9a-f]{12}$/u);
       assert.ok(Number.isFinite(Date.parse(record.updatedAt)));
-      assert.deepEqual(record, { ...setup, id: record.id, enabled: true, updatedAt: record.updatedAt });
+      assert.deepEqual(record, { ...setup, id: record.id, enabled: true, updatedAt: record.updatedAt, source: "built-in" });
       return record;
     };
     applicationA = await create("Reference application", originA, "development", "reference");
@@ -131,18 +131,20 @@ async function acceptance() {
     name = await capture(input);
     save = await capture(button);
 
-    // Give the private control an approved name only in this browser to test registry privacy independently of label filtering.
-    const email = `document.querySelector(${JSON.stringify(selector("profile.emailInput"))})`;
-    await operator("eval", `${email}.setAttribute("aria-label", "Display name")`);
-    const privateView = await refresh("profile");
-    const unregistered = privateView.elements.find(element => element.name === "Display name" && element.status === "unregistered");
-    assert.ok(unregistered, "Approved label is visible without a private target");
-    assert.doesNotMatch(JSON.stringify(privateView), /profile\.emailInput/u);
-    assert.deepEqual(unregistered, { ref: unregistered.ref, name: "Display name", role: "textbox", route: "profile", status: "unregistered" });
-    for (const action of ["highlight", "capture"]) {
-      assert.deepEqual(await studio(action, { ...session, ref: unregistered.ref }, 409), errorCode("TARGET_UNAVAILABLE"));
+    if (!process.argv.includes("--ordinary")) {
+      // Give the private control an approved name only in this browser to test registry privacy independently of label filtering.
+      const email = `document.querySelector(${JSON.stringify(selector("profile.emailInput"))})`;
+      await operator("eval", `${email}.setAttribute("aria-label", "Display name")`);
+      const privateView = await refresh("profile");
+      const unregistered = privateView.elements.find(element => element.name === "Display name" && element.status === "unregistered");
+      assert.ok(unregistered, "Approved label is visible without a private target");
+      assert.doesNotMatch(JSON.stringify(privateView), /profile\.emailInput/u);
+      assert.deepEqual(unregistered, { ref: unregistered.ref, name: "Display name", role: "textbox", route: "profile", status: "unregistered" });
+      for (const action of ["highlight", "capture"]) {
+        assert.deepEqual(await studio(action, { ...session, ref: unregistered.ref }, 409), errorCode("TARGET_UNAVAILABLE"));
+      }
+      await operator("eval", `${email}.removeAttribute("aria-label")`);
     }
-    await operator("eval", `${email}.removeAttribute("aria-label")`);
 
     await openPage(`${originA}/#/settings`, "settings.advancedToggle");
     await operator("click", selector("settings.advancedToggle"));
@@ -210,7 +212,7 @@ async function acceptance() {
 
   await step("6a block navigation outside A and recover in the same session", async () => {
     const checks = [];
-    for (const [label, url] of [["other port", originB + "/"], ["localhost alias", "http://localhost:5184/"], ["unlisted HTTPS host", "https://example.invalid/"]]) {
+    for (const [label, url] of [["other port", originB + "/"], ["localhost alias", `http://localhost:${new URL(originA).port}/`], ["unlisted HTTPS host", "https://example.invalid/"]]) {
       const attempt = await operate("open", url);
       const current = await operator("get", "url");
       if (current.url !== url) {
@@ -218,6 +220,11 @@ async function acceptance() {
         assert.equal(attempt.success, false);
         assert.match(attempt.error, /domain|allow.list/u);
         assert.equal(current.url, originA + "/");
+        if (process.argv.includes("--ordinary")) {
+          await refresh("dashboard", current.url);
+          checks.push(`${label}: CLI blocked; original page remained inspectable`);
+          continue;
+        }
         // A direct CLI open may be refused before navigation. A page-initiated navigation reaches
         // Chrome's document filter instead, so Studio observes the URL of the CLI's blocked page.
         await operator("eval", `setTimeout(() => location.assign(${JSON.stringify(url)}), 100)`);

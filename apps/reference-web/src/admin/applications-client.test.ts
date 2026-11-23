@@ -6,12 +6,12 @@ import { createAdminClient } from "./client.js";
 const appId = "app-0123456789ab";
 const application = {
   id: appId, name: "Orders application", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185", "http://localhost:5185"],
-  environment: "test", registryId: "fixture-b", enabled: true, updatedAt: "2026-11-23T10:00:00.000Z",
+  environment: "test", registryId: "fixture-b", source: "built-in", enabled: true, updatedAt: "2026-11-23T10:00:00.000Z",
 };
 const body = { name: application.name, origin: application.origin, allowedOrigins: application.allowedOrigins, environment: "test" as const, registryId: "fixture-b" };
-const list = { applications: [application], registries: [{ id: "reference", label: "Reference application" }, { id: "fixture-b", label: "Fixture application B" }] };
+const list = { applications: [application], registries: [{ id: "reference", label: "Reference application", source: "built-in" }, { id: "fixture-b", label: "Fixture application B", source: "built-in" }] };
 const element = { id: "orders.submit", route: "orders", role: "button", label: "Submit order", description: "Submits the order", operations: ["highlight", "click"], privacy: "public" };
-const registry = { routes: ["home", "orders"], elements: [element], postconditionNames: ["order.submitted"], previewable: false };
+const registry = { routes: ["home", "orders"], elements: [element], postconditionNames: ["order.submitted"], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" };
 const bad = (name: string, value: unknown) => ({ name, value });
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 const wtId = "wt-000000000001";
@@ -109,10 +109,10 @@ describe("application reply parsing", () => {
     bad("an unknown key", { ...list, extra: 1 }),
     bad("a missing registries key", { applications: [] }),
     bad("duplicate applications", { ...list, applications: [application, application] }),
-    bad("a registry entry with an unknown key", { ...list, registries: [{ id: "reference", label: "x", secret: 1 }] }),
-    bad("duplicate registries", { ...list, registries: [{ id: "a", label: "A" }, { id: "a", label: "B" }] }),
-    bad("a malformed registry id", { ...list, registries: [{ id: "bad id", label: "A" }] }),
-    bad("a blank registry label", { ...list, registries: [{ id: "a", label: "" }] }),
+    bad("a registry entry with an unknown key", { ...list, registries: [{ id: "reference", label: "x", source: "built-in", secret: 1 }] }),
+    bad("duplicate registries", { ...list, registries: [{ id: "a", label: "A", source: "built-in" }, { id: "a", label: "B", source: "built-in" }] }),
+    bad("a malformed registry id", { ...list, registries: [{ id: "bad id", label: "A", source: "built-in" }] }),
+    bad("a blank registry label", { ...list, registries: [{ id: "a", label: "", source: "built-in" }] }),
     bad("a non-array applications value", { ...list, applications: {} }),
   ])("refuses a list reply with $name", async ({ value }) => {
     const { fetch, client } = setup();
@@ -173,7 +173,7 @@ describe("application registry reply", () => {
 
   it("accepts a registry with no targets and no checks", async () => {
     const { fetch, client } = setup();
-    fetch.mockResolvedValueOnce(json({ routes: [], elements: [], postconditionNames: [], previewable: false }));
+    fetch.mockResolvedValueOnce(json({ routes: [], elements: [], postconditionNames: [], previewable: false, source: "built-in", pages: {}, previewMode: "in-app" }));
     expect((await client.applicationRegistry(appId)).kind).toBe("ok");
   });
 });
@@ -288,4 +288,49 @@ describe("walkthrough records carry their application", () => {
     expect(create!.definition).not.toHaveProperty("id");
     expect((update!.definition as { id: string }).id).toBe(wtId);
   });
+});
+
+it("accepts the integrated host's source, pages, previewMode and external fields without a response shim", async () => {
+  const { fetch, client } = setup();
+  const managedApp = { ...application, registryId: "studio-managed", source: "studio-managed" };
+  const managedList = { applications: [managedApp], registries: [...list.registries,
+    { id: "studio-managed", label: "Studio-managed (register targets from the browser)", source: "studio-managed" }] };
+  fetch.mockResolvedValueOnce(json(managedList));
+  expect(await client.applications()).toEqual({ kind: "ok", value: managedList });
+  fetch.mockResolvedValueOnce(json({ ...managedList, applications: [{ ...managedApp, source: "built-in" }] }));
+  expect(await client.applications()).toEqual({ kind: "failed" });
+  const managedRegistry = { ...registry, source: "studio-managed", pages: { "/": "home", "/#/orders": "orders" }, previewable: true,
+    previewMode: "application-window", postconditionNames: ["route.home", "route.orders"] };
+  fetch.mockResolvedValueOnce(json(managedRegistry));
+  expect(await client.applicationRegistry(appId)).toMatchObject({ kind: "ok", value: managedRegistry });
+  for (const invalid of [{ ...managedRegistry, pages: { "/": "unknown" } }, { ...managedRegistry, previewMode: "unknown" }, { ...managedRegistry, routes: ["home", "order-list"], pages: {}, elements: [] }]) {
+    fetch.mockResolvedValueOnce(json(invalid));
+    expect(await client.applicationRegistry(appId)).toEqual({ kind: "failed" });
+  }
+  const external = [{ id: wtId, title: def.title, description: def.description, application: { id: appId, name: application.name, origin: application.origin } }];
+  fetch.mockResolvedValueOnce(json({ walkthroughs: [def], external }));
+  expect(await client.published()).toEqual({ kind: "ok", value: [def] });
+  fetch.mockResolvedValueOnce(json({ walkthroughs: [def], external }));
+  expect(await client.externalGuides()).toEqual({ kind: "ok", value: external });
+});
+
+it("keeps the managed targets wire closed and sends status alone", async () => {
+  const { fetch, client } = setup();
+  const page = "/#/orders";
+  const references = { drafts: 0, published: 1 };
+  const target = { ...element, page, status: "active", references, updatedAt: application.updatedAt };
+  const reply = { targets: [target], routes: [{ route: target.route, page }], limits: { maxRoutes: 20, maxTargets: 200 } };
+  fetch.mockResolvedValueOnce(json(reply));
+  expect(await client.targets(appId)).toEqual({ kind: "ok", value: reply });
+  for (const invalid of [{ ...reply, limits: { ...reply.limits, maxTargets: 201 } }, { ...reply, routes: [] },
+    { ...reply, targets: [target, target] }, { ...reply, targets: [{ ...target, ref: "@e1" }] }, { ...reply, targets: [{ ...target, references: { ...references, drafts: -1 } }] }]) {
+    fetch.mockResolvedValueOnce(json(invalid));
+    expect(await client.targets(appId)).toEqual({ kind: "failed" });
+  }
+  fetch.mockResolvedValueOnce(json({ ...target, status: "disabled" }));
+  expect(await client.setTargetStatus(appId, target.id, "disabled")).toEqual({ kind: "ok", value: { ...target, status: "disabled" } });
+  const [url, request] = fetch.mock.calls.at(-1)!;
+  expect(url).toBe(`/api/admin/applications/${appId}/targets/orders.submit/status`);
+  expect(request.method).toBe("POST");
+  expect(JSON.parse(String(request.body))).toEqual({ status: "disabled" });
 });

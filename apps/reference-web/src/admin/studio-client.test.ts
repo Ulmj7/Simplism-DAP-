@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { parseStudioReply } from "./studio-client.js";
+import { parseStudioError, parseStudioReply } from "./studio-client.js";
 
 const trusted = { ref: "@e12", name: "Profile", role: "link", route: "dashboard", status: "trusted", targetId: "nav.profile", operations: ["highlight", "click"], privacy: "public" };
 const unregistered = { ref: "@e30", name: "Newsletter", role: "button", route: "profile", status: "unregistered" };
-const snapshot = (elements: unknown[] = [trusted, unregistered], extra: object = {}) => ({ url: "http://127.0.0.1:5173/#/dashboard", route: "dashboard", elements, ...extra });
-const connected = { sessionId: "s1", applicationId: "app-0123456789ab", application: "Reference application", origin: "http://127.0.0.1:5173" };
+const snapshot = (elements: unknown[] = [trusted, unregistered], extra: object = {}) => ({ url: "http://127.0.0.1:5173/#/dashboard", route: "dashboard", page: "/#/dashboard", hidden: 0, truncated: false, elements, ...extra });
+const connected = { sessionId: "s1", applicationId: "app-0123456789ab", application: "Reference application", origin: "http://127.0.0.1:5173", registrySource: "built-in" };
 const captured = { targetId: "nav.profile", route: "dashboard", name: "Profile", role: "link", operations: ["highlight", "click"] };
 
 describe("connect", () => {
   it("accepts exactly the contract shape", () => {
-    expect(parseStudioReply("connect", connected)).toEqual({ kind: "connected", ...connected });
+    expect(parseStudioReply("connect", connected)).toEqual({ kind: "connected", ...connected, resumed: false });
   });
   it.each<[string, unknown]>([
     ["not an object", "x"], ["null", null], ["an array", []],
@@ -32,11 +32,11 @@ describe("connect", () => {
 describe("refresh", () => {
   it("accepts trusted and unregistered candidates, a null route and an empty list", () => {
     const parsed = parseStudioReply("refresh", snapshot());
-    expect(parsed).toEqual({ kind: "snapshot", url: "http://127.0.0.1:5173/#/dashboard", route: "dashboard", elements: [
+    expect(parsed).toEqual({ kind: "snapshot", url: "http://127.0.0.1:5173/#/dashboard", route: "dashboard", page: "/#/dashboard", hidden: 0, truncated: false, elements: [
       { ...trusted }, { ...unregistered },
     ] });
     expect(parseStudioReply("refresh", snapshot([], { route: null }) as never)).not.toBeNull();
-    expect(parseStudioReply("refresh", { url: "http://127.0.0.1:5173/", route: null, elements: [{ ...unregistered, route: null }] })).not.toBeNull();
+    expect(parseStudioReply("refresh", { url: "http://127.0.0.1:5173/", route: null, page: null, hidden: 0, truncated: false, elements: [{ ...unregistered, route: null }] })).not.toBeNull();
   });
   it("accepts a long page url (250 characters) while origins keep their 200-character bound", () => {
     const base = "http://long-origin.example.test:5173/#/";
@@ -142,4 +142,44 @@ describe("highlight, capture and disconnect", () => {
     const reply = parseStudioReply("capture", captured);
     expect(reply && "target" in reply ? Object.keys(reply.target).sort() : []).toEqual(["name", "operations", "role", "route", "targetId"]);
   });
+});
+
+const registrable = {
+  ref: "@e9", name: "Submit", role: "button", route: null, status: "registrable",
+  proposal: { targetId: "orders.submit", role: "button", page: "/#/order-list", route: "orderList", routeIsNew: true,
+    suggestedLabel: "Submit", allowedOperations: ["highlight", "click"], defaultOperations: ["highlight", "click"], privacy: "public" },
+};
+it("requires the extended refresh and connection shapes and independently checks both route bounds", () => {
+  const disabled = { status: "disabled", targetId: "orders.previous", ref: "@e8", name: "Previous", role: "button", route: "orders" };
+  const wire = snapshot([registrable, disabled], { page: "/#/order-list", route: null, hidden: 5, truncated: true });
+  expect(parseStudioReply("refresh", wire)).toEqual({ ...wire, kind: "snapshot" });
+  expect(parseStudioReply("resume", { ...connected, resumed: true })).toMatchObject({ kind: "connected", resumed: true, registrySource: "built-in" });
+  expect(parseStudioReply("resume", { ...connected, resumed: false })).toBeNull();
+  expect(parseStudioReply("connect", { ...connected, registrySource: "unknown" })).toBeNull();
+  expect(parseStudioReply("refresh", { ...wire, hidden: -1 })).toBeNull();
+  expect(parseStudioReply("refresh", { ...wire, truncated: 0 })).toBeNull();
+  expect(parseStudioReply("refresh", { ...wire, page: "/?private=1" })).toBeNull();
+  for (const route of ["a", "orderList", "a".repeat(40)]) {
+    expect(parseStudioReply("refresh", snapshot([{ ...registrable, proposal: { ...registrable.proposal, route } }]))).not.toBeNull();
+  }
+  for (const route of ["", "OrderList", "order-list", "a".repeat(41)]) {
+    expect(parseStudioReply("refresh", snapshot([{ ...registrable, proposal: { ...registrable.proposal, route } }]))).toBeNull();
+    expect(parseStudioReply("refresh", { ...wire, route })).toBeNull();
+  }
+  for (const proposal of [{ ...registrable.proposal, privacy: "private" }, { ...registrable.proposal, page: "/#/x".padEnd(121, "x") },
+    { ...registrable.proposal, defaultOperations: ["highlight", "input"] }, { ...registrable.proposal, allowedOperations: ["click"] }]) {
+    expect(parseStudioReply("refresh", snapshot([{ ...registrable, proposal }]))).toBeNull();
+  }
+  expect(parseStudioReply("refresh", snapshot([{ ...disabled, operations: ["highlight"] }]))).toBeNull();
+});
+
+it("accepts only closed Studio errors and rejects issue overflow", () => {
+  const issues = Array<string>(20).fill("x".repeat(200));
+  expect(parseStudioError(422, { error: "INVALID_TARGET", issues })).toEqual({ code: "INVALID_TARGET", issues });
+  for (const body of [{ error: "INVALID_TARGET", issues: [...issues, "extra"] },
+    { error: "INVALID_TARGET", issues: ["x".repeat(201)] }, { error: "INVALID_TARGET" },
+    { error: "INVALID_TARGET", issues, secret: "x" }, { error: "TARGET_EXISTS", issues }, { error: "UNKNOWN_ERROR" }]) {
+    expect(parseStudioError(422, body)).toBeNull();
+  }
+  expect(parseStudioError(409, { error: "TARGET_EXISTS" })).toEqual({ code: "TARGET_EXISTS" });
 });

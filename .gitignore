@@ -10,4 +10,4 @@ coverage
 
 dist/
 *.log
-
+apps/reference-web/dist-embed/

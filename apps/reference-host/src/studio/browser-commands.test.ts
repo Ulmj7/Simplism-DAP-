@@ -14,8 +14,8 @@ describe("parseStudioCommand: exact keys per action", () => {
     expect(parseStudioCommand({ action: "disconnect", sessionId: "s" })).toEqual({ action: "disconnect", sessionId: "s" });
     expect(parseStudioCommand({ action: "disconnect", sessionId: "s", applicationId: APP })).toEqual({ action: "disconnect", sessionId: "s", applicationId: APP });
   });
-  it("covers all five actions and no other", () => {
-    expect([...STUDIO_ACTIONS]).toEqual(["connect", "refresh", "highlight", "capture", "disconnect"]);
+  it("covers all seven actions and no other", () => {
+    expect([...STUDIO_ACTIONS]).toEqual(["connect", "resume", "refresh", "highlight", "capture", "register", "disconnect"]);
     for (const action of ["navigate", "click", "type", "eval", "screenshot", "CONNECT", ""]) expect(parseStudioCommand({ action })).toBeNull();
   });
   it.each([

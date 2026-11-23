@@ -12,7 +12,7 @@
  *
  * Feature 004 (authoring): this server also registers the authoring routes (`registerAuthoringRoutes`, on the SAME transport instance) and the two authoring
  * capabilities. Studio V1A adds the Application Manager routes (`registerApplicationRoutes`) and two more capabilities; every draft belongs to an enrolled application.
- * To use them, add `saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled` to DAP_ENABLED_ACTIONS (default deny: they are off otherwise), give a DEV_SESSIONS entry
+ * To use them, add `saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus` to DAP_ENABLED_ACTIONS (default deny: they are off otherwise), give a DEV_SESSIONS entry
  * the permission `perm.walkthrough.maintain`, and set the optional DAP_DEMO_MAINTAINER_TOKEN to that session's token. The browser's `X-Demo-Role: user|maintainer`
  * header only chooses between the two server-held demo sessions for the demo (unknown or absent = user; `maintainer` without a configured maintainer token = user);
  * it is a DEV convenience and NOT the authority: permissions come from the host's own session table and every write goes through the Gateway. The authoring store has
@@ -27,6 +27,9 @@ import { registerAuthoringRoutes } from "../authoring/routes.js";
 import { createApplicationExtension } from "../studio/application-capabilities.js";
 import { registerApplicationRoutes } from "../studio/application-routes.js";
 import { createPostgresApplicationStore } from "../studio/postgres-application-store.js";
+import { createPostgresTargetStore } from "../studio/postgres-target-store.js";
+import { createRegistryResolver } from "../studio/registry-resolver.js";
+import { createTargetExtension } from "../studio/target-capabilities.js";
 import { createRegistryCatalog } from "../studio/registries.js";
 import { registerStudioBrowser } from "../studio/browser.js";
 import { composeReferenceHost } from "../compose.js";
@@ -68,9 +71,13 @@ try {
   // Studio V1A: applications are trusted, tenant-scoped configuration; the registry of each is a key into the host-trusted catalog (the built-in `reference` entry here).
   const applications = createPostgresApplicationStore(authoringPool);
   const catalog = createRegistryCatalog();
-  const authoring = createAuthoringExtension({ store, applications, catalog });
+  // Studio V1B: an application whose registry is `studio-managed` keeps its routes and targets in PostgreSQL; one resolver answers for both sources.
+  const targets = createPostgresTargetStore(authoringPool);
+  const resolver = createRegistryResolver({ catalog, targets });
+  const authoring = createAuthoringExtension({ store, applications, catalog, targets, resolver });
   const studioApplications = createApplicationExtension({ store: applications, catalog });
-  const { host } = await composeReferenceHost(env, { extensions: [guidance.extension, authoring.extension, studioApplications.extension] });
+  const studioTargets = createTargetExtension({ targets });
+  const { host } = await composeReferenceHost(env, { extensions: [guidance.extension, authoring.extension, studioApplications.extension, studioTargets.extension] });
   close = async () => { await host.close(); await authoringPool.end(); };
   phase = "session";
   if ((await host.openSession(token)) === null) throw new GuidanceConfigError("DAP_DEMO_SESSION_TOKEN session was refused");
@@ -95,9 +102,9 @@ try {
   const maintainerToken = env.DAP_DEMO_MAINTAINER_TOKEN;
   if (maintainerToken && (await host.openSession(maintainerToken)) === null) throw new GuidanceConfigError("DAP_DEMO_MAINTAINER_TOKEN session was refused");
   const resolvePrincipal = createDemoPrincipalResolver({ sessions: parseDevSessions(env.DEV_SESSIONS), userToken: token, maintainerToken, openSession: (evidence) => host.openSession(evidence) });
-  registerAuthoringRoutes(app, { store, applications, catalog, resolvePrincipal });
-  registerApplicationRoutes(app, { applications, catalog, resolvePrincipal });
-  registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: store });
+  registerAuthoringRoutes(app, { store, applications, catalog, targets, resolver, resolvePrincipal });
+  registerApplicationRoutes(app, { applications, catalog, targets, resolver, resolvePrincipal });
+  registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: store, targets, resolver });
   close = async () => { await app.close(); await host.close(); await authoringPool.end(); };
   phase = "listen";
   await app.listen({ host: bindHost, port });

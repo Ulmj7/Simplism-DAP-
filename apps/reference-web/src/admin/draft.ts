@@ -13,10 +13,14 @@ export const emptyStep = (): EditorStep => ({ target: "", wait: "ack", text: "" 
 export const emptyDraft = (): EditorDraft => ({ title: "", description: "", steps: [emptyStep()], completion: "" });
 
 export function draftToDefinition(draft: EditorDraft, registry: SemanticRegistry, id = LOCAL_ID): WalkthroughDef {
+  return compileDraft(draft, target => registry.get(target)?.route, id);
+}
+
+function compileDraft(draft: EditorDraft, routeFor: (target: string, index: number) => string | undefined, id: string): WalkthroughDef {
   const sequence: (Omit<Extract<Step, {kind: "navigate"}>, "next"> | Omit<Extract<Step, {kind: "guide"}>, "next">)[] = [];
   let previousRoute: string | undefined;
   draft.steps.forEach(({ target, wait, text, verify }, index) => {
-    const route = registry.get(target)?.route;
+    const route = routeFor(target, index);
     const number = index + 1;
     if (route !== undefined && route !== previousRoute) sequence.push({ kind: "navigate", id: `n${number}`, route });
     // An empty editor wait is rejected by the catalog like any other invalid form input.
@@ -36,7 +40,18 @@ export function definitionToDraft(def: WalkthroughDef, registry: SemanticRegistr
     ? [{ target: step.target, wait: step.wait, text: step.text, ...(step.verify === undefined ? {} : { verify: step.verify }) }] : []);
   if (steps.length < 1 || steps.length > MAX_EDITOR_STEPS) return null;
   const draft = { title: def.title, description: def.description, steps, completion: end.text };
-  const expected = draftToDefinition(draft, registry, def.id);
+  // Disabled targets remain in saved steps. Infer their authored route only for the lossless
+  // shape check, so the editor can show validation errors against the current active registry.
+  let lastRoute: string | undefined;
+  const authoredRoutes: (string | undefined)[] = [];
+  for (const step of def.steps) {
+    if (step.kind === "navigate") lastRoute = step.route;
+    if (step.kind === "guide") authoredRoutes.push(lastRoute);
+  }
+  const expected = compileDraft(draft, (target, index) => {
+    const route = authoredRoutes[index];
+    return registry.get(target)?.route ?? (route && registry.routes.includes(route) ? route : undefined);
+  }, def.id);
   if (!sameFields(def, expected) || def.steps.length !== expected.steps.length || !def.steps.every((step, i) => sameFields(step, expected.steps[i]!))) return null;
   return draft;
 }

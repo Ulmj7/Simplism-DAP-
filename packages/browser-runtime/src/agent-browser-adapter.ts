@@ -7,7 +7,7 @@ import { BrowserRuntimeError } from "./errors.js";
 import type { BrowserRuntimeErrorCode } from "./errors.js";
 import { normalizeSnapshot } from "./snapshot.js";
 import type { ApprovedLabel } from "./snapshot.js";
-import type { BrowserRuntime, BrowserSnapshot, ElementRef } from "./types.js";
+import type { BrowserRuntime, BrowserSnapshot, ElementFacts, ElementRef } from "./types.js";
 
 const executable = fileURLToPath(new URL("../../../vendor/agent-browser/cli/target/release/agent-browser", import.meta.url));
 const config = fileURLToPath(new URL("../agent-browser.json", import.meta.url));
@@ -15,6 +15,13 @@ const commandTimeout = 5_000;
 const maxOrigins = 5;
 // Upper bound for one batch inspection (one CLI attribute read per candidate).
 const maxInspected = 64;
+// The constant attribute reads that make up the facts of one element (no caller text ever reaches a command).
+const factAttributes = ["type", "autocomplete", "data-ai-private", "data-ai-ignore", "data-ai-redact"] as const;
+const maxInputType = 40;
+const maxAutocomplete = 200;
+// "any" routes: a hash-routed page shape (`/path` plus an optional `#/route`), no query, no percent escapes, no `=`/`&`: a fragment such as `#access_token=…` is never a page.
+const anyPage = /^\/[A-Za-z0-9._~/-]*(?:#\/?[A-Za-z0-9._~/-]*)?$/u;
+const maxPageChars = 200;
 
 interface TrustedObservation {
   readonly route: string;
@@ -23,10 +30,12 @@ interface TrustedObservation {
 }
 
 export interface AgentBrowserAdapterOptions {
-  // Exposure policy: the only role + accessible-name pairs that may leave the adapter.
-  readonly labels: readonly ApprovedLabel[];
-  // Navigation policy: static `pathname + hash` strings the session may be on.
-  readonly routes: readonly string[];
+  // Exposure policy: the only role + accessible-name pairs that may leave the adapter. "all" (Studio-managed applications, whose targets are not known in advance) exposes
+  // the role and bounded accessible name of every operable control instead, never a value or any text; the caller decides which of them go any further.
+  readonly labels: readonly ApprovedLabel[] | "all";
+  // Navigation policy: static `pathname + hash` strings the session may be on. "any" accepts any hash-routed page (`/` or `/path`, optional `#/route`, at most 200
+  // characters, no query and no characters outside letters, digits and `._~/-`) on an allowed ORIGIN: the exact scheme, host and port stay enforced on every URL.
+  readonly routes: readonly string[] | "any";
   // Navigation policy: 1..5 normalized origins (`scheme://host[:port]`, http/https only, no
   // credentials, path, query or hash). The CLI allow-list is host-level (the unique hostnames of
   // these origins), so DAP itself enforces the exact scheme, host and port on every URL it reads.
@@ -63,8 +72,10 @@ function normalizeOrigins(value: unknown): { readonly origins: ReadonlySet<strin
 }
 
 export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, run: RunCli = localCli(executable)): BrowserRuntime {
-  const labels = options.labels.map(label => ({ ...label }));
-  const routes = new Set(options.routes);
+  if (options.labels !== "all" && !Array.isArray(options.labels)) throw new TypeError("labels must be a list of labels or \"all\"");
+  if (options.routes !== "any" && !Array.isArray(options.routes)) throw new TypeError("routes must be a list of routes or \"any\"");
+  const labels = options.labels === "all" ? "all" : options.labels.map(label => ({ ...label }));
+  const routes = options.routes === "any" ? "any" : new Set(options.routes);
   const { origins, hostnames } = normalizeOrigins(options.origins);
   const trusted = options.observation;
   const states = new Map(Object.entries(trusted?.states ?? {}));
@@ -94,7 +105,8 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
   function approvedUrl(value: unknown): string {
     const url = allowedUrl(value);
     const route = url.pathname + url.hash;
-    if (!origins.has(url.origin) || !routes.has(route) || url.search) throw new BrowserRuntimeError("DOMAIN_BLOCKED");
+    const page = routes === "any" ? route.length <= maxPageChars && anyPage.test(route) : routes.has(route);
+    if (!origins.has(url.origin) || !page || url.search) throw new BrowserRuntimeError("DOMAIN_BLOCKED");
     return url.origin + route;
   }
 
@@ -147,6 +159,29 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
     return currentSnapshot(from);
   }
 
+  // The facts of one element from five constant attribute reads. null = not readable (gone, unusable reply, or a value too long to represent): never trusted.
+  async function readFacts(ref: ElementRef, url: string): Promise<ElementFacts | null> {
+    const values: (string | null)[] = [];
+    for (const attribute of factAttributes) {
+      let reply: Record<string, unknown>;
+      try { reply = await command(["get", "attr", ref, attribute], "REF_NOT_FOUND"); }
+      catch (error) {
+        if (!(error instanceof BrowserRuntimeError) || (error.code !== "REF_NOT_FOUND" && error.code !== "INVALID_BROWSER_OUTPUT")) throw error;
+        return null;
+      }
+      // Policy violations throw. Navigation during the batch is drift for every element.
+      if (approvedUrl(reply.origin) !== url) throw new BrowserRuntimeError("REF_NOT_FOUND");
+      if (reply.value !== null && typeof reply.value !== "string") return null;
+      values.push(reply.value);
+    }
+    const [type, autocomplete, priv, ignore, redact] = values as [string | null, string | null, string | null, string | null, string | null];
+    if ((type?.length ?? 0) > maxInputType || (autocomplete?.length ?? 0) > maxAutocomplete) return null;
+    const normal = (value: string | null) => (value === null || value.trim() === "" ? null : value.trim().toLowerCase());
+    return Object.freeze({
+      tagName: null, inputType: normal(type), autocomplete: normal(autocomplete), dataAiPrivate: priv !== null, dataAiIgnore: ignore !== null, dataAiRedact: redact !== null,
+    });
+  }
+
   const semanticId = (value: unknown) =>
     typeof value === "string" && /^[A-Za-z][A-Za-z0-9.]{0,79}$/u.test(value) ? value : null;
 
@@ -196,6 +231,17 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
           found.set(ref, semanticId(attribute.value));
         } else found.set(ref, null);
       }
+      return found;
+    }),
+    inspectElementFacts: (refs, from) => exclusive(async () => {
+      started();
+      // Pure checks first: a malformed, unknown or surplus ref is refused before any command runs.
+      if (!Array.isArray(refs) || refs.length > maxInspected) throw new BrowserRuntimeError("REF_NOT_FOUND");
+      const known = new Set<unknown>(from.elements.map(element => element.ref));
+      for (const ref of refs as readonly unknown[]) if (typeof ref !== "string" || !/^@e[1-9]\d{0,8}$/u.test(ref) || !known.has(ref)) throw new BrowserRuntimeError("REF_NOT_FOUND");
+      const current = await currentSnapshot(from);
+      const found = new Map<ElementRef, ElementFacts | null>();
+      for (const ref of new Set(refs)) found.set(ref, await readFacts(ref, current.snapshot.url));
       return found;
     }),
     highlight: (ref, from) => exclusive(async () => {
