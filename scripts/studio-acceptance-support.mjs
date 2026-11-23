@@ -41,7 +41,8 @@ const config = fileURLToPath(new URL("../packages/browser-runtime/agent-browser.
 const embedScriptPath = fileURLToPath(new URL("../apps/reference-web/dist-embed/dap-embed.js", import.meta.url));
 const managed = process.argv.includes("--managed");
 const completion = process.argv.includes("--completion");
-const sdk = process.argv.includes("--runtime-sdk");
+const extension = process.argv.includes("--browser-extension");
+const sdk = extension || process.argv.includes("--runtime-sdk");
 const v1bPorts = completion || sdk || managed || process.argv.includes("--v1b-ports");
 const ports = sdk ? [8795, 5186, 5187, 5188] : completion ? [8795, 5186, 5187, 5188, 5189] : v1bPorts ? [8795, 5186, 5187] : [8794, 5184, 5185];
 export const hostOrigin = `http://127.0.0.1:${ports[0]}`;
@@ -241,13 +242,17 @@ export async function browserCommand(session, ...args) {
   assert.ok(ownedSessions.has(session) && (await inventory()).has(session), "Operate only on a live acceptance session");
   return cliJson(["--session", session, ...args]);
 }
-export async function launchOperator(url = originA + "/") {
+export async function launchOperator(url = originA + "/", unpacked) {
+  assert.ok(!unpacked || (extension && useHeaded), "Unpacked extension acceptance requires headed Chromium in extension mode");
   assert.ok((sdk && [originB + "/", `http://127.0.0.1:${ports[3]}/`].includes(url)) || url === originA + "/" || (completion && standaloneFixture && url === standaloneFixture.origin + "/"),
     "Launch only on an isolated acceptance fixture");
   const session = `studio-ui-${randomUUID()}`;
   assert.ok(!baseline.has(session), "Operator must have a fresh session");
   ownedSessions.add(session);
-  const result = await cliJson(["--session", session, "--allowed-domains", "127.0.0.1", "--no-webmcp",
+  const launchArgs = unpacked
+    ? ["--extension", unpacked.path, "--profile", unpacked.profile]
+    : ["--allowed-domains", "127.0.0.1"];
+  const result = await cliJson(["--session", session, ...launchArgs, "--no-webmcp",
     ...(useHeaded ? ["--headed"] : []), "open", url]);
   assert.equal(result.success, true, result.error);
   await trackProcesses();
