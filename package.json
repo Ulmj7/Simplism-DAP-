@@ -32,7 +32,7 @@
     "test:authoring": "vitest run apps/reference-host/src/authoring apps/reference-web/src/admin apps/reference-web/src/usage* tests/architecture/authoring-boundary.test.ts tests/integration/authoring*.test.ts",
     "test:guidance": "vitest run packages/ai/src/guidance packages/testkit/src/guidance packages/testkit/src/fake-guidance-model.test.ts apps/reference-host/src/guidance apps/reference-host/src/http tests/architecture/ai-guidance-boundary.test.ts tests/architecture/guidance-host-boundary.test.ts tests/integration/guidance tests/integration/c01-guidance-transport.test.ts tests/integration/c01-help-end-to-end.test.ts",
     "build:agent-browser": "cargo build --locked --release --manifest-path vendor/agent-browser/cli/Cargo.toml",
-    "test:studio": "vitest run packages/browser-runtime apps/reference-host/src/studio apps/reference-web/src/admin apps/reference-web/src/embed tests/integration/studio-fixture-app.test.ts",
+    "test:studio": "vitest run packages/browser-runtime apps/reference-host/src/studio apps/reference-web/src/admin apps/reference-web/src/embed tests/integration/studio-fixture-app.test.ts tests/integration/studio-history-fixture.test.ts",
     "probe:studio-domains": "tsc -b && node scripts/studio-domain-probe.mjs",
     "acceptance:studio-v1-host": "tsc -b && node scripts/studio-v1-host-acceptance.mjs",
     "acceptance:studio-v1b-ui": "tsc -b && npm run build:embed && node scripts/studio-v1b-ui-acceptance.mjs --managed",
