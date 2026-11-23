@@ -64,6 +64,11 @@ describe("S5 workflow versions and concurrency", () => {
     expect(await t.post("status", { status: "draft" })).toMatchObject({ status: 200, body: { revision: 7, liveVersion: null, latestVersion: 2 } });
     expect((await t.runtime(`/${t.id}`)).statusCode).toBe(404);
     expect((await t.get("versions/1")).body).toEqual({ ...first, live: false });
+
+    expect(await t.publish(7)).toMatchObject({ status: 200, body: { revision: 8, liveVersion: 3, latestVersion: 3, version: 3 } });
+    expect((await t.runtime(`/${t.id}`)).json()).toMatchObject({ version: 3, definition: { title: "First version" } });
+    expect((await t.get("versions/1")).body).toEqual({ ...first, live: false });
+    expect((await t.get("versions/2")).body).toMatchObject({ version: 2, live: false, definition: { title: "Second version" } });
     expect((await t.get("versions", "user")).status).toBe(403);
     const other = await startHost(closers, hosts, owner);
     expect((await other.call("GET", `${t.path}/versions/1`, "maintainer")).status).toBe(404);
