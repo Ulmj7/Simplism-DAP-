@@ -21,6 +21,9 @@ import { createApplicationExtension } from "../apps/reference-host/dist/studio/a
 import { registerApplicationRoutes } from "../apps/reference-host/dist/studio/application-routes.js";
 import { registerStudioBrowser } from "../apps/reference-host/dist/studio/browser.js";
 import { createPostgresApplicationStore } from "../apps/reference-host/dist/studio/postgres-application-store.js";
+import { createPostgresTargetStore } from "../apps/reference-host/dist/studio/postgres-target-store.js";
+import { createRegistryResolver } from "../apps/reference-host/dist/studio/registry-resolver.js";
+import { createTargetExtension } from "../apps/reference-host/dist/studio/target-capabilities.js";
 import { createRegistryCatalog } from "../apps/reference-host/dist/studio/registries.js";
 import { createAgentBrowserAdapter } from "../packages/browser-runtime/dist/index.js";
 import { localCli } from "../packages/browser-runtime/dist/cli.js";
@@ -33,17 +36,20 @@ const browserEnv = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "DISPL
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cli = fileURLToPath(new URL("../vendor/agent-browser/cli/target/release/agent-browser", import.meta.url));
 const config = fileURLToPath(new URL("../packages/browser-runtime/agent-browser.json", import.meta.url));
-const hostOrigin = "http://127.0.0.1:8794";
-export const originA = "http://127.0.0.1:5184";
-export const originB = "http://127.0.0.1:5185";
-const ports = [8794, 5184, 5185];
-const useHeaded = Boolean(browserEnv.DISPLAY || browserEnv.WAYLAND_DISPLAY);
+const managed = process.argv.includes("--managed");
+const ports = managed ? [8795, 5186, 5187] : [8794, 5184, 5185];
+const hostOrigin = `http://127.0.0.1:${ports[0]}`;
+export const originA = `http://127.0.0.1:${ports[1]}`;
+export const originB = `http://127.0.0.1:${ports[2]}`;
+const useHeaded = !process.argv.includes("--headless") && (managed || Boolean(browserEnv.DISPLAY || browserEnv.WAYLAND_DISPLAY));
 const deadline = 30_000;
 const databaseUrl = process.env.DAP_DATABASE_URL;
-assert.ok(databaseUrl, "Set DAP_DATABASE_URL for dapstudiov1 on port 54359");
-const database = URL.parse(databaseUrl);
-assert.ok(database && database.protocol === "postgresql:" && database.hostname === "127.0.0.1" && database.port === "54359"
-  && database.username === "dap_app" && database.pathname === "/dap", "Use the dapstudiov1 application database");
+const databasePort = process.env.DAP_ACCEPTANCE_DB_PORT;
+assert.ok(databasePort && /^[1-9][0-9]{0,4}$/u.test(databasePort) && Number(databasePort) <= 65_535
+  && !["5432", "8787"].includes(databasePort), "Set DAP_ACCEPTANCE_DB_PORT to the isolated acceptance database port");
+const database = URL.parse(databaseUrl ?? "");
+assert.ok(database && database.protocol === "postgresql:" && database.hostname === "127.0.0.1" && database.port === databasePort
+  && database.username === "dap_app" && database.pathname === "/dap" && (!managed || databasePort === "54362"), "Use the isolated acceptance database as dap_app");
 await access(cli);
 
 export const elapsed = started => Math.round(performance.now() - started);
@@ -128,6 +134,7 @@ function demoSession(tenant, userId, permissions) {
 const primary = demoSession(tenantId, "studio-acceptance", ["perm.walkthrough.maintain"]);
 const foreign = demoSession(randomUUID(), "studio-foreign", ["perm.walkthrough.maintain"]);
 const user = demoSession(tenantId, "studio-user", []);
+const peer = demoSession(tenantId, "studio-peer", ["perm.walkthrough.maintain"]);
 export const requests = [];
 const abort = new AbortController();
 const stop = () => abort.abort();
@@ -139,33 +146,40 @@ async function startHost() {
   const store = createPostgresWalkthroughStore(pool);
   const applications = createPostgresApplicationStore(pool);
   const catalog = createRegistryCatalog([{ ...fixtureB, previewable: false }]);
-  const authoring = createAuthoringExtension({ store, applications, catalog });
+  const targets = createPostgresTargetStore(pool);
+  const resolver = createRegistryResolver({ catalog, targets });
+  const targetExtension = createTargetExtension({ targets });
+  const authoring = createAuthoringExtension({ store, applications, catalog, targets, resolver });
   const application = createApplicationExtension({ store: applications, catalog });
-  const rawSessions = JSON.stringify([primary, foreign, user]);
+  const rawSessions = JSON.stringify([primary, foreign, user, peer]);
   ({ host } = await composeReferenceHost({
     NODE_ENV: "test", DAP_ALLOW_DEV_AUTH: "1", DAP_DATABASE_URL: databaseUrl, DEV_SESSIONS: rawSessions,
-    DAP_ENABLED_ACTIONS: "demoLookup,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled",
-  }, { extensions: [authoring.extension, application.extension] }));
+    DAP_ENABLED_ACTIONS: "demoLookup,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus",
+  }, { extensions: [authoring.extension, application.extension, targetExtension.extension] }));
   const resolverFor = session => createDemoPrincipalResolver({
     sessions: parseDevSessions(rawSessions), userToken: user.token, maintainerToken: session.token,
     openSession: token => host.openSession(token),
   });
   const primaryResolver = resolverFor(primary);
   const foreignResolver = resolverFor(foreign);
-  const resolvePrincipal = headers => (headers["x-studio-acceptance-tenant"] === "foreign" ? foreignResolver : primaryResolver)(headers);
+  const peerResolver = resolverFor(peer);
+  const resolvePrincipal = headers => (headers["x-studio-acceptance-tenant"] === "foreign" ? foreignResolver
+    : headers["x-studio-acceptance-tenant"] === "peer" ? peerResolver : primaryResolver)(headers);
   app = createGuidanceTransport({
     ask: async () => ({ kind: "clarify", message: "Acceptance host" }), catalog: { list: () => [] },
     resolveSession: async () => null, proposals: createProposalStore({ now: Date.now, newId: randomUUID }),
   });
-  app.addHook("onResponse", async (request, reply) => {
+  app.addHook("onSend", async (request, reply, payload) => {
+    const response = request.url === "/api/studio/browser" && typeof payload === "string" ? JSON.parse(payload) : undefined;
     requests.push({ method: request.method, path: request.url, role: request.headers["x-demo-role"],
-      body: request.body, status: reply.statusCode, ms: Math.round(reply.elapsedTime) });
+      body: request.body, response, status: reply.statusCode, ms: Math.round(reply.elapsedTime) });
+    return payload;
   });
-  registerAuthoringRoutes(app, { store, applications, catalog, resolvePrincipal });
-  registerApplicationRoutes(app, { applications, catalog, resolvePrincipal });
+  registerAuthoringRoutes(app, { store, applications, catalog, targets, resolver, resolvePrincipal });
+  registerApplicationRoutes(app, { applications, catalog, targets, resolver, resolvePrincipal });
   const execute = localCli(cli);
   registerStudioBrowser(app, {
-    resolvePrincipal, applications, catalog, authoring: store,
+    resolvePrincipal, applications, catalog, authoring: store, targets, resolver,
     createRuntime: options => createAgentBrowserAdapter(options, (args, timeout) => {
       const session = args[args.indexOf("--session") + 1];
       assert.match(session, /^dap-[0-9a-f-]{36}$/u);
@@ -175,7 +189,7 @@ async function startHost() {
       return execute(useHeaded ? args : args.filter(arg => arg !== "--headed"), timeout);
     }),
   });
-  await app.listen({ host: "127.0.0.1", port: 8794 });
+  await app.listen({ host: "127.0.0.1", port: ports[0] });
 }
 
 export async function request(method, path, status, body, tenant = "primary") {
@@ -193,7 +207,7 @@ export async function studio(action, fields, status = 200) {
   const result = await request("POST", "/api/studio/browser", status, { action, ...fields });
   const ms = elapsed(start);
   assert.ok(ms < deadline, `${action} finished within the request budget`);
-  if (status === 200) metrics[action].push(action === "refresh" ? { ms, candidates: result.elements.length } : ms);
+  if (status === 200 && metrics[action]) metrics[action].push(action === "refresh" ? { ms, candidates: result.elements.length } : ms);
   return result;
 }
 export const browserSession = () => nativeSession;
@@ -217,16 +231,23 @@ export async function launchOperator() {
   return session;
 }
 
+async function finalManagedStep(name, operation) {
+  const started = performance.now();
+  try { const proof = await operation(); console.log(`STEP 14 PASS ${elapsed(started)} ms | ${proof}`); }
+  catch (error) { console.log(`STEP 14 FAIL ${elapsed(started)} ms | ${name}`); throw error; }
+}
 export async function runStudioAcceptance(acceptance) {
   let failure;
   try {
     await step("0 start isolated host, Vite and fixture B", async () => {
       for (const port of ports) assert.equal(await portOpen(port), false, `Port ${port} is already in use`);
       await startHost();
-      fixture = await startFixtureApp({ port: 5185, name: "Second application" });
+      fixture = await startFixtureApp({ port: ports[2], name: "Second application", ...(managed ? {
+        embedScriptPath: fileURLToPath(new URL("../apps/reference-web/dist-embed/dap-embed.js", import.meta.url)), dapOrigin: originA, extras: true,
+      } : {}) });
       assert.equal(fixture.origin, originB);
-      vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "apps/reference-web", "--port", "5184", "--strictPort"], {
-        cwd: root, env: { ...browserEnv, DAP_HTTP_PORT: "8794" }, stdio: ["ignore", "ignore", "inherit"],
+      vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "apps/reference-web", "--port", String(ports[1]), "--strictPort"], {
+        cwd: root, env: { ...browserEnv, DAP_HTTP_PORT: String(ports[0]) }, stdio: ["ignore", "ignore", "inherit"],
       });
       await once(vite, "spawn");
       await until(async () => (await fetch(originA, { signal: AbortSignal.timeout(1000) }).catch(() => null))?.ok, "Reference Vite server did not start");
@@ -238,7 +259,7 @@ export async function runStudioAcceptance(acceptance) {
     console.error(error);
   } finally {
     try {
-      await step("cleanup compare sessions, PIDs and ports", async () => {
+      await (managed ? finalManagedStep : step)("cleanup compare sessions, PIDs and ports", async () => {
         const tracking = trackProcesses().catch(error => { failure ??= error; });
         await tracking;
         const results = await Promise.allSettled([app?.close(), fixture?.close()]);
