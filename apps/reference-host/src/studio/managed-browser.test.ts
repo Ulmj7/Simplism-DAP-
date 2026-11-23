@@ -988,12 +988,13 @@ describe("repair: re-bind a registered target to a live control", () => {
     expect(h.calls).toEqual([]);
   });
   it("a retired marker remains reserved as another target's durable id during a dry run", async () => {
-    const h = await broken([control("Export", "link", "orders.exportButton"), control("Old note", "textbox", "orders.note")]);
+    const h = await broken([control("Export", "link", "orders.exportButton"), control("Replacement note", "textbox", "orders.replacementNote")]);
     const rebound = await h.targets.repair(SCOPE, MANAGED, "orders.note", {
       marker: "orders.noteNew", role: "textbox", operations: ["highlight", "input"], label: "Order note", description: "The note.",
     }, () => []);
     expect(rebound.kind).toBe("repaired");
     await h.command(refresh());
+    h.runtimes[0]!.controls[1]!.id = "orders.note";
     expect(await h.command(repairBody({ ref: "@e2", operations: ["highlight", "input"] }))).toMatchObject({ status: 409, body: { error: "MARKER_IN_USE" } });
     expect(h.calls).toEqual([]);
   });
