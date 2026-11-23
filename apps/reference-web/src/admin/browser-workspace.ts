@@ -197,7 +197,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
     countLine.textContent = String(candidates.length);
     const notes: string[] = [];
     if (hidden > 0) notes.push(`${hidden} ${hidden === 1 ? "element is" : "elements are"} not shown: no DAP marker or not eligible.`);
-    if (truncated) notes.push(`Only the first ${candidates.length === 0 ? "" : "64 "}elements of this page were inspected. Narrow the page and inspect again to see the rest.`);
+    if (truncated) notes.push(`Only the first 64 elements of this page were inspected. Narrow the page and inspect again to see the rest.`);
     listNote.textContent = notes.join(" ");
     listNote.hidden = notes.length === 0;
   }
@@ -345,7 +345,8 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
     if (action === "disconnect") {
       // However the host answers (closed already, application gone, mismatch, unreachable), an explicit Disconnect ends with no session and no stuck ERROR.
       if (code !== undefined && closedByHost[code] !== undefined) warn(closedByHost[code]!);
-      else say(code === "SESSION_CLOSED" || code === "APPLICATION_MISMATCH" ? disconnected : disconnectUnsure);
+      else if (code !== undefined) warn(code === "SESSION_CLOSED" || code === "APPLICATION_MISMATCH" ? disconnected : disconnectUnsure);
+      else say(disconnectUnsure);
       lost(); state = "DISCONNECTED"; offeredReconnect = false;
       return;
     }

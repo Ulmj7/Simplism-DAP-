@@ -1,6 +1,6 @@
 import { createSemanticRegistry, ID_PATTERN, isPlainText, MAX_DESCRIPTION, MAX_LABEL, OPERATIONS, ROLES } from "@dap/walkthrough";
 import type { SemanticElementDef, SemanticRegistry } from "@dap/walkthrough";
-import { LIMITS, POSTCONDITION, REGISTRY_ID, APPLICATION_ID, exact, normalizedOrigin, pageOf, record, routeKey, unsafeKey } from "./wire.js";
+import { LIMITS, POSTCONDITION, REGISTRY_ID, APPLICATION_ID, exact, managedPageOf, normalizedOrigin, pageOf, record, routeKey, unsafeKey } from "./wire.js";
 import type { Bag } from "./wire.js";
 
 /** Applications (Studio V1A, D1/D2): trusted, tenant-scoped records the host owns. Every reply is parsed against an exact shape. */
@@ -75,13 +75,13 @@ export function parseApplicationList(value: unknown): ApplicationList | null {
 }
 
 /** `page` -> route: closed, bounded, every page well-formed and every route one of the registry's. */
-function parsePages(value: unknown, routes: readonly unknown[]): Readonly<Record<string, string>> | null {
+function parsePages(value: unknown, routes: readonly unknown[], managed: boolean): Readonly<Record<string, string>> | null {
   if (!object(value)) return null;
   const entries = Object.entries(value as Bag);
   if (entries.length > LIMITS.pages) return null;
   const pages: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [page, route] of entries) {
-    if (unsafeKey(page) || !pageOf(page) || !routeKey(route) || !routes.includes(route)) return null;
+    if (unsafeKey(page) || !(managed ? managedPageOf(page) : pageOf(page)) || !routeKey(route) || !routes.includes(route)) return null;
     pages[page] = route;
   }
   return Object.freeze({ ...pages });
@@ -91,16 +91,16 @@ function parsePages(value: unknown, routes: readonly unknown[]): Readonly<Record
 export function parseApplicationRegistry(value: unknown): ApplicationRegistry | null {
   if (!object(value) || !exact(value, ["routes", "elements", "postconditionNames", "previewable", "source", "pages", "previewMode"]) || typeof value.previewable !== "boolean"
     || (value.source !== "built-in" && value.source !== "studio-managed") || (value.previewMode !== "in-app" && value.previewMode !== "application-window")
-    || !Array.isArray(value.routes) || value.routes.length > LIMITS.registryRoutes || !Array.isArray(value.elements) || value.elements.length > LIMITS.registryElements
+    || !Array.isArray(value.routes) || !value.routes.every(routeKey) || value.routes.length > LIMITS.registryRoutes || !Array.isArray(value.elements) || value.elements.length > LIMITS.registryElements
     || !Array.isArray(value.postconditionNames) || value.postconditionNames.length > LIMITS.postconditions) return null;
   const names = value.postconditionNames as unknown[];
   if (!names.every(name => typeof name === "string" && name.length <= LIMITS.postconditionChars && POSTCONDITION.test(name)) || new Set(names).size !== names.length) return null;
-  const pages = parsePages(value.pages, value.routes as unknown[]);
+  const pages = parsePages(value.pages, value.routes as unknown[], value.source === "studio-managed");
   if (pages === null) return null;
   const elements: SemanticElementDef[] = [];
   for (const item of value.elements as unknown[]) {
     if (!object(item) || !exact(item, ["id", "route", "role", "label", "description", "operations", "privacy"]) || item.privacy !== "public"
-      || typeof item.id !== "string" || item.id.length > 80 || !ID_PATTERN.test(item.id) || typeof item.route !== "string"
+      || typeof item.id !== "string" || item.id.length > 80 || !ID_PATTERN.test(item.id) || !routeKey(item.route)
       || !(ROLES as readonly unknown[]).includes(item.role) || !isPlainText(item.label, MAX_LABEL) || !isPlainText(item.description, MAX_DESCRIPTION)
       || !Array.isArray(item.operations) || item.operations.length === 0 || item.operations.length > OPERATIONS.length
       || !(item.operations as unknown[]).every(operation => (OPERATIONS as readonly unknown[]).includes(operation))) return null;

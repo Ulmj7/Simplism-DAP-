@@ -303,7 +303,7 @@ it("accepts the integrated host's source, pages, previewMode and external fields
     previewMode: "application-window", postconditionNames: ["route.home", "route.orders"] };
   fetch.mockResolvedValueOnce(json(managedRegistry));
   expect(await client.applicationRegistry(appId)).toMatchObject({ kind: "ok", value: managedRegistry });
-  for (const invalid of [{ ...managedRegistry, pages: { "/": "unknown" } }, { ...managedRegistry, previewMode: "unknown" }]) {
+  for (const invalid of [{ ...managedRegistry, pages: { "/": "unknown" } }, { ...managedRegistry, previewMode: "unknown" }, { ...managedRegistry, routes: ["home", "order-list"], pages: {}, elements: [] }]) {
     fetch.mockResolvedValueOnce(json(invalid));
     expect(await client.applicationRegistry(appId)).toEqual({ kind: "failed" });
   }
