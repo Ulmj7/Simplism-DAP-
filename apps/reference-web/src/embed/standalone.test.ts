@@ -8,7 +8,7 @@ import type { ManagedBundle } from "./protocol.js";
 
 const api = "http://127.0.0.1:5186";
 const scriptSrc = `${api}/dap-embed.js`;
-const KEY = "rk-0123456789abcdef0123456789abcdef";
+const KEY = "rk-0123456789abcdef0123456789abcdef-fedcba9876543210fedcba9876543210";
 const guides = { guides: [{ id: "wt-profile", title: "Change display name", description: "Change your display name" }, { id: "wt-other", title: "Other guide", description: "Something else" }] };
 const bundle = (): ManagedBundle => ({
   application: { id: "app-0123456789ab", name: "Profile", origin: window.location.origin },
@@ -126,7 +126,7 @@ describe("standalone launcher", () => {
 describe("standalone is inert", () => {
   const nothing = () => { expect(launcher()).toBeNull(); expect(Object.hasOwn(window, "DapEmbed")).toBe(false); };
   it.each([
-    ["a wrong key shape", { key: "rk-short" }], ["an uppercase key", { key: KEY.toUpperCase() }], ["a non-string key", { key: 5 }], ["a key with a suffix", { key: KEY + "0" }],
+    ["a key without the rk- prefix", { key: "xx-short" }], ["an empty key body", { key: "rk-" }], ["a key of 81 characters", { key: "rk-" + "a".repeat(78) }], ["a key with a slash", { key: "rk-a/../b" }], ["a key with a space", { key: "rk-a b" }], ["a key with a dot", { key: "rk-a.b" }], ["a non-string key", { key: 5 }],
   ])("%s: no request, no launcher, no global", async (_label, over) => {
     const fetcher = vi.fn();
     await install(fetcher as unknown as typeof fetch, over);
@@ -186,5 +186,8 @@ describe("pagehide removes everything the embed added", () => {
 
 describe("parseGuideList / key", () => {
   it("accepts the exact documented shape", () => { expect(parseGuideList(guides)).toEqual(guides.guides); expect(RUNTIME_KEY.test(KEY)).toBe(true); });
+  it("treats the key as an opaque rk-… string of at most 80 characters (any internal structure)", () => {
+    for (const key of ["rk-a", "rk-" + "a".repeat(77), "rk-0123456789abcdef0123456789abcdef", "rk-Tenant_1-Part-2"]) expect(RUNTIME_KEY.test(key), key).toBe(true);
+  });
   it.each([null, undefined, 5, "x", [], {}, { guides: {} }, { guides: [null] }, { guides: [[]] }, { guides: [{ id: "a" }] }])("refuses %j", value => { expect(parseGuideList(value)).toBeNull(); });
 });

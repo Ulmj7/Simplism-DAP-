@@ -125,7 +125,7 @@ input { display: block; margin: 4px 0 12px; max-width: 100%; box-sizing: border-
  * @param {"default"|"moved"} [options.variant] the variant served unless a request says otherwise
  * @param {string} [options.embedScriptPath] the built `dap-embed.js`: served at `/dap-embed.js`, with `dap-embed.css` read from the same directory (window handshake, needs `dapOrigin`)
  * @param {string} [options.dapOrigin] exact origin of Studio / the runtime API
- * @param {string} [options.dapKey] runtime key (`rk-` + 32 hex): adds the STANDALONE script tag (the script is loaded from `dapOrigin`)
+ * @param {string} [options.dapKey] opaque runtime key (`rk-…`, at most 80 URL-safe characters): adds the STANDALONE script tag (the script is loaded from `dapOrigin`)
  * @param {boolean} [options.csp] send a strict Content-Security-Policy (see policy())
  * @returns {Promise<{ origin: string, port: number, variant: () => string, setVariant: (value: string) => void, requestHosts: () => string[], requestPaths: () => string[], policy: () => string | null, close: () => Promise<void> }>}
  */
@@ -135,7 +135,7 @@ export async function startHistoryApp({ host = "127.0.0.1", port = 0, name = "Pr
   if (typeof name !== "string" || !/^[A-Za-z0-9 _-]{1,40}$/u.test(name)) throw new TypeError("The fixture name must be 1 to 40 plain characters.");
   if (!variants.has(variant)) throw new TypeError("The variant must be default or moved.");
   if (dapOrigin !== undefined && !validOrigin(dapOrigin)) throw new TypeError("dapOrigin must be a normalized http or https origin.");
-  if (dapKey !== undefined && !/^rk-[0-9a-f]{32}$/u.test(dapKey)) throw new TypeError("dapKey must be rk- and 32 lower-case hex characters.");
+  if (dapKey !== undefined && !/^rk-[A-Za-z0-9_-]{1,77}$/u.test(dapKey)) throw new TypeError("dapKey must be an opaque runtime key: rk- and up to 77 URL-safe characters.");
   if ((embedScriptPath !== undefined || dapKey !== undefined) && dapOrigin === undefined) throw new TypeError("embedScriptPath and dapKey need dapOrigin.");
   if (embedScriptPath !== undefined && dapKey !== undefined) throw new TypeError("Use either embedScriptPath (window handshake) or dapKey (standalone), not both.");
   const embed = embedScriptPath === undefined ? undefined : await readFile(embedScriptPath);

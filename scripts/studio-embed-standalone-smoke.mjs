@@ -32,7 +32,8 @@ const dist = new URL("apps/reference-web/dist-embed/", root);
 const run = promisify(execFile);
 const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "LANG", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY"].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]]]));
 const session = `studio-embed-standalone-${randomUUID()}`;
-const hex = suffix => `${"0123456789abcdef".repeat(2).slice(0, 32 - suffix.length)}${suffix}`;
+// The delivery key is an opaque `rk-…` string (host format: rk-<tenant 32 hex>-<32 hex>); the embed never parses it.
+const hex = suffix => `${"0123456789abcdef".repeat(2)}-${"fedcba9876543210".repeat(2).slice(0, 32 - suffix.length)}${suffix}`;
 const keys = { C: `rk-${hex("c0")}`, D: `rk-${hex("d0")}`, stale: `rk-${hex("d1")}`, refused: `rk-${hex("b0")}`, unknown: `rk-${hex("ee")}` };
 
 // ---- the guide, as the delivery API would serve it -----------------------------------------------------------------------------------------------------------------------------------------
@@ -54,7 +55,7 @@ const bundle = (origin, saveMarker) => ({
     routing: "history", routes: ["home", "profile", "settings"], pages: { "/": "home", "/profile": "profile", "/settings": "settings" },
     postconditionNames: ["route.home", "route.profile", "route.settings", ...checks.map(item => item.name)], checks, elements: elements(saveMarker),
   },
-  definition: { id: "wt-profile", title: "Change display name", description: "Open your profile, change the display name and save.", start: "open", steps: [
+  definition: { id: "wt-0123456789ab", title: "Change display name", description: "Open your profile, change the display name and save.", start: "open", steps: [
     { id: "open", kind: "guide", target: "nav.profile", text: "Open your profile.", wait: "click", verify: checks[0].name, next: "name" },
     { id: "name", kind: "guide", target: "profile.displayName", text: "Type a new display name.", wait: "input", next: "save" },
     { id: "save", kind: "guide", target: "profile.save", text: "Press Save.", wait: "click", verify: checks[1].name, next: "done" },
@@ -83,7 +84,7 @@ const api = createServer((request, response) => {
       () => response.writeHead(404, base).end());
     return;
   }
-  const match = /^\/api\/runtime\/(rk-[0-9a-f]{32})\/guides(?:\/([A-Za-z0-9_-]+))?$/u.exec(url.pathname);
+  const match = /^\/api\/runtime\/(rk-[A-Za-z0-9_-]{1,77})\/guides(?:\/([A-Za-z0-9_-]+))?$/u.exec(url.pathname);
   if (!match) { send(404, { error: "not_found" }); return; }
   const entry = applications.get(match[1]);
   if (!entry) { send(404, { error: "not_found" }); return; }
@@ -224,11 +225,11 @@ try {
     assert.equal(await evaluate("document.activeElement?.className"), "dap-launcher-button");
     await evaluate("window.__r = null; window.DapEmbed.list().then(list => { window.__r = list.map(item => item.id); }); true");
     await until(() => evaluate("window.__r !== null"), "list() did not resolve");
-    assert.deepEqual(await evaluate("window.__r"), ["wt-profile"]);
-    await evaluate("window.__s = null; window.DapEmbed.start('wt-profile').then(result => { window.__s = result; }); true");
+    assert.deepEqual(await evaluate("window.__r"), ["wt-0123456789ab"]);
+    await evaluate("window.__s = null; window.DapEmbed.start('wt-0123456789ab').then(result => { window.__s = result; }); true");
     await text("Open your profile.");
     assert.deepEqual(await evaluate("window.__s"), { ok: true });
-    await evaluate("window.__t = undefined; window.DapEmbed.start('wt-profile').then(result => { window.__t = result; }); true");
+    await evaluate("window.__t = undefined; window.DapEmbed.start('wt-0123456789ab').then(result => { window.__t = result; }); true");
     await until(() => evaluate("window.__t !== undefined"), "second start did not answer");
     assert.deepEqual(await evaluate("window.__t"), { ok: false, reason: "busy" });
     await command("press", "Escape");                                 // cancel the run; the result dialog closes it

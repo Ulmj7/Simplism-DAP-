@@ -300,6 +300,17 @@ describe("closed-shape parsing of the additive bundle fields", () => {
     delete (old as { version?: unknown }).version;
     expect(ok({ ...old, definition: { ...bundle.definition, steps: [{ id: "done", kind: "complete", text: "x" }], start: "done" } })).toBe(true);
   });
+  it("accepts the bundle exactly as the host's shared builder emits it (marker = id, empty checks, hash routing, version)", () => {
+    const hostStyle = {
+      definition: { id: "wt-0123456789ab", title: "Open Orders", description: "Guide", start: "open", steps: [
+        { id: "open", kind: "guide", target: "nav.orders", text: "Open Orders.", wait: "click", verify: "route.orders", next: "done" }, { id: "done", kind: "complete", text: "Done." }] },
+      application: { id: "app-0123456789ab", name: "Orders", origin: "http://127.0.0.1:5187" },
+      registry: { routes: ["home", "orders"], elements: [{ id: "nav.orders", marker: "nav.orders", route: "home", role: "link", label: "Orders", description: "Open Orders.", operations: ["highlight", "click"], privacy: "public" }],
+        postconditionNames: ["route.home", "route.orders"], checks: [], routing: "hash", pages: { "/": "home", "/#/orders": "orders" } },
+      version: 1,
+    };
+    expect(parseBundle(hostStyle).ok).toBe(true);
+  });
   it.each([
     ["an unknown routing", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, routing: "path" } })],
     ["a history page with a trailing slash", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, pages: { ...b.registry.pages, "/profile/": "profile" }, } })],

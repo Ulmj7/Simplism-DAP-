@@ -10,7 +10,8 @@ import type { ManagedBundle } from "./protocol.js";
  * of the application (`GET /api/runtime/:key/guides`), offers a small accessible launcher and runs a chosen guide (`GET /api/runtime/:key/guides/:id`) in the page. Requests carry no credentials
  * and no cookies (`credentials: "omit"`, `mode: "cors"`); the host authorizes the key and the page's Origin. Inert (no DOM, no globals) when anything about the configuration or the first reply is wrong.
  */
-export const RUNTIME_KEY = /^rk-[0-9a-f]{32}$/u;
+/** The runtime key is an OPAQUE public identifier `rk-…` (at most 80 characters of URL-safe characters): the embed never parses its inside; the host decides what it names. */
+export const RUNTIME_KEY = /^rk-[A-Za-z0-9_-]{1,77}$/u;
 export const MAX_GUIDES = 50;
 export const MAX_REPLY_CHARS = 262_144;
 export const FETCH_TIMEOUT_MS = 10_000;
@@ -67,7 +68,7 @@ export function installStandalone({ window: win, key, scriptSrc, fetch: fetcher 
   const apiOrigin = base.origin;
   if (!RUNTIME_KEY.test(key) || !normalizedOrigin(apiOrigin) || Object.hasOwn(win, "DapEmbed")) return inert;
   const doc = win.document;
-  const root = `${apiOrigin}/api/runtime/${key}/guides`;
+  const root = `${apiOrigin}/api/runtime/${encodeURIComponent(key)}/guides`;
   let alive = true;
   let running: ReturnType<typeof mountManagedRuntime> | undefined;
   let starting = false;

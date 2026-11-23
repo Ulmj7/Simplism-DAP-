@@ -120,7 +120,8 @@ describe("history fixture server", () => {
     await expect(startHistoryApp({ name: "<b>" })).rejects.toThrow(TypeError);
     await expect(startHistoryApp({ variant: "other" as never })).rejects.toThrow(TypeError);
     await expect(startHistoryApp({ dapOrigin: "http://127.0.0.1:5186/" })).rejects.toThrow(TypeError);
-    await expect(startHistoryApp({ dapKey: "rk-1" })).rejects.toThrow(TypeError);
+    await expect(startHistoryApp({ dapKey: "key-1" })).rejects.toThrow(TypeError);
+    await expect(startHistoryApp({ dapKey: "rk-" + "a".repeat(78) })).rejects.toThrow(TypeError);
     await expect(startHistoryApp({ dapKey: "rk-0123456789abcdef0123456789abcdef" })).rejects.toThrow(/dapOrigin/u);
     await expect(startHistoryApp({ dapOrigin: "http://127.0.0.1:5186", dapKey: "rk-0123456789abcdef0123456789abcdef", embedScriptPath: "/x" })).rejects.toThrow(/not both/u);
   });
