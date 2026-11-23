@@ -166,9 +166,17 @@ it("authors, previews, publishes and measures two real runs through the Gateway 
     await switched("maintainer"); navigate("walkthroughs");
     await vi.waitFor(() => button(root, `Publish: ${TITLE}`));
     button(root, `Publish: ${TITLE}`).click();
-    await vi.waitFor(() => expect(dialogue()).not.toBeNull());
+    await vi.waitFor(() => {
+      expect(dialogue()).not.toBeNull();
+      expect(button(dialogue()!, c.publish).disabled).toBe(false);
+    });
+    const review = requests.find(request => request.method === "POST" && request.path === `${ADMIN}/${id}/review`);
+    expect(review?.status).toBe(200);
     button(dialogue()!, c.publish).click();
     await vi.waitFor(() => button(root, `Unpublish: ${TITLE}`));
+    const publication = requests.find(request => request.method === "POST" && request.path === `${ADMIN}/${id}/status`);
+    expect(publication?.status).toBe(200);
+    expect(JSON.parse(publication!.body)).toEqual({ status: "published", expectedRevision: 2 });
 
     await switched("user"); navigate("dashboard");
     const launch = () => button(root, `Start guide: ${TITLE}`).click();
