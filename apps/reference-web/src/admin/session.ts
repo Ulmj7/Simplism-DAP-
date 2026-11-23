@@ -32,3 +32,8 @@ export function newEditSession(applicationId?: string): EditSession {
 let requestedId: string | undefined;
 export function requestEdit(id: string): void { requestedId = id; }
 export function takeRequestedEdit(): string | undefined { const id = requestedId; requestedId = undefined; return id; }
+
+/** The application the Targets and Workflows pages open for (set by the Application Manager's "Manage Targets" / "Manage Workflows"); chosen again there at any time. */
+let focused: string | undefined;
+export const focusApplication = (id?: string): void => { focused = id; };
+export const getFocusedApplication = (): string | undefined => focused;

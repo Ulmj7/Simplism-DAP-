@@ -1,5 +1,5 @@
-/** A hash router over a fixed set of routes . Anything else is the dashboard. */
-export const ADMIN_ROUTES = ["walkthroughs", "applications", "editor", "analytics"] as const;
+/** A hash router over a fixed set of routes. Anything else is the dashboard. The admin routes are listed in navigation order: Applications | Workflows (route `walkthroughs`) | Targets | Editor | Analytics. */
+export const ADMIN_ROUTES = ["applications", "walkthroughs", "targets", "editor", "analytics"] as const;
 export const ROUTES = ["dashboard", "profile", "settings", ...ADMIN_ROUTES] as const;
 export const isAdminRoute = (route: Route): route is (typeof ADMIN_ROUTES)[number] => (ADMIN_ROUTES as readonly Route[]).includes(route);
 export type Route = (typeof ROUTES)[number];

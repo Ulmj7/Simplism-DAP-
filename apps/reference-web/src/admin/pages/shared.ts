@@ -1,6 +1,8 @@
 import type { SemanticRegistry, WalkthroughDef } from "@dap/walkthrough";
 import { copy } from "../../copy.js";
 import { h } from "../../dom.js";
+import { breadcrumb } from "../../ui/breadcrumb.js";
+import type { Crumb } from "../../ui/breadcrumb.js";
 import { button } from "../../ui/pieces.js";
 import type { AdminClient, AdminResult } from "../client.js";
 
@@ -8,12 +10,13 @@ export interface AdminPageOptions {
   client: AdminClient;
   registry: SemanticRegistry;
   signal: AbortSignal;
-  navigate(route: "walkthroughs" | "applications" | "editor"): void;
+  navigate(route: "walkthroughs" | "applications" | "editor" | "targets"): void;
   preview(definition: WalkthroughDef): void;
   refresh(focus?: boolean): void;
 }
 const c = copy.admin;
-export const adminPage = (title: string) => h("section", { class: "admin-page", "data-ai-ignore": true }, h("h1", { tabindex: "-1" }, title));
+/** An admin page: optional breadcrumbs above the h1 (the h1 receives focus on a route change). */
+export const adminPage = (title: string, crumbs?: readonly Crumb[]) => h("section", { class: "admin-page", "data-ai-ignore": true }, ...(crumbs ? [breadcrumb(crumbs)] : []), h("h1", { tabindex: "-1" }, title));
 export const readError = (result: AdminResult<unknown>) => result.kind === "denied" ? c.denied : c.readFailed;
 export const writeError = (result: AdminResult<unknown>) => result.kind === "oversize" ? c.oversize : result.kind === "published" ? c.readOnly
   : result.kind === "application" ? c.application.failures[result.code] : result.kind === "limit" ? c.application.limit : c.writeFailed;

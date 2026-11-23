@@ -35,6 +35,7 @@ import { walkthroughsPage } from "./admin/pages/walkthroughs.js";
 import { editorPage } from "./admin/pages/editor.js";
 import { analyticsPage } from "./admin/pages/analytics.js";
 import { applicationsPage } from "./admin/pages/applications.js";
+import { targetsPage } from "./admin/pages/targets.js";
 import { reportUsage } from "./usage.js";
 import type { UsageClient } from "./usage.js";
 import { adminPage } from "./admin/pages/shared.js";
@@ -160,7 +161,7 @@ export function mountApp(root: HTMLElement, options: { readonly window?: Window;
       } else if (state.route === "settings") {
         const page = settingsPage(() => store.set({ advancedOpen: !store.get().advancedOpen })); main.replaceChildren(page.element); updatePage = s => page.update(s.advancedOpen);
       } else if (isAdminRoute(state.route)) {
-        const page = state.route === "walkthroughs" ? walkthroughsPage : state.route === "applications" ? applicationsPage : state.route === "editor" ? editorPage : analyticsPage;
+        const page = state.route === "walkthroughs" ? walkthroughsPage : state.route === "applications" ? applicationsPage : state.route === "targets" ? targetsPage : state.route === "editor" ? editorPage : analyticsPage;
         main.replaceChildren(admin ? page({ ...admin, registry, signal: pageScope.signal, navigate: router.navigate })
           : adminPage(copy.admin[state.route])); updatePage = () => {};
         if (!admin) main.firstElementChild?.append(h("p", { role: "status" }, copy.admin.denied));

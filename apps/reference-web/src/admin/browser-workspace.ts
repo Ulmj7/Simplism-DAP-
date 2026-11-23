@@ -97,6 +97,7 @@ const operationLabels: Readonly<Record<string, string>> = Object.freeze({ highli
 
 /** `enabled: false` is only passed when the editor KNOWS the application is disabled; otherwise the host answers. */
 export interface WorkspaceApplication { readonly id: string; readonly name: string; readonly enabled?: boolean }
+export interface RepairMode { readonly target: TargetView; readonly onRepaired?: (target: TargetView) => void }
 export interface BrowserWorkspaceOptions {
   readonly call: NonNullable<AdminClient["studio"]>;
   readonly signal: AbortSignal;
@@ -111,7 +112,7 @@ export interface BrowserWorkspaceOptions {
    * REPAIR mode (Studio completion S3): the workspace is used to choose replacement evidence for ONE existing target. Registrable and mismatched candidates get "Use as replacement"; the
    * maintainer previews the repair (a dry run: old vs new evidence and its impact on drafts and live published versions) and only then confirms it. Nothing is ever repaired automatically.
    */
-  readonly repair?: { readonly target: TargetView; readonly onRepaired?: (target: TargetView) => void } | undefined;
+  readonly repair?: RepairMode | undefined;
   /** Shows "Check targets on this page": the host verifies every active target of the current page and the results come back here. */
   readonly onChecked?: ((reply: Extract<StudioReply, { kind: "checked" }>) => void) | undefined;
 }
@@ -119,13 +120,16 @@ export interface BrowserWorkspace {
   readonly element: HTMLElement;
   /** Selecting another application closes the open session, clears the candidates and returns to DISCONNECTED: connecting again is explicit. */
   setApplication(application: WorkspaceApplication | undefined): void;
+  /** Enters (or, with `undefined`, leaves) repair mode without touching the session: the rows are drawn again for the new mode. */
+  setRepair(repair: RepairMode | undefined): void;
   state(): WorkspaceState;
 }
 interface Session { readonly sessionId: string; readonly applicationId: string }
 
 let instances = 0;
 
-export function browserWorkspace({ call, signal, bindTarget, application: initial, walkthroughId, onRegistered, repair, onChecked }: BrowserWorkspaceOptions): BrowserWorkspace {
+export function browserWorkspace({ call, signal, bindTarget, application: initial, walkthroughId, onRegistered, repair: initialRepair, onChecked }: BrowserWorkspaceOptions): BrowserWorkspace {
+  let repair = initialRepair;
   const instance = instances += 1;
   const uid = (name: string) => `studio-${instance}-${name}`;
   const connect = button("Connect Chrome");
@@ -149,12 +153,13 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
   const listNote = h("p", { class: "hint studio-list-note" });
   const reconnectNote = h("p", { class: "hint", hidden: true }, reconnectHint);
   const registerHost = h("div", { class: "studio-register-host" });
+  const repairLine = h("p", { class: "hint studio-repair-mode", hidden: true });
   const notice = statusMessage();
   // Typed errors: one persistent live region (it must exist before its text changes to be announced).
   const alert = h("div", { role: "alert", class: "error studio-alert" });
   const panel = card(h("h2", {}, "Browser workspace"),
     h("p", { class: "hint" }, "Navigate and interact in the separate Chrome window, then inspect the page."),
-    h("div", { class: "admin-actions" }, connect, reconnect, inspect, ...(onChecked ? [checkPage] : []), disconnect), reconnectNote, header, list, listNote, registerHost, alert, notice);
+    h("div", { class: "admin-actions" }, connect, reconnect, inspect, ...(onChecked ? [checkPage] : []), disconnect), reconnectNote, repairLine, header, list, listNote, registerHost, alert, notice);
   panel.classList.add("studio-workspace");
   reconnect.setAttribute("aria-describedby", uid("reconnect-note"));
   reconnectNote.id = uid("reconnect-note");
@@ -204,6 +209,8 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
     for (const control of rowButtons) control.disabled = !allowed.rows;
     if (registerForm) registerForm.submit.disabled = pending || state !== "CONNECTED";
     panel.dataset.state = state;
+    repairLine.hidden = repair === undefined;
+    if (repair) repairLine.textContent = `Repair mode: choose the element that replaces target ${repair.target.id} (page ${repair.target.page}). Nothing changes until you confirm.`;
     applicationLine.textContent = connectedName ?? application?.name ?? "—";
     registryLine.textContent = source === undefined ? "—" : sourceText[source];
     statusLine.textContent = statusText[state];
@@ -358,7 +365,8 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
   const repairOperations = (role: string): readonly string[] => (role === "textbox" || role === "searchbox" ? ["highlight", "input", "focus"] : ["highlight", "click", "focus"]);
   function openRepair(candidate: RegistrableCandidate | MismatchedCandidate, trigger: HTMLButtonElement) {
     if (!session || !repair) return;
-    const target = repair.target;
+    const mode = repair;
+    const target = mode.target;
     const field = (name: string) => uid(`repair-${name}`);
     const fact = (term: string, value: string) => [h("dt", {}, term), h("dd", {}, value)];
     const markerOf = candidate.status === "registrable" ? candidate.proposal.targetId : candidate.targetId;
@@ -458,7 +466,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
         say(`Repaired target ${reply.target.id} — marker ${reply.target.marker}. Health: ${reply.target.health}.`);
       }).then(async () => {
         if (!repaired || signal.aborted) return;
-        repair.onRepaired?.(repaired);
+        mode.onRepaired?.(repaired);
         // The page is inspected again so the repaired target shows as trusted with its new evidence.
         if (session === open) { repairedNote = `Repaired target ${repaired.id} — marker ${repaired.marker}. Health: ${repaired.health}.`; await inspectNow(); }
       });
@@ -660,6 +668,7 @@ export function browserWorkspace({ call, signal, bindTarget, application: initia
   return {
     element: panel,
     state: () => state,
+    setRepair(next) { repair = next; closeRegister(); setCandidates(candidates); render(); },
     setApplication(next) {
       if (next?.id === application?.id) { application = next; render(); return; }
       application = next;

@@ -178,9 +178,9 @@ const notice = (root: ParentNode) => root.querySelector('[role="status"]')?.text
 
 // ---------------------------------------------------------------------------------------------------------------- Application Manager
 
-it("shows the Applications link next to Walkthroughs for a maintainer only, and denies a user who opens the page directly", async () => {
+it("shows Applications | Workflows | Targets | Studio | Analytics for a maintainer only, and denies a user who opens the page directly", async () => {
   const { root } = await setup("dashboard");
-  expect([...root.querySelectorAll("nav a")].map(link => link.textContent).filter(text => ["Walkthroughs", "Applications", "DAP Studio"].includes(text ?? ""))).toEqual(["Walkthroughs", "Applications", "DAP Studio"]);
+  expect([...root.querySelectorAll("nav a")].map(link => link.textContent).filter(text => ["Workflows", "Applications", "Targets", "DAP Studio", "Analytics"].includes(text ?? ""))).toEqual(["Applications", "Workflows", "Targets", "DAP Studio", "Analytics"]);
   mounted?.destroy();
   document.body.replaceChildren();
   const user = await setup("applications", fakeHost(), "user");
