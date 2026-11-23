@@ -987,6 +987,16 @@ describe("repair: re-bind a registered target to a live control", () => {
     expect((await ok.command(repairBody({ ref: "@e3" }))).body).toEqual({ error: "TARGET_NOT_REGISTRABLE" }); // the trusted note
     expect(h.calls).toEqual([]);
   });
+  it("a retired marker remains reserved as another target's durable id during a dry run", async () => {
+    const h = await broken([control("Export", "link", "orders.exportButton"), control("Old note", "textbox", "orders.note")]);
+    const rebound = await h.targets.repair(SCOPE, MANAGED, "orders.note", {
+      marker: "orders.noteNew", role: "textbox", operations: ["highlight", "input"], label: "Order note", description: "The note.",
+    }, () => []);
+    expect(rebound.kind).toBe("repaired");
+    await h.command(refresh());
+    expect(await h.command(repairBody({ ref: "@e2", operations: ["highlight", "input"] }))).toMatchObject({ status: 409, body: { error: "MARKER_IN_USE" } });
+    expect(h.calls).toEqual([]);
+  });
   it("the trust chain: unknown, stale or hidden refs, private or ambiguous controls, drifted markers", async () => {
     const h = await broken([control("Export", "link", "orders.exportButton", { ...PUBLIC, dataAiPrivate: true }), control("Export now", "button", "orders.exportNow"), control("Order note", "textbox", "orders.note")]);
     expect((await h.command(repairBody({ ref: "@e1" }))).body, "a private control is hidden: never listed").toEqual({ error: "REF_NOT_FOUND" });

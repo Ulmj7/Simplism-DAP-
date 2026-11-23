@@ -10,6 +10,8 @@ import { managedRegistryData } from "./registry-resolver.js";
 import { VALUE_CHECK_ROLES } from "./registry-checks.js";
 
 export const MAX_REPAIR_PROBLEMS = 20;
+// The maintainer wire caps the displayed lists. The compatibility check above inspects every definition.
+const MAX_DISPLAYED_USAGE = 100;
 
 export const verifyRepair: RepairVerify = (definitions, registry, target) => {
   if (target.status === "disabled") return [];
@@ -27,8 +29,8 @@ export const verifyRepair: RepairVerify = (definitions, registry, target) => {
 };
 
 export const impactOf = (definitions: readonly DefinitionUsing[]): RepairImpact => Object.freeze({
-  drafts: Object.freeze(definitions.filter((item) => item.status === "draft").map((item) => Object.freeze({ id: item.id, title: item.title }))),
-  published: Object.freeze(definitions.filter((item) => item.status === "published").map((item) => Object.freeze({ id: item.id, title: item.title, version: item.version ?? 1 }))),
+  drafts: Object.freeze(definitions.filter((item) => item.status === "draft").slice(0, MAX_DISPLAYED_USAGE).map((item) => Object.freeze({ id: item.id, title: item.title }))),
+  published: Object.freeze(definitions.filter((item) => item.status === "published").slice(0, MAX_DISPLAYED_USAGE).map((item) => Object.freeze({ id: item.id, title: item.title, version: item.version ?? 1 }))),
 });
 
 /** The registry after a repair, for a dry run: the stored registry with the target's element replaced by the proposed fields (the active targets only, as the validator sees them). */

@@ -13,6 +13,7 @@ import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import type { ApplicationRecord, RegistrySource } from "./applications.js";
 import { STUDIO_MANAGED_REGISTRY_ID, registrySourceOf } from "./applications.js";
 import { managedPostconditionName } from "./registry-targets.js";
+import { VALUE_CHECK_ROLES } from "./registry-checks.js";
 import type { CheckRecord } from "./registry-checks.js";
 import { REFERENCE_REGISTRY_ID } from "./registries.js";
 import type { RegistryCatalog } from "./registries.js";
@@ -40,10 +41,13 @@ export interface RegistryResolver {
 export function managedRegistryData(managed: ManagedRegistry): ResolvedRegistry {
   const routes = managed.routes.map((entry) => entry.route);
   const pages = Object.freeze(Object.fromEntries(managed.routes.map((entry) => [entry.page, entry.route])));
+  const valueTargets = new Set(managed.elements.filter((element) => (VALUE_CHECK_ROLES as readonly string[]).includes(element.role)).map((element) => element.id as string));
+  // An old value check can become inapplicable when its target is repaired while either is disabled.
+  const checks = Object.freeze(managed.checks.filter((check) => check.kind !== "element.value.equals" || (check.targetId !== null && valueTargets.has(check.targetId))));
   return Object.freeze({
     source: "studio-managed" as const,
-    registry: Object.freeze({ routes: Object.freeze(routes), elements: managed.elements, postconditionNames: Object.freeze([...routes.map(managedPostconditionName), ...managed.checks.map((check) => check.name)]) }),
-    pages, previewMode: "application-window" as const, previewable: routes.length > 0, markers: managed.markers, checks: managed.checks,
+    registry: Object.freeze({ routes: Object.freeze(routes), elements: managed.elements, postconditionNames: Object.freeze([...routes.map(managedPostconditionName), ...checks.map((check) => check.name)]) }),
+    pages, previewMode: "application-window" as const, previewable: routes.length > 0, markers: managed.markers, checks,
   });
 }
 

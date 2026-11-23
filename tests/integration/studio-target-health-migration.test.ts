@@ -192,6 +192,9 @@ describe("markers never collide with ids or each other", () => {
     await asTenant(app, a.tenant, async (q) => { await q(INSERT_APP, [a.tenant, second]); await q(INSERT_ROUTE, [a.tenant, second]); });
     await addTarget(a.tenant, second);
     await repair(a.tenant, second, { marker: "shared.marker" });
+    for (const { tenant, id } of [a, b, { tenant: a.tenant, id: second }]) {
+      expect(await row(tenant, id)).toMatchObject({ marker: "shared.marker", revision: 2 });
+    }
   });
   it("two concurrent repairs to the same marker cannot both succeed", async () => {
     const { tenant, id } = await ready();

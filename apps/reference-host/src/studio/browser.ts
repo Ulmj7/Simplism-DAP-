@@ -336,7 +336,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     const live = classifyControl({ routing: session.routing, snapshot, ids: liveIds, facts: new Map([[ref, liveFacts]]), registry }, element);
     if (live === null || (live.status !== "registrable" && live.status !== "mismatched")) return deny(409, "TARGET_NOT_REGISTRABLE");
     // A control that carries ANOTHER target's marker is not this target's replacement.
-    if (live.status === "mismatched" && live.targetId !== target.id) return deny(409, "MARKER_IN_USE");
+    if (registry.targets.some((other) => other.id !== target.id && (other.id === liveMarker || other.marker === liveMarker))) return deny(409, "MARKER_IN_USE");
     // Route identity never changes: the control must be on the page the target is registered for.
     const livePage = pageOfUrl(snapshot.url, session.routing);
     if (livePage === null || livePage !== target.page) return deny(409, "REPAIR_ROUTE_MISMATCH");

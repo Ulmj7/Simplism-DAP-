@@ -79,6 +79,15 @@ describe("the managed registry carries the active checks as postconditions", () 
     expect((await t.targets.registry("2222bbbb-3333-4444-8555-6666cccc6666", APP)).checks).toEqual([]);
     expect((await t.targets.registry(TENANT, "app-0000000000b2")).checks).toEqual([]);
   });
+  it("an old value check whose target now has a non-value role stays out of the playable registry", async () => {
+    const t = await setup();
+    const name = await t.add({ kind: "element.value.equals", targetId: "orders.note", expected: "hello" });
+    await t.targets.setCheckStatus(SCOPE, APP, name, "disabled");
+    const { verifyRepair } = await import("./repair-impact.js");
+    expect(await t.targets.repair(SCOPE, APP, "orders.note", { marker: "orders.noteButton", role: "button", label: "Note", description: "A note.", operations: ["highlight", "click"] }, verifyRepair)).toMatchObject({ kind: "repaired" });
+    await t.targets.setCheckStatus(SCOPE, APP, name, "active");
+    expect(await t.resolver.resolve(TENANT, application)).toMatchObject({ checks: [], registry: { postconditionNames: ["route.orders"] } });
+  });
   it("a repair that would turn the target of an active VALUE check into a role without a value is incompatible", async () => {
     const t = await setup();
     await t.add({ kind: "element.value.equals", targetId: "orders.note", expected: "hello" });
