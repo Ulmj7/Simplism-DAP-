@@ -47,7 +47,7 @@ import type { RegistryCatalog } from "./registries.js";
 import { MAX_ROUTES_PER_APPLICATION, MAX_TARGETS_PER_APPLICATION, validateTargetRegistration } from "./registry-targets.js";
 import { createRegistryResolver } from "./registry-resolver.js";
 import type { RegistryResolver } from "./registry-resolver.js";
-import { REGISTER_TARGET_ACTION_ID } from "./target-capabilities.js";
+import { REGISTER_TARGET_ACTION_ID, withRegistrationReceipt } from "./target-capabilities.js";
 import type { TargetStore } from "./target-store.js";
 
 const idleMs = 5 * 60_000;
@@ -282,17 +282,19 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     if (!checked.ok) return deny(422, "INVALID_TARGET", { issues: checked.issues });
     if (proposal.routeIsNew && registry.routes.some((entry) => entry.route === checked.value.route)) return deny(409, "ROUTE_MISMATCH");
     const value = checked.value;
-    const result = await submitGatewayWrite(principal, REGISTER_TARGET_ACTION_ID, {
-      applicationId: record.id, targetId: value.targetId, route: value.route, page: value.page, elementRole: value.role, label: value.label, description: value.description, operations: [...value.operations], privacy: value.privacy,
-    });
+    const { result, route } = await withRegistrationReceipt({ tenantId: principal.tenantId, applicationId: record.id, targetId: value.targetId },
+      () => submitGatewayWrite(principal, REGISTER_TARGET_ACTION_ID, {
+        applicationId: record.id, targetId: value.targetId, route: value.route, page: value.page, elementRole: value.role,
+        label: value.label, description: value.description, operations: [...value.operations], privacy: value.privacy,
+      }));
     if (result === "refused") return deny(403, "FORBIDDEN");
     if (result === "failed") return await diagnose(principal.tenantId, session, value, deny); // the executor refused: say why from the fresh state
-    if (result !== "ok") return deny(503, "BROWSER_UNAVAILABLE");
+    if (result !== "ok" || route === undefined) return deny(503, "BROWSER_UNAVAILABLE");
     const target = await targets.get(principal.tenantId, session.applicationId, value.targetId);
     if (target === null) return deny(503, "BROWSER_UNAVAILABLE");
     // The registered element is trusted from now on; the other candidates of this refresh are unchanged.
     session.candidates = new Map([...session.candidates].map(([ref, item]) => [ref, ref === command.ref ? { ref: item.ref, name: item.name, role: item.role, route: value.route, status: "trusted" as const, targetId: value.targetId, operations: target.operations, privacy: "public" as const } : item]));
-    return { target, route: { route: value.route, page: value.page, created: proposal.routeIsNew } };
+    return { target, route };
   }
 
   /** Why the executor refused, from the state as it is NOW (never from the executor's text). */

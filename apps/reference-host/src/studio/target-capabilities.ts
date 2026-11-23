@@ -14,6 +14,7 @@
  * a short fixed code. What it does NOT decide is whether a live element may become a target (a fresh ref, the page's own marker, the privacy facts of the live element): the browser session, the only
  * caller, proves that before it asks. There is no HTTP route that accepts a raw target.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { defineAction, defineExecutor } from "@dap/contracts";
 import type { ActionDefinition, ActionExecutor, ActionId, ExecutionCall, ExecutorId, PermissionId, ResourceRef } from "@dap/contracts";
 import type { HostExtension } from "../compose.js";
@@ -22,7 +23,7 @@ import { APPLICATION_RESOURCE_TYPE } from "./application-capabilities.js";
 import { isApplicationId } from "./applications.js";
 import { registerTargetInputSchema, targetStatusInputSchema, validateTargetRegistration } from "./registry-targets.js";
 import type { RegisterTargetInput, TargetStatusInput } from "./registry-targets.js";
-import type { TargetStore } from "./target-store.js";
+import type { RegisterOutcome, TargetStore } from "./target-store.js";
 
 export const REGISTER_TARGET_ACTION_ID = "registerStudioTarget";
 export const TARGET_STATUS_ACTION_ID = "setStudioTargetStatus";
@@ -80,6 +81,22 @@ const failure = (code: TargetFailureCode) => ({ status: "failure" as const, code
 /** What an executor body needs of a call: the validated params and the TRUSTED security context (exported so the bodies can be tested without a Gateway grant). */
 export type TargetCall<P> = Pick<ExecutionCall<P>, "params" | "security">;
 
+type RegistrationRoute = Extract<RegisterOutcome, { kind: "created" }>["route"];
+interface RegistrationReceipt {
+  readonly tenantId: string;
+  readonly applicationId: string;
+  readonly targetId: string;
+  route?: RegistrationRoute;
+}
+// Planner feedback stays closed. Only the host request awaiting this specific write
+// can read its transaction's receipt, and the context ends with that submission.
+const registrationReceipt = new AsyncLocalStorage<RegistrationReceipt>();
+export async function withRegistrationReceipt<T>(scope: Omit<RegistrationReceipt, "route">, submit: () => Promise<T>) {
+  const receipt: RegistrationReceipt = { ...scope };
+  const result = await registrationReceipt.run(receipt, submit);
+  return { result, route: receipt.route };
+}
+
 export async function runRegisterTarget(targets: TargetStore, call: TargetCall<RegisterTargetInput>) {
   // Tenant and actor come from the trusted context only.
   const scope = { tenantId: call.security.tenantId as string, actor: call.security.userId as string };
@@ -87,9 +104,13 @@ export async function runRegisterTarget(targets: TargetStore, call: TargetCall<R
   if (!isApplicationId(applicationId)) return failure("id_refused");
   const checked = validateTargetRegistration(candidate);
   if (!checked.ok) return failure("invalid_target");
+  const receipt = registrationReceipt.getStore();
   try {
     const outcome = await targets.register(scope, applicationId, checked.value);
-    if (outcome.kind === "created") return { status: "success" as const, affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+    if (outcome.kind === "created") {
+      if (receipt?.tenantId === scope.tenantId && receipt.applicationId === applicationId && receipt.targetId === checked.value.targetId) receipt.route = outcome.route;
+      return { status: "success" as const, affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
+    }
     return failure(outcome.kind);
   } catch { return failure("store_unavailable"); }
 }

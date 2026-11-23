@@ -51,6 +51,7 @@ export interface StartOptions {
   /** Wraps the application store the AUTHORING executors read (to interleave a concurrent change between their read and their write). */
   wrapApplications?: (real: ReturnType<typeof createPostgresApplicationStore>) => ReturnType<typeof createPostgresApplicationStore>;
   /** Wraps the target store the REGISTRY RESOLVER reads (to change the registry between the executor's first read and its in-transaction re-read). */
+  wrapRegistration?: (register: ReturnType<typeof createPostgresTargetStore>["register"]) => ReturnType<typeof createPostgresTargetStore>["register"];
   wrapTargets?: (real: ReturnType<typeof createPostgresTargetStore>) => ReturnType<typeof createPostgresTargetStore>;
 }
 
@@ -69,7 +70,8 @@ export async function startHost(closers: (() => Promise<unknown>)[], hosts: Refe
   const saveDraft = vi.fn(realStore.saveDraft);
   const store: WalkthroughStore = options.wrapStore ? options.wrapStore({ ...realStore, saveDraft }) : { ...realStore, saveDraft };
   const applications = createPostgresApplicationStore(pool);
-  const targets = createPostgresTargetStore(pool);
+  const realTargets = createPostgresTargetStore(pool);
+  const targets = options.wrapRegistration ? { ...realTargets, register: options.wrapRegistration(realTargets.register) } : realTargets;
   const catalog = createRegistryCatalog([FIXTURE_ENTRY]);
   const resolver = createRegistryResolver({ catalog, targets: options.wrapTargets ? options.wrapTargets(targets) : targets });
   const authoring = createAuthoringExtension({ store, applications: options.wrapApplications ? options.wrapApplications(applications) : applications, catalog, targets, resolver });
@@ -114,5 +116,5 @@ export async function startHost(closers: (() => Promise<unknown>)[], hosts: Refe
     return { res, id: res.body.id as string };
   };
   const sql = <T>(fn: (client: { query(sql: string, params?: readonly unknown[]): Promise<{ rows: readonly Record<string, unknown>[]; rowCount: number | null }> }) => Promise<T>) => withTenant(pool, tenant, fn);
-  return { app, resolvePrincipal, tenant, call, submit, rows, store, realStore, saveDraft, applications, targets, resolver, catalog, pool, createApplication, registerTarget, registerOk, createWorkflow, sql, maintToken, userToken, trustedTargets: targetExt.trusted, trusted: authoring.trusted };
+  return { app, resolvePrincipal, tenant, call, submit, rows, store, realStore, saveDraft, applications, targets, realTargets, resolver, catalog, pool, createApplication, registerTarget, registerOk, createWorkflow, sql, maintToken, userToken, trustedTargets: targetExt.trusted, trusted: authoring.trusted };
 }

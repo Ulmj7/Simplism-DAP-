@@ -4,6 +4,7 @@
  * being re-resolved on every command, the inspector reply, the `register` trust chain (every refusal, asserted on what reached the Gateway and the store), and `resume`.
  * The PostgreSQL proof through the real routes is tests/integration/studio-managed.test.ts.
  */
+import { runRegisterTarget } from "./target-capabilities.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserRuntimeError } from "@dap/browser-runtime";
 import type { BrowserRuntime, BrowserSnapshot, ElementFacts, ElementRef } from "@dap/browser-runtime";
@@ -94,12 +95,10 @@ async function harness(options: { controls?: Control[]; url?: string; ids?: stri
           if (state.mode === "broken") throw new Error(SECRET);
           if (state.mode === "refused") return { outcome: "FORBIDDEN_POLICY" } as never;
           if (state.mode === "failed") return { outcome: "ALLOWED", category: "try_later" } as never;
-          const p = parsed.params;
-          const outcome = await targets.register({ tenantId, actor: "author" }, p.applicationId as string, {
-            targetId: p.targetId as string, route: p.route as string, page: p.page as string, role: p.elementRole as RegistrableRole, label: p.label as string, description: p.description as string,
-            operations: p.operations as never, privacy: "public",
+          const outcome = await runRegisterTarget(targets, {
+            params: parsed.params as never, security: { tenantId, userId: "author" } as never,
           });
-          return (outcome.kind === "created" ? { outcome: "ALLOWED", category: "ok" } : { outcome: "ALLOWED", category: "try_later" }) as never;
+          return (outcome.status === "success" ? { outcome: "ALLOWED", category: "ok" } : { outcome: "ALLOWED", category: "try_later" }) as never;
         }),
       };
     },

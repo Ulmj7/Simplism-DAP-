@@ -80,7 +80,7 @@ export function suggestLabel(name: string, targetId: string): string {
 
 const inBounds = (name: string, role: string): boolean => name.length <= MAX_NAME_CHARS && role.length <= MAX_ROLE_CHARS;
 
-/** The refs whose facts are worth reading: inspected controls with a registrable role and a VALID marker that no target of this registry already carries. At most 64, document order. */
+/** The refs whose facts are worth reading: inspected controls with a registrable role and a valid marker. At most 64, document order. */
 export function selectFactRefs(snapshot: BrowserSnapshot, ids: ReadonlyMap<ElementRef, string | null>): readonly ElementRef[] {
   const refs: ElementRef[] = [];
   for (const element of snapshot.elements.slice(0, MAX_INSPECTED)) {

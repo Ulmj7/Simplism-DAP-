@@ -51,8 +51,8 @@ function scripted(): Scripted {
   return runtime;
 }
 
-async function start() {
-  const t = await startHost(closers, hosts, owner);
+async function start(options: Parameters<typeof startHost>[3] = {}) {
+  const t = await startHost(closers, hosts, owner, options);
   const runtimes: Scripted[] = [];
   const configs: BrowserRuntimeConfig[] = [];
   let n = 0;
@@ -301,4 +301,33 @@ describe("scoping, authorship and the in-transaction re-check (mutation pass D16
     expect(feedback).toEqual({ outcome: "ALLOWED", category: "try_later" });
     expect(await t.realStore.get(t.tenant, "wt-0000000000f1")).toBeNull();
   });
+});
+
+it("reports route creation exactly once when another registration wins the transaction", async () => {
+  let signalEntered!: () => void;
+  let resume!: () => void;
+  const entered = new Promise<void>(resolve => { signalEntered = resolve; });
+  const held = new Promise<void>(resolve => { resume = resolve; });
+  const t = await start({ wrapRegistration: (register) => async (...args) => {
+    signalEntered();
+    await held;
+    return register(...args);
+  } });
+  const appId = await t.createApplication(managedConfig());
+  const connected = await t.studio({ action: "connect", applicationId: appId });
+  const sessionId = connected.body.sessionId as string;
+  await t.studio({ action: "refresh", sessionId, applicationId: appId });
+  const pending = t.studio(registerBody(sessionId, appId, {}));
+  try {
+    await Promise.race([entered, pending.then(() => { throw new Error("Registration returned before reaching the store"); })]);
+    const winner = await t.realTargets.register({ tenantId: t.tenant, actor: "maya" }, appId, {
+      targetId: "orders.competitor", route: "orders", page: "/#/orders", role: "button", label: "Competing target",
+      description: "A second writer registers the same route.", operations: ["highlight", "click"], privacy: "public",
+    });
+    expect(winner).toEqual({ kind: "created", route: { route: "orders", page: "/#/orders", created: true } });
+  } finally { resume(); }
+  expect(await pending).toMatchObject({ status: 200, body: { route: { route: "orders", page: "/#/orders", created: false } } });
+  expect(await t.targets.list(t.tenant, appId)).toMatchObject({ routes: [{ route: "orders", page: "/#/orders" }], targets: expect.arrayContaining([
+    expect.objectContaining({ id: "orders.submitButton" }), expect.objectContaining({ id: "orders.competitor" }),
+  ]) });
 });
