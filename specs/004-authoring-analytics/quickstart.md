@@ -23,7 +23,7 @@ In the terminal with the database URLs, configure the reference host. The fixtur
 ```bash
 export NODE_ENV=development DAP_ALLOW_DEV_AUTH=1 DAP_GUIDANCE_MODEL=fake
 export DAP_HTTP_PORT=8791
-export DAP_ENABLED_ACTIONS=startWalkthrough,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus
+export DAP_ENABLED_ACTIONS=startWalkthrough,saveWalkthroughDraft,setWalkthroughStatus,saveStudioApplication,setStudioApplicationEnabled,registerStudioTarget,setStudioTargetStatus,setStudioTargetHealth,repairStudioTarget,registerStudioCheck,setStudioCheckStatus,reviseWalkthrough,restoreWalkthroughVersion,rotateStudioRuntimeKey
 export DAP_DEMO_SESSION_TOKEN=local-user-token DAP_DEMO_MAINTAINER_TOKEN=local-maintainer-token
 export DEV_SESSIONS="$(node -e '
 const e = process.env;
@@ -47,7 +47,7 @@ curl --fail-with-body --request POST http://127.0.0.1:8791/api/admin/application
   --data '{"name":"Reference application","origin":"http://127.0.0.1:5173","allowedOrigins":["http://127.0.0.1:5173"],"environment":"development","registryId":"reference"}'
 ```
 
-Use the returned application ID when authoring. The draft API takes `{applicationId, definition}`. Legacy guides use the reference registry. [Studio V1B application and browser setup](../../docs/studio-v1.md)
+Use the returned application ID when authoring. Draft creation takes `{applicationId, definition}`. Updates also carry `expectedRevision`. Legacy guides use the reference registry. [Studio application and browser setup](../../docs/studio-v1.md)
 
 In another terminal, use the same port for Vite's same-origin `/api` proxy. Both processes default to host port 8787 when `DAP_HTTP_PORT` is unset.
 
@@ -59,17 +59,11 @@ Open `http://127.0.0.1:5173`. Restart the host with refreshed fixture sessions i
 
 ## Onboard a managed application
 
-Build the embed with `npm run build:embed` and serve the resulting `dap-embed.js` on the enrolled application. Set the attribute to the web origin serving Studio.
-
-```html
-<script src="/dap-embed.js" data-dap-origin="http://127.0.0.1:5173"></script>
-```
-
-Enroll the application with **Studio-managed** as its registry. Give public controls stable markers such as `data-ai-id="orders.submit"` and use hash routes. Choose **Use for authoring**, connect Chrome, inspect a page and register eligible targets. Enable `registerStudioTarget` for registration and `setStudioTargetStatus` for the manager's disable and enable actions. Select registry IDs in the editor and preview in the enrolled application window. Published managed guides launch from the external guides list. [Managed inspector and embed setup](../../docs/studio-v1.md#preview-and-run-a-managed-guide)
+Follow the [Studio quickstart](../../docs/studio-quickstart.md) to register targets, add a verification check and publish a managed workflow. Serve both embed files for managed Preview and standalone delivery. Choose hash or history routing to match the application before recording its first page.
 
 ## A — Create a walkthrough
 
-1. Change **Demo role** to **Maintainer**. Open **Applications** and choose **Use for authoring** for the enabled reference application. You can also open **Walkthroughs**, select **New walkthrough** and choose the reference application in the editor.
+1. Change **Demo role** to **Maintainer**. Open **Applications** and choose **Open Studio** for the enabled reference application. You can also open **Workflows**, select **New walkthrough** and choose the reference application in the editor.
 2. Enter a title, short description and completion message. Set the first step's semantic target to **Name** under **Profile**, set **Interaction** to **Acknowledge** and enter an instruction.
 3. Add a second step for **Security** under **Settings** with another acknowledgement instruction. The editor shows validation problems as you edit. Use **Save draft** and wait for **Saved**. The server generates the guide ID.
 
@@ -79,9 +73,9 @@ Clear one instruction. The editor names the affected step and disables **Save dr
 
 ## C — Preview and publish
 
-1. Select **Preview**. Follow both real overlay steps, then dismiss the result. The editor retains your draft and the preview records no usage.
-2. Select **Publish** and confirm. The host revalidates the stored definition and the editor returns to the list after success.
-3. Switch to **User**, open **Dashboard** and find the walkthrough under **Guides**. Drafts stay out of this launcher. To edit a published guide again, switch back to **Maintainer**, unpublish it and then select **Edit**.
+1. Select **Preview**. Follow both real overlay steps, dismiss the overlay result and choose **Edit** on the editor’s **Preview results** panel. The editor retains your draft and the preview records no usage.
+2. Select **Publish**, read the review and confirm. The host validates the reviewed revision against the current registry and stores an immutable live version.
+3. Switch to **User**, open **Dashboard** and find the walkthrough under **Guides**. Drafts stay out of this launcher. To edit a published guide while it remains live, switch back to **Maintainer** and choose **Create draft from published**.
 
 ## D — Measure a completion and cancellation
 

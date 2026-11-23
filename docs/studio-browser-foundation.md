@@ -1,6 +1,6 @@
 # DAP Studio and the browser foundation
 
-This page documents the browser foundation and its provenance. [Studio V1B](studio-v1.md) describes the current application-aware host.
+This page documents the browser foundation and its provenance. [Studio guide](studio-v1.md) describes the current application-aware host.
 
 The foundation added a live browser workspace to the reference-web editor. The editor owned draft authoring. Save and publication used the Feature 004 store, validator, maintainer permissions and Policy Gateway. Preview ran the deterministic engine against the draft from the first step, and the runtime loaded published definitions and verified their postconditions.
 
@@ -62,17 +62,17 @@ vendor/agent-browser/cli/target/release/agent-browser doctor
 
 The native build uses the vendor Cargo lockfile and writes to the ignored `cli/target/` directory. The Linux proof built with `rust:1-bookworm` in Docker and used the resulting host executable. Vendor edits are unnecessary for this milestone.
 
-Follow the [Feature 004 quickstart](../specs/004-authoring-analytics/quickstart.md) to configure PostgreSQL, the maintainer demo session and authoring permissions. Enroll the application with its primary origin, allowed origins and registry before connecting the browser. See [Studio V1B](studio-v1.md) for enrollment and the manual registry picker fallback.
+Follow the [Feature 004 quickstart](../specs/004-authoring-analytics/quickstart.md) to configure PostgreSQL, the maintainer demo session and authoring permissions. Enroll the application with its primary origin, allowed origins and registry before connecting the browser. See [Studio guide](studio-v1.md) for enrollment and the manual registry picker fallback.
 
 ## Browser and workspace boundaries
 
-The maintainer-only Studio API binds one Chrome session per host to the principal, tenant, actor, enrolled application and opaque session ID. The selected registry supplies approved pages and accessibility labels. Enrollment supplies the allowed origins. The vendored CLI allowlist operates at the hostname level. The adapter reads the accessibility snapshot locally and checks the exact origin and supported route before returning filtered candidates. Highlight and Use re-check the current observation against the selected application's registry. Saved steps carry registry IDs.
+The maintainer-only Studio API binds one Chrome session per host to the principal, tenant, actor, enrolled application and opaque session ID. Built-in registries supply approved pages and accessibility labels. A managed registry uses the enrolled routing policy, current observation and eligibility checks. Enrollment supplies the allowed origins. The vendored CLI allowlist operates at the hostname level. The adapter reads the accessibility snapshot locally and checks the exact origin and supported route before returning filtered candidates. Highlight and Use re-check the current observation against the selected application's registry. Saved steps carry registry IDs.
 
-Disconnect, five minutes of inactivity and host shutdown trigger session cleanup. Removing, disabling or changing the browser policy of an application triggers cleanup on the next inspection command. See [Studio V1B](studio-v1.md#browser-boundary-and-session-recovery) for the current inspector and session behavior.
+Disconnect, five minutes of inactivity and host shutdown trigger session cleanup. Removing, disabling or changing the browser policy of an application triggers cleanup on the next inspection command. See [Studio guide](studio-v1.md#browser-boundary-and-session-recovery) for the current inspector and session behavior.
 
 ## Verification
 
-Run `npm run test:studio` for the focused suite. The V1A acceptance commands passed three consecutive headed Chromium runs. The UI command also passed without a display. [Run the host and editor acceptance checks](studio-v1.md#verify-with-chromium)
+Run `npm run test:studio` for the focused suite. The V1A acceptance commands passed three consecutive headed Chromium runs. The UI command also passed without a display. [Current Chromium acceptance command](studio-v1.md#verify-with-chromium)
 
 | Command | Host-only acceptance | UI run, host handling | UI run, click to observed result |
 | --- | ---: | ---: | ---: |
