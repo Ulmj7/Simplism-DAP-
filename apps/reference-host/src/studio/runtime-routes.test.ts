@@ -10,6 +10,7 @@ import { FakeApplicationStore } from "./fake-application-store.js";
 import { FakeTargetStore } from "./fake-target-store.js";
 import { createRegistryCatalog } from "./registries.js";
 import type { ApplicationConfig } from "./applications.js";
+import { generateRuntimeKey } from "./applications.js";
 import { RUNTIME_MESSAGES, RUNTIME_RATE_LIMIT, createRateLimiter, registerRuntimeRoutes } from "./runtime-routes.js";
 
 const TENANT_A = "1111aaaa-2222-4333-8444-5555bbbb5555";
@@ -27,6 +28,8 @@ const GUIDE_A2 = "wt-0000000000a2";
 const GUIDE_DRAFT = "wt-0000000000a3";
 const GUIDE_H = "wt-0000000000a4";
 const GUIDE_B = "wt-0000000000b1";
+const HEX_A = TENANT_A.replace(/-/g, "");
+const HEX_B = TENANT_B.replace(/-/g, "");
 const SECRETS = [TENANT_A, TENANT_B, "perm.", "allowedOrigins", "runtimeKey", "runtimeAccess", "createdBy", "tenant"];
 
 const managed = (name: string, over: Partial<ApplicationConfig> = {}): ApplicationConfig => ({ name, origin: ORIGIN, allowedOrigins: [ORIGIN, ORIGIN_2], environment: "test", registryId: "studio-managed", routing: "hash", runtimeAccess: true, ...over });
@@ -63,10 +66,11 @@ async function build(options: { rateLimit?: { max: number; windowMs: number; max
   publish(TENANT_B, GUIDE_B, APP_B, def("orders", "orders.submitButton", "Tenant B guide"));
   const store: Pick<WalkthroughStore, "listPublished"> = { listPublished: async (tenantId) => rows.filter((row) => row.tenantId === tenantId && row.status === "published") };
   const lookups: string[] = [];
-  const lookup = { find: async (key: string) => { lookups.push(key); return applications.lookupRuntimeKey(key); } };
+  const realFind = applications.findByRuntimeKey.bind(applications);
+  applications.findByRuntimeKey = async (tenantId, key) => { lookups.push(`${tenantId}|${key}`); return realFind(tenantId, key); };
   const app = createGuidanceTransport({ ask: async () => ({ kind: "clarify", message: "x" }), catalog: { list: () => [] }, resolveSession: async () => null, proposals: createProposalStore({ now: Date.now, newId: () => "unused" }) });
   open.push(app);
-  registerRuntimeRoutes(app, { lookup, applications, store, catalog: createRegistryCatalog(), targets, ...(options.rateLimit === undefined ? {} : { rateLimit: options.rateLimit }), ...(options.now === undefined ? {} : { now: options.now }) });
+  registerRuntimeRoutes(app, { applications, store, catalog: createRegistryCatalog(), targets, ...(options.rateLimit === undefined ? {} : { rateLimit: options.rateLimit }), ...(options.now === undefined ? {} : { now: options.now }) });
   const key = async (tenantId: string, id: string) => (await applications.get(tenantId, id))!.runtimeKey!;
   const call = async (path: string, init: { method?: "GET" | "OPTIONS" | "POST"; origin?: string | null; headers?: Record<string, string>; remoteAddress?: string } = {}) => {
     const headers: Record<string, string> = { ...(init.origin === null || init.origin === undefined ? {} : { origin: init.origin }), ...(init.headers ?? {}) };
@@ -200,7 +204,7 @@ describe("key refusals: 404, never distinguishing unknown from disabled", () => 
   it("an unknown key, a disabled application, runtime access off, a rotated key and a key of a built-in application's id look identical", async () => {
     const h = await build();
     const key = await h.key(TENANT_A, APP_A);
-    const unknown = await h.call(`/api/runtime/rk-${"0".repeat(32)}/guides`, { origin: ORIGIN });
+    const unknown = await h.call(`/api/runtime/rk-${HEX_A}-${"0".repeat(32)}/guides`, { origin: ORIGIN });
     expect(unknown).toMatchObject({ status: 404, body: FIXED });
     await h.applications.setEnabled(h.scopeA, APP_A, false);
     const disabled = await h.call(`/api/runtime/${key}/guides`, { origin: ORIGIN });
@@ -222,11 +226,12 @@ describe("key refusals: 404, never distinguishing unknown from disabled", () => 
   it("rotating the key kills the old key at once; the new key works", async () => {
     const h = await build();
     const old = await h.key(TENANT_A, APP_A);
-    expect(await h.applications.rotateRuntimeKey(h.scopeA, APP_A, `rk-${"b".repeat(32)}`)).toBe("rotated");
+    const fresh = generateRuntimeKey(TENANT_A, () => Buffer.alloc(16, 0xbb));
+    expect(await h.applications.rotateRuntimeKey(h.scopeA, APP_A, fresh)).toBe("rotated");
     expect(await h.call(`/api/runtime/${old}/guides`, { origin: ORIGIN })).toMatchObject({ status: 404, body: FIXED });
-    expect((await h.call(`/api/runtime/rk-${"b".repeat(32)}/guides`, { origin: ORIGIN })).status).toBe(200);
+    expect((await h.call(`/api/runtime/${fresh}/guides`, { origin: ORIGIN })).status).toBe(200);
   });
-  it.each([["too short", "rk-abc"], ["upper-case hex", `rk-${"A".repeat(32)}`], ["no prefix", "a".repeat(32)], ["a sql probe", "x'%20OR%201=1--"], ["a path probe", "..%2Fapplications"], ["33 hex", `rk-${"a".repeat(33)}`]])(
+  it.each([["too short", "rk-abc"], ["the old 32-hex format", `rk-${"a".repeat(32)}`], ["upper-case tenant part", `rk-${HEX_A.toUpperCase()}-${"a".repeat(32)}`], ["upper-case hex", `rk-${HEX_A}-${"A".repeat(32)}`], ["no prefix", `${HEX_A}-${"a".repeat(32)}`], ["a missing random part", `rk-${HEX_A}-`], ["a wrong separator", `rk-${HEX_A}_${"a".repeat(32)}`], ["a sql probe", "x'%20OR%201=1--"], ["a path probe", "..%2Fapplications"], ["33 random hex", `rk-${HEX_A}-${"a".repeat(33)}`]])(
     "a malformed key (%s) is 404 and never reaches the lookup", async (_name, key) => {
       const h = await build();
       expect(await h.call(`/api/runtime/${key}/guides`, { origin: ORIGIN })).toMatchObject({ status: 404 });
@@ -279,7 +284,7 @@ describe("the preflight", () => {
   });
   it("an unknown key or a disabled application is 404 for the preflight as well", async () => {
     const h = await build();
-    expect((await h.call(`/api/runtime/rk-${"1".repeat(32)}/guides`, { method: "OPTIONS", origin: ORIGIN })).status).toBe(404);
+    expect((await h.call(`/api/runtime/rk-${HEX_A}-${"1".repeat(32)}/guides`, { method: "OPTIONS", origin: ORIGIN })).status).toBe(404);
   });
 });
 
@@ -334,6 +339,42 @@ describe("the transport's guards still hold around the runtime routes", () => {
     const res = await h.app.inject({ method: "GET", url: `/api/runtime/${key}/guides`, headers: { host: "evil.example", origin: ORIGIN } });
     expect(res.statusCode).toBe(403);
     expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});
+
+describe("the key carries its tenant: a key can only ever be read inside that tenant", () => {
+  it("a key whose tenant part names ANOTHER tenant (the random part of A's key under B's tenant, and the reverse) finds nothing: the same fixed 404, and the lookup ran only inside the named tenant", async () => {
+    const h = await build();
+    const keyA = await h.key(TENANT_A, APP_A); const keyB = await h.key(TENANT_B, APP_B);
+    const randomA = keyA.slice(-32); const randomB = keyB.slice(-32);
+    const crossed = [`rk-${HEX_B}-${randomA}`, `rk-${HEX_A}-${randomB}`];
+    const unknown = await h.call(`/api/runtime/rk-${HEX_A}-${"0".repeat(32)}/guides`, { origin: ORIGIN });
+    h.lookups.length = 0;
+    for (const key of crossed) {
+      const res = await h.call(`/api/runtime/${key}/guides`, { origin: ORIGIN });
+      expect(res.status, key).toBe(404);
+      expect(res.raw).toBe(unknown.raw);
+    }
+    expect(h.lookups).toEqual([`${TENANT_B}|rk-${HEX_B}-${randomA}`, `${TENANT_A}|rk-${HEX_A}-${randomB}`]);
+    // and the store itself: tenant B's own read of tenant A's key is empty
+    expect(await h.applications.findByRuntimeKey(TENANT_B, keyA)).toBeNull();
+    expect(await h.applications.findByRuntimeKey(TENANT_A, keyA)).not.toBeNull();
+  });
+  it("a valid key is read only in the tenant it names (one store read, parameters = that tenant and the key)", async () => {
+    const h = await build();
+    const key = await h.key(TENANT_A, APP_A);
+    h.lookups.length = 0;
+    await h.call(`/api/runtime/${key}/guides`, { origin: ORIGIN });
+    expect(h.lookups).toEqual([`${TENANT_A}|${key}`]);
+  });
+  it("a store that ignores the tenant cannot leak: the route re-checks that the record's own key equals the request's key", async () => {
+    const h = await build();
+    const keyB = await h.key(TENANT_B, APP_B);
+    const real = h.applications.findByRuntimeKey.bind(h.applications);
+    h.applications.findByRuntimeKey = async () => real(TENANT_B, keyB); // a broken store answering tenant B's application for any key
+    const res = await h.call(`/api/runtime/rk-${HEX_A}-${"c".repeat(32)}/guides`, { origin: ORIGIN });
+    expect(res.status).toBe(404);
+    expect(res.raw).not.toContain("Tenant B guide");
   });
 });
 

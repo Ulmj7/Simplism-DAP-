@@ -1,5 +1,5 @@
 /**
- * Studio COMPLETION migration 076 (routing, runtime access, runtime key, the page grammar by routing and the SECURITY DEFINER runtime lookup) on a PostgreSQL database, every defence proved by
+ * Studio COMPLETION migration 076 (routing, runtime access, the tenant-embedded runtime key, the page grammar by routing; NO SECURITY DEFINER function and no extra policy) on a PostgreSQL database, every defence proved by
  * DIRECT SQL as dap_app (DAP_DATABASE_URL), dap_owner (DAP_MIGRATE_DATABASE_URL) only for ownership checks and the idempotence replay. Fresh tenants and ids per test.
  */
 import { randomBytes, randomUUID } from "node:crypto";
@@ -25,7 +25,8 @@ async function asTenant<T>(pool: Pool, tenant: string | null, run: (query: Query
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
 const newApp = () => `app-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-const newKey = () => `rk-${randomBytes(16).toString("hex")}`;
+/** A runtime key of `tenant`: rk- + the tenant id without dashes + - + 32 random hex. */
+const newKey = (tenant: string) => `rk-${tenant.replace(/-/g, "")}-${randomBytes(16).toString("hex")}`;
 interface A { registry?: string; routing?: string; access?: boolean; key?: string | null; enabled?: boolean }
 const INSERT_APP = "INSERT INTO public.studio_applications (tenant_id, application_id, name, origin, allowed_origins, environment, registry_id, routing, runtime_access, runtime_key, enabled, created_by, updated_by) VALUES ($1,$2,'App','http://localhost:5184',ARRAY['http://localhost:5184'],'test',$3,$4,$5,$6,$7,'seed','seed')";
 const enroll = async (tenant: string, over: A = {}): Promise<string> => {
@@ -35,7 +36,6 @@ const enroll = async (tenant: string, over: A = {}): Promise<string> => {
 };
 const INSERT_ROUTE = "INSERT INTO public.studio_registry_routes (tenant_id, application_id, route, page, created_by) VALUES ($1,$2,$3,$4,'maya')";
 const route = (tenant: string, application: string, name: string, page: string) => asTenant(app, tenant, (q) => q(INSERT_ROUTE, [tenant, application, name, page]));
-const lookup = async (key: string) => (await app.query("SELECT * FROM public.studio_runtime_application($1)", [key])).rows;
 
 describe("the new columns, their defaults and their checks", () => {
   it("studio_applications keeps its owner, forced RLS and its exact V1A grants; the new columns default to hash, no runtime access and no key", async () => {
@@ -51,30 +51,43 @@ describe("the new columns, their defaults and their checks", () => {
     for (const routing of ["History", "path", "", "hash ", "HASH"]) await expect(enroll(tenant, { routing })).rejects.toThrow(/check constraint/);
   });
   it.each([
-    ["no prefix", "abcdef0123456789abcdef0123456789"], ["upper-case hex", "rk-ABCDEF0123456789ABCDEF0123456789"], ["31 hex", `rk-${"a".repeat(31)}`], ["33 hex", `rk-${"a".repeat(33)}`],
-    ["a non-hex letter", `rk-${"g".repeat(32)}`], ["a space", `rk-${"a".repeat(31)} `], ["a newline", `rk-${"a".repeat(32)}\n`], ["the wrong prefix", `rj-${"a".repeat(32)}`],
-  ])("a runtime key must be rk- plus 32 lower-case hex: refuses %s", async (_name, key) => {
-    await expect(enroll(randomUUID(), { access: true, key })).rejects.toThrow(/check constraint/);
+    ["the old 32-hex format", (t: string) => `rk-${"a".repeat(32)}`], ["no prefix", (t: string) => `${t.replace(/-/g, "")}-${"a".repeat(32)}`],
+    ["upper-case hex in the random part", (t: string) => `rk-${t.replace(/-/g, "")}-${"A".repeat(32)}`], ["31 random hex", (t: string) => `rk-${t.replace(/-/g, "")}-${"a".repeat(31)}`],
+    ["33 random hex", (t: string) => `rk-${t.replace(/-/g, "")}-${"a".repeat(33)}`], ["a non-hex letter", (t: string) => `rk-${t.replace(/-/g, "")}-${"g".repeat(32)}`],
+    ["a wrong separator", (t: string) => `rk-${t.replace(/-/g, "")}_${"a".repeat(32)}`], ["a trailing newline", (t: string) => `rk-${t.replace(/-/g, "")}-${"a".repeat(32)}\n`],
+    ["the wrong prefix", (t: string) => `rj-${t.replace(/-/g, "")}-${"a".repeat(32)}`], ["a dashed tenant part", (t: string) => `rk-${t}-${"a".repeat(32)}`],
+  ])("a runtime key must be rk- + tenant(32 hex) + - + 32 lower-case hex: refuses %s", async (_name, make) => {
+    const tenant = randomUUID();
+    await expect(enroll(tenant, { access: true, key: make(tenant) })).rejects.toThrow(/check constraint/);
+  });
+  it("the key's embedded tenant must be the row's OWN tenant: a well-formed key naming another tenant is refused on INSERT and on UPDATE, and the matching key is accepted", async () => {
+    const [tenant, other] = [randomUUID(), randomUUID()];
+    await expect(enroll(tenant, { access: true, key: newKey(other) })).rejects.toThrow(/studio_applications_runtime_key_tenant/);
+    const id = await enroll(tenant, { access: true, key: newKey(tenant) });
+    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET runtime_key=$2 WHERE application_id=$1", [id, newKey(other)]))).rejects.toThrow(/studio_applications_runtime_key_tenant/);
+    await asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET runtime_key=$2 WHERE application_id=$1", [id, newKey(tenant)]));
+    // the case-sensitive uuid text of Postgres is lower-case; an upper-case tenant part cannot match
+    await expect(enroll(tenant, { access: true, key: `rk-${tenant.replace(/-/g, "").toUpperCase()}-${"a".repeat(32)}` })).rejects.toThrow(/check constraint/);
   });
   it("a runtime key is unique across applications and tenants (null keys may repeat)", async () => {
-    const key = newKey();
-    await enroll(randomUUID(), { key });
-    await expect(enroll(randomUUID(), { key })).rejects.toThrow(/duplicate key/);
+    const tenant = randomUUID(); const key = newKey(tenant);
+    await enroll(tenant, { key });
+    await expect(enroll(tenant, { key })).rejects.toThrow(/duplicate key/);
     await enroll(randomUUID()); await enroll(randomUUID());
   });
   it("only a Studio-managed application may use history routing, runtime access or hold a key; runtime access needs a key", async () => {
     const tenant = randomUUID();
     await expect(enroll(tenant, { registry: "reference", routing: "history" })).rejects.toThrow(/check constraint/);
-    await expect(enroll(tenant, { registry: "reference", access: true, key: newKey() })).rejects.toThrow(/check constraint/);
-    await expect(enroll(tenant, { registry: "fixture", key: newKey() })).rejects.toThrow(/check constraint/);
+    await expect(enroll(tenant, { registry: "reference", access: true, key: newKey(tenant) })).rejects.toThrow(/check constraint/);
+    await expect(enroll(tenant, { registry: "fixture", key: newKey(tenant) })).rejects.toThrow(/check constraint/);
     await expect(enroll(tenant, { access: true })).rejects.toThrow(/check constraint/);
-    await enroll(tenant, { routing: "history", access: true, key: newKey() });
+    await enroll(tenant, { routing: "history", access: true, key: newKey(tenant) });
     await enroll(tenant, { registry: "reference" });
   });
   it("an UPDATE cannot turn a built-in application into a history or runtime application either", async () => {
     const tenant = randomUUID(); const id = await enroll(tenant, { registry: "reference" });
     await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET routing='history' WHERE application_id=$1", [id]))).rejects.toThrow(/check constraint/);
-    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET runtime_key=$2 WHERE application_id=$1", [id, newKey()]))).rejects.toThrow(/check constraint/);
+    await expect(asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET runtime_key=$2 WHERE application_id=$1", [id, newKey(tenant)]))).rejects.toThrow(/check constraint/);
   });
 });
 
@@ -134,78 +147,56 @@ describe("routing is locked once routes exist, and the page grammar follows the 
   });
 });
 
-describe("studio_runtime_application: the narrow lookup", () => {
-  it("returns exactly (tenant_id, application_id) for an enabled Studio-managed application with runtime access on, from any session, with no tenant setting", async () => {
-    const tenant = randomUUID(); const key = newKey();
-    const id = await enroll(tenant, { access: true, key });
-    const rows = await lookup(key);
-    expect(rows).toEqual([{ tenant_id: tenant, application_id: id }]);
-    expect(Object.keys(rows[0]!).sort()).toEqual(["application_id", "tenant_id"]);
-    // the same answer while a DIFFERENT tenant is the current one: ids only, nothing else crosses
-    expect(await asTenant(app, randomUUID(), (q) => q("SELECT * FROM public.studio_runtime_application($1)", [key]))).toMatchObject({ rows: [{ tenant_id: tenant, application_id: id }] });
+describe("no cross-tenant lookup exists: the runtime key is read inside its own tenant, by row-level security alone", () => {
+  const find = (tenant: string, key: string) => asTenant(app, tenant, (q) => q(
+    "SELECT application_id FROM public.studio_applications WHERE tenant_id = $1::uuid AND runtime_key = $2 AND runtime_access AND enabled AND registry_id = 'studio-managed'", [tenant, key]));
+  it("a key resolves only inside the tenant it names; the same key read from any other tenant, or from no tenant, finds nothing, even when the query asks for the other tenant explicitly", async () => {
+    const [ta, tb] = [randomUUID(), randomUUID()]; const key = newKey(ta);
+    const id = await enroll(ta, { access: true, key });
+    expect((await find(ta, key)).rows).toEqual([{ application_id: id }]);
+    expect((await find(tb, key)).rows).toEqual([]);
+    expect((await asTenant(app, tb, (q) => q("SELECT application_id FROM public.studio_applications WHERE tenant_id = $1::uuid AND runtime_key = $2", [ta, key]))).rows).toEqual([]);
+    expect((await asTenant(app, tb, (q) => q("SELECT application_id FROM public.studio_applications WHERE runtime_key = $1", [key]))).rows).toEqual([]);
+    expect((await app.query("SELECT application_id FROM public.studio_applications WHERE runtime_key = $1", [key])).rows).toEqual([]);
   });
-  it("returns nothing for a disabled application, runtime access off, an unknown key and malformed keys", async () => {
-    const tenant = randomUUID();
-    const off = newKey(); await enroll(tenant, { access: false, key: off });
-    const disabled = newKey(); await enroll(tenant, { access: true, key: disabled, enabled: false });
-    expect(await lookup(off)).toEqual([]);
-    expect(await lookup(disabled)).toEqual([]);
-    expect(await lookup(newKey())).toEqual([]);
-    for (const bad of ["", "rk-", "x", `rk-${"A".repeat(32)}`, `rk-${"a".repeat(32)}'`, "' OR 1=1 --", "%", `rk-${"a".repeat(40)}`]) expect(await lookup(bad), bad).toEqual([]);
+  it("a key whose tenant part names another tenant can never be stored, so it can never resolve: swapping the tenant part of a live key finds nothing in either tenant", async () => {
+    const [ta, tb] = [randomUUID(), randomUUID()]; const key = newKey(ta);
+    await enroll(ta, { access: true, key }); await enroll(tb, { access: true, key: newKey(tb) });
+    const swapped = `rk-${tb.replace(/-/g, "")}-${key.slice(-32)}`;
+    expect((await find(tb, swapped)).rows).toEqual([]);
+    expect((await find(ta, swapped)).rows).toEqual([]);
   });
-  it("follows the live state: disabling the application or turning runtime access off kills the lookup at once, re-enabling restores the SAME key, a rotated key replaces the old one", async () => {
-    const tenant = randomUUID(); const key = newKey();
+  it("the state follows the live row: disabling, access off and rotation change what resolves; re-enabling restores the SAME key", async () => {
+    const tenant = randomUUID(); const key = newKey(tenant);
     const id = await enroll(tenant, { access: true, key });
-    expect(await lookup(key)).toHaveLength(1);
+    expect((await find(tenant, key)).rows).toHaveLength(1);
     await asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET enabled=false WHERE application_id=$1", [id]));
-    expect(await lookup(key)).toEqual([]);
+    expect((await find(tenant, key)).rows).toEqual([]);
     await asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET enabled=true, runtime_access=false WHERE application_id=$1", [id]));
-    expect(await lookup(key)).toEqual([]);
+    expect((await find(tenant, key)).rows).toEqual([]);
     await asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET runtime_access=true WHERE application_id=$1", [id]));
-    expect(await lookup(key)).toHaveLength(1);
-    const fresh = newKey();
+    expect((await find(tenant, key)).rows).toHaveLength(1);
+    const fresh = newKey(tenant);
     await asTenant(app, tenant, (q) => q("UPDATE public.studio_applications SET runtime_key=$2 WHERE application_id=$1", [id, fresh]));
-    expect(await lookup(key)).toEqual([]);
-    expect(await lookup(fresh)).toEqual([{ tenant_id: tenant, application_id: id }]);
+    expect((await find(tenant, key)).rows).toEqual([]);
+    expect((await find(tenant, fresh)).rows).toEqual([{ application_id: id }]);
   });
-  it("two tenants' keys never cross", async () => {
-    const [ta, tb] = [randomUUID(), randomUUID()]; const [ka, kb] = [newKey(), newKey()];
-    const a = await enroll(ta, { access: true, key: ka }); const b = await enroll(tb, { access: true, key: kb });
-    expect(await lookup(ka)).toEqual([{ tenant_id: ta, application_id: a }]);
-    expect(await lookup(kb)).toEqual([{ tenant_id: tb, application_id: b }]);
+  it("defines NO SECURITY DEFINER function in public (the Feature 001 conformance query is empty), no studio_runtime_application, and no policy beyond the tenant isolation one", async () => {
+    expect((await app.query("SELECT proname FROM pg_proc WHERE prosecdef AND pronamespace='public'::regnamespace")).rows).toEqual([]);
+    expect((await app.query("SELECT proname FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname = 'studio_runtime_application'")).rows).toEqual([]);
+    expect((await app.query("SELECT polname, polroles::text AS roles, polcmd FROM pg_policy WHERE polrelid='public.studio_applications'::regclass")).rows).toEqual([{ polname: "tenant_isolation", roles: "{0}", polcmd: "*" }]);
+    expect((await app.query("SELECT polname FROM pg_policy WHERE polrelid='public.studio_registry_routes'::regclass AND polname <> 'tenant_isolation'")).rows).toEqual([]);
   });
-  it("does not widen dap_app: without a tenant setting studio_applications is still empty, another tenant's rows (and keys) stay invisible, and the function is the only added door", async () => {
-    const [ta, tb] = [randomUUID(), randomUUID()]; const key = newKey();
-    await enroll(ta, { access: true, key });
-    expect((await app.query("SELECT runtime_key FROM public.studio_applications WHERE runtime_key = $1", [key])).rows).toEqual([]);
-    expect((await asTenant(app, tb, (q) => q("SELECT runtime_key FROM public.studio_applications WHERE runtime_key = $1", [key]))).rows).toEqual([]);
-    expect((await asTenant(app, ta, (q) => q("SELECT runtime_key FROM public.studio_applications WHERE runtime_key = $1", [key]))).rows).toEqual([{ runtime_key: key }]);
-    // the policy that lets the definer read exists for dap_owner ONLY
-    expect((await app.query("SELECT polname, polcmd, (SELECT array_agg(rolname::text) FROM pg_roles WHERE oid = ANY (polroles)) AS roles FROM pg_policy WHERE polrelid='public.studio_applications'::regclass AND polname='runtime_lookup'")).rows)
-      .toEqual([{ polname: "runtime_lookup", polcmd: "r", roles: ["dap_owner"] }]);
-    expect((await app.query("SELECT polname, polroles::text AS polroles FROM pg_policy WHERE polrelid='public.studio_applications'::regclass AND polname='tenant_isolation'")).rows).toEqual([{ polname: "tenant_isolation", polroles: "{0}" }]);
-  });
-  it("is SECURITY DEFINER with a pinned search_path, owned by dap_owner, executable by dap_app and not by PUBLIC", async () => {
-    const info = (await app.query("SELECT pg_get_userbyid(proowner) AS owner, prosecdef, proconfig, proacl::text AS acl, provolatile FROM pg_proc WHERE oid='public.studio_runtime_application(text)'::regprocedure")).rows[0]!;
-    expect(info.owner).toBe("dap_owner");
-    expect(info.prosecdef).toBe(true);
-    expect(info.proconfig).toEqual(["search_path=pg_catalog"]);
-    expect(info.provolatile).toBe("s");
-    expect(String(info.acl)).toContain("dap_app=X/dap_owner");
-    expect(String(info.acl)).not.toMatch(/(^|[{,])=X/); // no PUBLIC grant
-    expect((await app.query("SELECT has_function_privilege('dap_app','public.studio_runtime_application(text)','EXECUTE') AS ok")).rows).toEqual([{ ok: true }]);
-    expect((await app.query("SELECT has_function_privilege('public','public.studio_runtime_application(text)','EXECUTE') AS ok")).rows).toEqual([{ ok: false }]);
-  });
-  it("a hostile search_path or a look-alike function in another schema cannot redirect the lookup", async () => {
-    const key = newKey(); const tenant = randomUUID();
-    await enroll(tenant, { access: true, key });
-    const client = await app.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query("SET LOCAL search_path = public, pg_temp");
-      expect((await client.query("SELECT * FROM public.studio_runtime_application($1)", [key])).rows).toHaveLength(1);
-      await client.query("COMMIT");
-    } finally { client.release(); }
+  it("widens no grant: dap_app keeps exactly SELECT, INSERT, UPDATE on studio_applications, and the migration's functions are trigger functions that nobody but their owner may call", async () => {
+    await assertStateAcl(app, "studio_applications", ["SELECT", "INSERT", "UPDATE"]);
+    const rows = (await app.query("SELECT proname, prosecdef, prorettype::regtype::text AS ret FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname IN ('studio_page_valid','studio_registry_routes_page_grammar','studio_applications_routing_locked') ORDER BY proname")).rows;
+    expect(rows).toEqual([
+      { proname: "studio_applications_routing_locked", prosecdef: false, ret: "trigger" }, { proname: "studio_page_valid", prosecdef: false, ret: "boolean" }, { proname: "studio_registry_routes_page_grammar", prosecdef: false, ret: "trigger" },
+    ]);
+    for (const fn of ["public.studio_registry_routes_page_grammar()", "public.studio_applications_routing_locked()"]) {
+      expect((await app.query("SELECT has_function_privilege('public', $1, 'EXECUTE') AS ok", [fn])).rows).toEqual([{ ok: false }]);
+    }
+    expect((await app.query("SELECT has_function_privilege('public', 'public.studio_page_valid(text,text)', 'EXECUTE') AS ok")).rows).toEqual([{ ok: false }]);
   });
 });
 
@@ -216,7 +207,7 @@ describe("the migration is idempotent and 072-075 are untouched", () => {
     const before = await snapshot();
     await owner.query(sql); await owner.query(sql);
     expect(await snapshot()).toEqual(before);
-    expect((await owner.query("SELECT count(*)::int AS n FROM pg_policy WHERE polrelid='public.studio_applications'::regclass")).rows).toEqual([{ n: 2 }]);
+    expect((await owner.query("SELECT count(*)::int AS n FROM pg_policy WHERE polrelid='public.studio_applications'::regclass")).rows).toEqual([{ n: 1 }]);
     expect((await owner.query("SELECT count(*)::int AS n FROM pg_trigger WHERE tgrelid='public.studio_registry_routes'::regclass AND tgname='studio_registry_routes_page_grammar'")).rows).toEqual([{ n: 1 }]);
   });
   it("refuses to run as anyone but dap_owner", async () => {

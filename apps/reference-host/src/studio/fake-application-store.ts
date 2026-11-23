@@ -3,7 +3,7 @@
  * by a save, no delete) so route and executor tests can run without a database. The proof that PostgreSQL really behaves this way is the DB-backed tests under tests/integration.
  */
 import type { ApplicationConfig, ApplicationCounts, ApplicationRecord } from "./applications.js";
-import { MAX_APPLICATIONS_PER_TENANT, NO_COUNTS, STUDIO_MANAGED_REGISTRY_ID, generateRuntimeKey, isApplicationId, isRuntimeKey, registrySourceOf } from "./applications.js";
+import { MAX_APPLICATIONS_PER_TENANT, NO_COUNTS, STUDIO_MANAGED_REGISTRY_ID, generateRuntimeKey, isApplicationId, isRuntimeKey, registrySourceOf, tenantOfRuntimeKey } from "./applications.js";
 import type { ApplicationEnabledOutcome, ApplicationSaveOutcome, ApplicationScope, ApplicationStore, RuntimeKeyOutcome } from "./application-store.js";
 
 type Row = ApplicationRecord & { readonly tenantId: string };
@@ -35,7 +35,7 @@ export class FakeApplicationStore implements ApplicationStore {
     if (row === undefined) return null;
     return this.publicRecord(row);
   }
-  async save(scope: ApplicationScope, id: string, config: ApplicationConfig, candidateKey: string = generateRuntimeKey()): Promise<ApplicationSaveOutcome> {
+  async save(scope: ApplicationScope, id: string, config: ApplicationConfig, candidateKey: string = generateRuntimeKey(scope.tenantId)): Promise<ApplicationSaveOutcome> {
     this.check();
     if (!isApplicationId(id)) return "id_refused";
     const index = this.rows.findIndex((row) => row.tenantId === scope.tenantId && row.id === id);
@@ -44,7 +44,7 @@ export class FakeApplicationStore implements ApplicationStore {
       const now = this.stamp();
       const runtimeAccess = config.runtimeAccess === true;
       this.rows.push({ tenantId: scope.tenantId, id, name: config.name, origin: config.origin, environment: config.environment, registryId: config.registryId, allowedOrigins: [...config.allowedOrigins],
-        routing: config.routing ?? "hash", runtimeAccess, runtimeKey: runtimeAccess && isRuntimeKey(candidateKey) ? candidateKey : null, counts: NO_COUNTS, enabled: true, createdAt: now, updatedAt: now });
+        routing: config.routing ?? "hash", runtimeAccess, runtimeKey: runtimeAccess && isRuntimeKey(candidateKey) && tenantOfRuntimeKey(candidateKey) === scope.tenantId ? candidateKey : null, counts: NO_COUNTS, enabled: true, createdAt: now, updatedAt: now });
       return "created";
     }
     const current = this.rows[index]!;
@@ -52,7 +52,7 @@ export class FakeApplicationStore implements ApplicationStore {
     const routing = config.routing ?? "hash";
     if (routing !== current.routing && this.withRoutes.has(`${scope.tenantId}/${id}`)) return "routing_locked";
     const runtimeAccess = config.runtimeAccess === true;
-    const runtimeKey = current.runtimeKey ?? (runtimeAccess && isRuntimeKey(candidateKey) ? candidateKey : null);
+    const runtimeKey = current.runtimeKey ?? (runtimeAccess && isRuntimeKey(candidateKey) && tenantOfRuntimeKey(candidateKey) === scope.tenantId ? candidateKey : null);
     this.rows[index] = { ...current, name: config.name, origin: config.origin, environment: config.environment, registryId: config.registryId, allowedOrigins: [...config.allowedOrigins], routing, runtimeAccess, runtimeKey, updatedAt: this.stamp() };
     return "updated";
   }
@@ -68,7 +68,7 @@ export class FakeApplicationStore implements ApplicationStore {
   }
   async rotateRuntimeKey(scope: ApplicationScope, id: string, newKey: string): Promise<RuntimeKeyOutcome> {
     this.check();
-    if (!isApplicationId(id) || !isRuntimeKey(newKey)) return "id_refused";
+    if (!isApplicationId(id) || !isRuntimeKey(newKey) || tenantOfRuntimeKey(newKey) !== scope.tenantId) return "id_refused";
     const index = this.rows.findIndex((row) => row.tenantId === scope.tenantId && row.id === id);
     if (index < 0) return "not_found";
     const current = this.rows[index]!;
@@ -76,9 +76,9 @@ export class FakeApplicationStore implements ApplicationStore {
     this.rows[index] = { ...current, runtimeKey: newKey, updatedAt: this.stamp() };
     return "rotated";
   }
-  /** The runtime lookup as the database function does it: the (tenant, application) of an ENABLED managed application with runtime access on, by key. */
-  lookupRuntimeKey(key: string): { readonly tenantId: string; readonly applicationId: string } | null {
-    const row = this.rows.find((candidate) => candidate.runtimeKey === key && candidate.enabled && candidate.runtimeAccess && candidate.registryId === STUDIO_MANAGED_REGISTRY_ID);
-    return row === undefined ? null : { tenantId: row.tenantId, applicationId: row.id };
+  async findByRuntimeKey(tenantId: string, key: string): Promise<ApplicationRecord | null> {
+    this.check();
+    const row = this.rows.find((candidate) => candidate.tenantId === tenantId && candidate.runtimeKey === key && candidate.enabled && candidate.runtimeAccess && candidate.registryId === STUDIO_MANAGED_REGISTRY_ID);
+    return row === undefined ? null : this.publicRecord(row);
   }
 }

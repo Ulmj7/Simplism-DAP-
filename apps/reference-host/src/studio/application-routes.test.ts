@@ -57,7 +57,7 @@ function build(over: { feedback?: (action: string) => unknown; newIds?: string[]
           return { outcome: "ALLOWED", category: outcome === "changed" || outcome === "unchanged" ? "ok" : "try_later" };
         }
         if (action === ROTATE_KEY_ACTION_ID) {
-          const outcome = await store.rotateRuntimeKey(scope, params.applicationId as string, generateRuntimeKey());
+          const outcome = await store.rotateRuntimeKey(scope, params.applicationId as string, generateRuntimeKey(tenant));
           return { outcome: "ALLOWED", category: outcome === "rotated" ? "ok" : "try_later" };
         }
         return { outcome: "INVALID_ACTION", category: "not_available" };
@@ -351,9 +351,9 @@ describe("routing and runtime access on enrolment", () => {
   it("POST accepts routing alone, runtimeAccess alone or both; a history managed application with runtime access gets a server-made rk- key", async () => {
     const t = build({ newIds: [A1, A2, "app-0000000000a3"] });
     expect((await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ routing: "history" }) })).body).toMatchObject({ routing: "history", runtimeAccess: false, runtimeKey: null });
-    expect((await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ runtimeAccess: true }) })).body).toMatchObject({ routing: "hash", runtimeAccess: true, runtimeKey: expect.stringMatching(/^rk-[a-f0-9]{32}$/) });
+    expect((await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ runtimeAccess: true }) })).body).toMatchObject({ routing: "hash", runtimeAccess: true, runtimeKey: expect.stringMatching(/^rk-1111aaaa2222433384445555bbbb5555-[a-f0-9]{32}$/) });
     const both = await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ routing: "history", runtimeAccess: true }) });
-    expect(both.body).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: expect.stringMatching(/^rk-[a-f0-9]{32}$/) });
+    expect(both.body).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: expect.stringMatching(/^rk-1111aaaa2222433384445555bbbb5555-[a-f0-9]{32}$/) });
     expect(JSON.stringify(t.submitted.map((call) => call.params))).not.toMatch(/rk-[a-f0-9]{32}/u); // the key never travels through the Gateway parameters
   });
   it.each([
@@ -389,7 +389,7 @@ describe("routing and runtime access on enrolment", () => {
     await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
     const on = await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ runtimeAccess: true }) });
     const key = on.body.runtimeKey as string;
-    expect(key).toMatch(/^rk-[a-f0-9]{32}$/);
+    expect(key).toMatch(/^rk-1111aaaa2222433384445555bbbb5555-[a-f0-9]{32}$/);
     expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ runtimeAccess: true, name: "Renamed" }) })).body).toMatchObject({ name: "Renamed", runtimeKey: key });
     expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ runtimeAccess: false }) })).body).toMatchObject({ runtimeAccess: false, runtimeKey: key });
     expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ runtimeAccess: true }) })).body).toMatchObject({ runtimeAccess: true, runtimeKey: key });
@@ -432,18 +432,19 @@ describe("rotating the runtime key", () => {
     const res = await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer" });
     expect(res.status).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual(VIEW_KEYS);
-    expect(res.body.runtimeKey).toMatch(/^rk-[a-f0-9]{32}$/);
+    expect(res.body.runtimeKey).toMatch(/^rk-[a-f0-9]{32}-[a-f0-9]{32}$/);
     expect(res.body.runtimeKey).not.toBe(old);
     expect(t.submitted).toEqual([{ who: "maintainer", action: "rotateStudioRuntimeKey", params: { applicationId: A1 } }]);
-    expect(t.store.lookupRuntimeKey(old)).toBeNull();
-    expect(t.store.lookupRuntimeKey(res.body.runtimeKey as string)).toEqual({ tenantId: TENANT_A, applicationId: A1 });
+    expect(await t.store.findByRuntimeKey(TENANT_A, old)).toBeNull();
+    expect((await t.store.findByRuntimeKey(TENANT_A, res.body.runtimeKey as string))?.id).toBe(A1);
+    expect(await t.store.findByRuntimeKey(TENANT_B, res.body.runtimeKey as string), "another tenant never resolves it").toBeNull();
     expect((await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer", body: {} })).status, "an empty JSON object is accepted").toBe(200);
   });
   it("works for a managed application whose runtime access is off (it only replaces the key and leaves access alone)", async () => {
     const t = build({ newIds: [A1] });
     await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
     const res = await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer" });
-    expect(res.body).toMatchObject({ runtimeAccess: false, runtimeKey: expect.stringMatching(/^rk-[a-f0-9]{32}$/) });
+    expect(res.body).toMatchObject({ runtimeAccess: false, runtimeKey: expect.stringMatching(/^rk-1111aaaa2222433384445555bbbb5555-[a-f0-9]{32}$/) });
   });
   it("a built-in application is 409 REGISTRY_NOT_MANAGED, an unknown, malformed or other tenant's id is 404, a body with keys is 400; none of them reaches the Gateway", async () => {
     const t = build({ newIds: [A1] });

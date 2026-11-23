@@ -5,7 +5,8 @@
  *   GET|OPTIONS /api/runtime/:key/guides/:id    the guide bundle (`guide-bundle.ts`, the same builder the maintainer bundle route uses)
  *
  * AUTHORISATION is the conjunction of four facts, each checked on every request and none taken from the request body:
- *   1. the KEY names an application through the narrow database function `studio_runtime_application` (an ENABLED, Studio-managed application with runtime access on);
+ *   1. the KEY names an application: it carries its tenant, the route reads that tenant's own row through the normal tenant-scoped transaction (an ENABLED, Studio-managed application with
+ *      runtime access on and exactly this key); another tenant's key part finds nothing, there is no cross-tenant lookup and no SECURITY DEFINER function;
  *   2. the request `Origin` EXACTLY equals one of that application's stored allowed origins (a missing or different Origin is 403 and never receives a CORS header);
  *   3. the guide is live (a published guide of THAT application) and still validates against the application's current registry;
  *   4. the per-key-and-address rate limit has room.
@@ -20,10 +21,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { WalkthroughStore } from "../authoring/store.js";
 import { MAX_PUBLISHED_PER_TENANT } from "../authoring/store.js";
-import type { TenantPool } from "../authoring/tenant-tx.js";
 import { validateAuthoredDefinition } from "../authoring/validate.js";
 import type { ApplicationStore } from "./application-store.js";
-import { isApplicationId, isRuntimeKey } from "./applications.js";
+import { isRuntimeKey, tenantOfRuntimeKey } from "./applications.js";
 import type { ApplicationRecord } from "./applications.js";
 import { buildGuideBundle } from "./guide-bundle.js";
 import { createRegistryResolver } from "./registry-resolver.js";
@@ -31,23 +31,6 @@ import type { RegistryResolver } from "./registry-resolver.js";
 import type { RegistryCatalog } from "./registries.js";
 import { emptyTargetStore } from "./empty-target-store.js";
 import type { TargetStore } from "./target-store.js";
-
-/** The (tenant, application) a runtime key names, or `null`. The PostgreSQL implementation is the SECURITY DEFINER function of migration 076. */
-export interface RuntimeLookup { find(key: string): Promise<{ readonly tenantId: string; readonly applicationId: string } | null> }
-
-export function createPostgresRuntimeLookup(pool: TenantPool): RuntimeLookup {
-  return Object.freeze({
-    async find(key: string) {
-      if (!isRuntimeKey(key)) return null;
-      const client = await pool.connect();
-      try {
-        const { rows } = await client.query("SELECT tenant_id::text AS tenant_id, application_id FROM public.studio_runtime_application($1)", [key]);
-        const row = rows[0];
-        return row === undefined || !isApplicationId(row.application_id) ? null : { tenantId: String(row.tenant_id), applicationId: String(row.application_id) };
-      } finally { client.release(); }
-    },
-  });
-}
 
 export const RUNTIME_MESSAGES = Object.freeze({
   forbidden: "This request is not allowed.",
@@ -60,7 +43,6 @@ const GUIDE_ID = /^wt-[a-f0-9]{12}$/;
 const SAFE_REQUEST_HEADERS: ReadonlySet<string> = new Set(["accept", "accept-language", "content-language"]);
 
 export interface RuntimeRouteDeps {
-  readonly lookup: RuntimeLookup;
   readonly applications: ApplicationStore;
   readonly store: Pick<WalkthroughStore, "listPublished">;
   readonly catalog: RegistryCatalog;
@@ -92,7 +74,7 @@ export function createRateLimiter(options: { readonly max: number; readonly wind
 }
 
 export function registerRuntimeRoutes(app: FastifyInstance, deps: RuntimeRouteDeps): void {
-  const { lookup, applications, store, catalog } = deps;
+  const { applications, store, catalog } = deps;
   const targets = deps.targets ?? emptyTargetStore;
   const resolver = deps.resolver ?? createRegistryResolver({ catalog, targets });
   const now = deps.now ?? Date.now;
@@ -114,18 +96,18 @@ export function registerRuntimeRoutes(app: FastifyInstance, deps: RuntimeRouteDe
   /** The application of a request, after the key, the rate limit and the Origin; or the reply that was sent. */
   async function authorise(request: FastifyRequest, reply: FastifyReply): Promise<{ readonly application: ApplicationRecord; readonly tenantId: string; readonly origin: string } | null> {
     const key = (request.params as { key?: unknown } | undefined)?.key;
-    if (!isRuntimeKey(key)) { notFound(reply); return null; } // a malformed key never reaches the database or the limiter's map
+    // The key carries its tenant: a malformed key (or one whose tenant part is not a UUID) never reaches the database or the limiter's map.
+    const tenantId = tenantOfRuntimeKey(key);
+    if (!isRuntimeKey(key) || tenantId === null) { notFound(reply); return null; }
     if (!limiter.allow(`${key}|${request.ip}`)) { fail(reply, 429, RUNTIME_MESSAGES.rateLimited, "rate_limited"); return null; }
-    let found: Awaited<ReturnType<RuntimeLookup["find"]>>;
-    try { found = await lookup.find(key); } catch { fail(reply, 503, RUNTIME_MESSAGES.unavailable, "unavailable"); return null; }
-    if (found === null) { notFound(reply); return null; }
+    // The NORMAL tenant-scoped read (row-level security is the only isolation): a key whose tenant part names another tenant finds nothing.
     let application: ApplicationRecord | null;
-    try { application = await applications.get(found.tenantId, found.applicationId); } catch { fail(reply, 503, RUNTIME_MESSAGES.unavailable, "unavailable"); return null; }
-    // Defence in depth: the lookup already required these, re-checked on the record the rest of the request uses.
+    try { application = await applications.findByRuntimeKey(tenantId, key); } catch { fail(reply, 503, RUNTIME_MESSAGES.unavailable, "unavailable"); return null; }
+    // Defence in depth: the read already required these, re-checked on the record the rest of the request uses.
     if (application === null || !application.enabled || !application.runtimeAccess || application.runtimeKey !== key || application.registryId !== "studio-managed") { notFound(reply); return null; }
     const origin = request.headers.origin;
     if (typeof origin !== "string" || !application.allowedOrigins.includes(origin)) { fail(reply, 403, RUNTIME_MESSAGES.forbidden, "forbidden"); return null; }
-    return { application, tenantId: found.tenantId, origin };
+    return { application, tenantId, origin };
   }
 
   /** The application's live guides: published heads of THIS application that still validate against its CURRENT registry. */

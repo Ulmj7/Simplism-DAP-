@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  ENVIRONMENTS, MAX_ORIGIN_HOST_PART_CHARS, NO_COUNTS, ROUTINGS, RUNTIME_KEY, generateRuntimeKey, isRuntimeKey, MAX_APPLICATION_ISSUES, MAX_APPLICATION_ISSUE_CHARS, applicationConfigSchema, capApplicationIssues, generateApplicationId, isApplicationId, normalizeOrigin,
+  ENVIRONMENTS, MAX_ORIGIN_HOST_PART_CHARS, NO_COUNTS, ROUTINGS, RUNTIME_KEY, generateRuntimeKey, isRuntimeKey, tenantOfRuntimeKey, MAX_APPLICATION_ISSUES, MAX_APPLICATION_ISSUE_CHARS, applicationConfigSchema, capApplicationIssues, generateApplicationId, isApplicationId, normalizeOrigin,
   saveApplicationInputSchema, toApplicationView, validateApplicationConfig,
 } from "./applications.js";
 import type { ApplicationRecord } from "./applications.js";
@@ -338,19 +338,29 @@ describe("routing, runtime access and the runtime key (Studio COMPLETION)", () =
     const ok = validateApplicationConfig(managed({ routing: "history" }), MANAGED);
     expect(ok.ok && Object.keys(ok.config).sort()).toEqual(["allowedOrigins", "environment", "name", "origin", "registryId", "routing", "runtimeAccess"]);
   });
-  it("runtime keys are rk- plus 32 lower-case hex, generated from the random source and never accepted in any other shape", () => {
-    const key = generateRuntimeKey();
+  it("runtime keys are rk- + the tenant id without dashes + - + 32 random hex: generated for one tenant, parsed back to it, and never accepted in any other shape", () => {
+    const tenant = "1111aaaa-2222-4333-8444-5555bbbb5555";
+    const key = generateRuntimeKey(tenant);
     expect(key).toMatch(RUNTIME_KEY);
+    expect(key.startsWith(`rk-${tenant.replace(/-/g, "")}-`)).toBe(true);
+    expect(key).toHaveLength(68);
     expect(isRuntimeKey(key)).toBe(true);
-    expect(generateRuntimeKey(() => Buffer.alloc(16, 0xab))).toBe(`rk-${"ab".repeat(16)}`);
-    expect(new Set(Array.from({ length: 50 }, () => generateRuntimeKey())).size).toBe(50);
-    for (const bad of ["", "rk-", `rk-${"A".repeat(32)}`, `rk-${"a".repeat(31)}`, `rk-${"a".repeat(33)}`, `rj-${"a".repeat(32)}`, `rk-${"g".repeat(32)}`, `rk-${"a".repeat(32)}\n`, 5, null, undefined]) expect(isRuntimeKey(bad), String(bad)).toBe(false);
-    expect(() => generateRuntimeKey(() => Buffer.alloc(8))).toThrow();
+    expect(tenantOfRuntimeKey(key)).toBe(tenant);
+    expect(generateRuntimeKey(tenant, () => Buffer.alloc(16, 0xab))).toBe(`rk-1111aaaa2222433384445555bbbb5555-${"ab".repeat(16)}`);
+    expect(new Set(Array.from({ length: 50 }, () => generateRuntimeKey(tenant))).size).toBe(50);
+    const hex = "a".repeat(32);
+    for (const bad of ["", "rk-", `rk-${hex}`, `rk-${hex}-`, `rk-${hex}-${"a".repeat(31)}`, `rk-${hex}-${"a".repeat(33)}`, `rk-${"A".repeat(32)}-${hex}`, `rk-${hex}-${"A".repeat(32)}`, `rk-${hex}_${hex}`, `rj-${hex}-${hex}`,
+      `rk-${"g".repeat(32)}-${hex}`, `rk-${hex}-${hex}\n`, ` rk-${hex}-${hex}`, 5, null, undefined]) {
+      expect(isRuntimeKey(bad), String(bad)).toBe(false);
+      expect(tenantOfRuntimeKey(bad), String(bad)).toBeNull();
+    }
+    expect(() => generateRuntimeKey(tenant, () => Buffer.alloc(8))).toThrow();
+    for (const badTenant of ["", "not-a-uuid", "1111AAAA-2222-4333-8444-5555BBBB5555", "1111aaaa222243338444 5555bbbb5555", 5 as never, undefined as never]) expect(() => generateRuntimeKey(badTenant)).toThrow();
   });
   it("the view carries routing, runtimeAccess, runtimeKey and counts; a counts override replaces the record's", () => {
     const record: ApplicationRecord = { id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "studio-managed", routing: "history", runtimeAccess: true,
-      runtimeKey: `rk-${"c".repeat(32)}`, counts: { targets: 1, drafts: 2, published: 3 }, enabled: true, createdAt: "x", updatedAt: "y" };
-    expect(toApplicationView(record)).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: `rk-${"c".repeat(32)}`, counts: { targets: 1, drafts: 2, published: 3 }, source: "studio-managed" });
+      runtimeKey: `rk-${"1".repeat(32)}-${"c".repeat(32)}`, counts: { targets: 1, drafts: 2, published: 3 }, enabled: true, createdAt: "x", updatedAt: "y" };
+    expect(toApplicationView(record)).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: `rk-${"1".repeat(32)}-${"c".repeat(32)}`, counts: { targets: 1, drafts: 2, published: 3 }, source: "studio-managed" });
     expect(toApplicationView(record, { targets: 9, drafts: 8, published: 7 }).counts).toEqual({ targets: 9, drafts: 8, published: 7 });
     expect(Object.isFrozen(toApplicationView(record).counts)).toBe(true);
     expect(NO_COUNTS).toEqual({ targets: 0, drafts: 0, published: 0 });

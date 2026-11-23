@@ -115,7 +115,7 @@ describe("migration 072: studio_applications", () => {
     await owner.query(sql);
     await owner.query(sql);
     expect((await app.query("SELECT relacl::text AS acl, relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid='public.studio_applications'::regclass")).rows).toEqual(before);
-    expect((await app.query("SELECT count(*)::int AS n FROM pg_policies WHERE tablename='studio_applications'")).rows).toEqual([{ n: 2 }]); // tenant_isolation (072) + the dap_owner-only runtime_lookup (076)
+    expect((await app.query("SELECT count(*)::int AS n FROM pg_policies WHERE tablename='studio_applications'")).rows).toEqual([{ n: 1 }]); // still ONLY tenant_isolation: migration 076 adds no policy
     await assertStateAcl(app, "studio_applications", ["SELECT", "INSERT", "UPDATE"]);
     await expect(app.query(sql)).rejects.toThrow(/requires dap_owner/);
   });

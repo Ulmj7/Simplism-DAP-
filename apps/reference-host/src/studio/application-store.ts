@@ -27,9 +27,14 @@ export interface ApplicationStore {
   /**
    * Inserts a new application (enabled) or updates an existing one in place (`enabled` is never touched by a save). At most 20 applications per tenant: the 21st is
    * `limit_reached`, serialised per tenant so two concurrent creates cannot exceed it. `routing` changes only while the application has no registered routes (`routing_locked`).
-   * `candidateKey` is a freshly generated runtime key (the store makes one when omitted) used ONLY when runtime access is on and the application holds no key yet: a key, once issued, is stable until rotated.
+   * `candidateKey` is a freshly generated runtime key of the scope's tenant (the store makes one when omitted) used ONLY when runtime access is on and the application holds no key yet: a key, once issued, is stable until rotated.
    */
   save(scope: ApplicationScope, id: string, config: ApplicationConfig, candidateKey?: string): Promise<ApplicationSaveOutcome>;
+  /**
+   * The ENABLED, Studio-managed application of `tenantId` whose runtime access is on and whose runtime key is `key`, or `null`. Runs in the normal tenant-scoped transaction (row-level security
+   * is the only isolation): a key that names another tenant finds nothing here. This is the one read the key-addressed runtime routes make before they know anything else.
+   */
+  findByRuntimeKey(tenantId: string, key: string): Promise<ApplicationRecord | null>;
   /** Replaces the runtime key of a Studio-managed application (the old key stops working at once). Never changes `runtimeAccess`. */
   rotateRuntimeKey(scope: ApplicationScope, id: string, newKey: string): Promise<RuntimeKeyOutcome>;
   /** Enables or disables an existing application; never creates one. Disabling is the only way an application stops being used: there is no delete. */

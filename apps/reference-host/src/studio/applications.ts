@@ -36,14 +36,27 @@ export const ROUTINGS = ["hash", "history"] as const;
 export type ApplicationRouting = (typeof ROUTINGS)[number];
 export const ROUTING_BUILT_IN_PHRASE = "routing: built-in applications use hash routing";
 export const RUNTIME_BUILT_IN_PHRASE = "runtimeAccess: only Studio-managed applications can serve guides to their own pages";
-/** The runtime key (S7): `rk-` + 32 lower-case hex. A PUBLIC identifier (it names the application to the runtime endpoints, the Origin check authorises), rotated by replacing it. */
-export const RUNTIME_KEY = /^rk-[a-f0-9]{32}$/;
+/**
+ * The runtime key (S7): `rk-` + the tenant id without dashes (32 lower-case hex) + `-` + 32 random lower-case hex. A PUBLIC identifier, not a secret (the Origin check authorises, the key only
+ * selects the application), rotated by replacing it. It carries its tenant so the key-addressed runtime routes can open the NORMAL tenant-scoped transaction without any cross-tenant lookup;
+ * the database repeats both rules as CHECKs (migration 076): a key can only be stored on a row of the tenant it names.
+ */
+export const RUNTIME_KEY = /^rk-[a-f0-9]{32}-[a-f0-9]{32}$/;
 export const isRuntimeKey = (value: unknown): value is string => typeof value === "string" && RUNTIME_KEY.test(value);
-export function generateRuntimeKey(random: (size: number) => Buffer = randomBytes): string {
-  const key = `rk-${random(16).toString("hex")}`;
+const TENANT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** The tenant a key names (as a dashed UUID), or `null` for anything that is not a runtime key. Nothing is looked up here: a pure parse. */
+export function tenantOfRuntimeKey(key: unknown): string | null {
+  if (!isRuntimeKey(key)) return null;
+  const hex = key.slice(3, 35);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+export function generateRuntimeKey(tenantId: string, random: (size: number) => Buffer = randomBytes): string {
+  if (typeof tenantId !== "string" || !TENANT_UUID.test(tenantId)) throw new TypeError("A tenant id from the trusted context is required for a runtime key");
+  const key = `rk-${tenantId.replace(/-/g, "")}-${random(16).toString("hex")}`;
   if (!isRuntimeKey(key)) throw new Error("The key source did not produce a runtime key");
   return key;
 }
+
 export const MAX_APPLICATIONS_PER_TENANT = 20;
 export const MAX_ALLOWED_ORIGINS = 5;
 export const MAX_NAME_CHARS = 80;

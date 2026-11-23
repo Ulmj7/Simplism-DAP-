@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import type { ReferenceHost } from "../../apps/reference-host/src/index.js";
 import { createPostgresApplicationStore } from "../../apps/reference-host/src/studio/postgres-application-store.js";
-import { createPostgresRuntimeLookup, registerRuntimeRoutes } from "../../apps/reference-host/src/studio/runtime-routes.js";
+import { registerRuntimeRoutes } from "../../apps/reference-host/src/studio/runtime-routes.js";
 import { openStatePools } from "../../packages/security/src/state/conformance/state-pg-fixtures.js";
 import { managedConfig, managedDef, referenceConfig, registration, startHost } from "./studio-registry.support.js";
 
@@ -20,11 +20,11 @@ afterEach(async () => { await Promise.all([...closers.splice(0).map((close) => c
 
 const ORIGIN = "http://127.0.0.1:5187";
 const HISTORY_ORIGIN = "http://127.0.0.1:5189";
-const KEY = /^rk-[a-f0-9]{32}$/;
+const KEY = /^rk-[a-f0-9]{32}-[a-f0-9]{32}$/;
 
 async function start(options: { rateLimit?: { max: number; windowMs: number; maxEntries: number } } = {}) {
   const t = await startHost(closers, hosts, owner);
-  registerRuntimeRoutes(t.app, { lookup: createPostgresRuntimeLookup(t.pool), applications: t.applications, store: t.store, catalog: t.catalog, targets: t.targets, resolver: t.resolver, ...(options.rateLimit === undefined ? {} : { rateLimit: options.rateLimit }) });
+  registerRuntimeRoutes(t.app, { applications: t.applications, store: t.store, catalog: t.catalog, targets: t.targets, resolver: t.resolver, ...(options.rateLimit === undefined ? {} : { rateLimit: options.rateLimit }) });
   const runtime = async (path: string, origin: string | null, method: "GET" | "OPTIONS" = "GET", headers: Record<string, string> = {}) => {
     const res = await t.app.inject({ method, url: path, headers: { ...(origin === null ? {} : { origin }), ...headers } });
     let body: Record<string, unknown> = {};
@@ -77,15 +77,16 @@ describe("routing and runtime access on enrolment through the real routes and Ga
     expect(trail.map((row) => row.event_type)).toEqual(["AI_ACTION_PROPOSED", "AI_ACTION_ALLOWED", "AI_ACTION_EXECUTED"]);
     expect(trail[1]).toMatchObject({ risk: "MEDIUM", resource_type: "studioApplication", resource_id: id, params_view: { "/applicationId": id } });
   });
-  it("rotation replaces the key (old one dead in the database lookup), only for managed applications; the ordinary user cannot rotate", async () => {
+  it("rotation replaces the key (the old one no longer resolves in its tenant; the new one carries the tenant), only for managed applications; the ordinary user cannot rotate", async () => {
     const t = await start();
     const created = await t.call("POST", "/api/admin/applications", "maintainer", t.config());
     const id = created.body.id as string; const old = created.body.runtimeKey as string;
     const rotated = await t.call("POST", `/api/admin/applications/${id}/runtime-key`, "maintainer");
     expect(rotated.body.runtimeKey).toMatch(KEY);
     expect(rotated.body.runtimeKey).not.toBe(old);
-    expect((await probe.query("SELECT count(*)::int AS n FROM public.studio_runtime_application($1)", [old])).rows).toEqual([{ n: 0 }]);
-    expect((await probe.query("SELECT application_id FROM public.studio_runtime_application($1)", [rotated.body.runtimeKey])).rows).toEqual([{ application_id: id }]);
+    expect(rotated.body.runtimeKey).toContain(`rk-${t.tenant.replace(/-/g, "")}-`);
+    expect(await t.applications.findByRuntimeKey(t.tenant, old)).toBeNull();
+    expect((await t.applications.findByRuntimeKey(t.tenant, rotated.body.runtimeKey as string))?.id).toBe(id);
     const builtIn = await t.createApplication(referenceConfig());
     expect((await t.call("POST", `/api/admin/applications/${builtIn}/runtime-key`, "maintainer")).body).toMatchObject({ code: "REGISTRY_NOT_MANAGED" });
     expect((await t.call("POST", `/api/admin/applications/${id}/runtime-key`, "user")).status).toBe(403);
@@ -175,7 +176,7 @@ describe("counts and the overview over real rows", () => {
   });
 });
 
-describe("independent runtime delivery over PostgreSQL (the real lookup function)", () => {
+describe("independent runtime delivery over PostgreSQL (the real tenant-scoped read)", () => {
   async function live() {
     const t = await start();
     const created = await t.call("POST", "/api/admin/applications", "maintainer", t.config({ name: "Orders" }));
@@ -213,7 +214,7 @@ describe("independent runtime delivery over PostgreSQL (the real lookup function
   it("a disabled application, runtime access off, a rotated key and an unknown key are the same 404; re-enabling restores the same key", async () => {
     const { t, id, key, guide } = await live();
     const probe404 = async (k: string) => (await t.runtime(`/api/runtime/${k}/guides/${guide}`, ORIGIN)).raw;
-    const unknown = await probe404(`rk-${"0".repeat(32)}`);
+    const unknown = await probe404(`rk-${t.tenant.replace(/-/g, "")}-${"0".repeat(32)}`);
     expect(JSON.parse(unknown)).toMatchObject({ kind: "not_found" });
     expect((await t.call("POST", `/api/admin/applications/${id}/status`, "maintainer", { enabled: false })).status).toBe(200);
     expect(await probe404(key)).toBe(unknown);
@@ -260,6 +261,20 @@ describe("independent runtime delivery over PostgreSQL (the real lookup function
     expect((await two.runtime(`/api/runtime/${keyTwo}/guides/${one.guide}`, ORIGIN)).status).toBe(404);
     expect((await one.t.runtime(`/api/runtime/${one.key}/guides/${guideTwo}`, ORIGIN)).status).toBe(404);
     expect((await one.t.runtime(`/api/runtime/${one.key}/guides`, ORIGIN)).raw).not.toContain("Tenant two");
+  });
+  it("a key whose tenant part names ANOTHER tenant resolves nothing, through the real database, and is the same fixed 404 as an unknown key", async () => {
+    const one = await live();
+    const two = await start();
+    const createdTwo = await two.call("POST", "/api/admin/applications", "maintainer", two.config());
+    const hexTwo = two.tenant.replace(/-/g, "");
+    const crossed = `rk-${hexTwo}-${one.key.slice(-32)}`; // tenant two's id with tenant one's random part
+    const unknown = await one.t.runtime(`/api/runtime/rk-${one.t.tenant.replace(/-/g, "")}-${"0".repeat(32)}/guides`, ORIGIN);
+    const res = await one.t.runtime(`/api/runtime/${crossed}/guides`, ORIGIN);
+    expect(res.status).toBe(404);
+    expect(res.raw).toBe(unknown.raw);
+    // tenant two's own key with the origin of tenant two's application works; tenant one's key never reads tenant two's rows
+    expect((await two.runtime(`/api/runtime/${createdTwo.body.runtimeKey}/guides`, ORIGIN)).status).toBe(200);
+    expect((await one.t.applications.findByRuntimeKey(two.tenant, one.key))).toBeNull();
   });
   it("the rate limit answers 429 after the allowed requests, with no CORS header", async () => {
     const t = await start({ rateLimit: { max: 3, windowMs: 60_000, maxEntries: 100 } });

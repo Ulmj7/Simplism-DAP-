@@ -4,7 +4,7 @@
  */
 import { withTenant } from "../authoring/tenant-tx.js";
 import type { TenantClient, TenantPool } from "../authoring/tenant-tx.js";
-import { MAX_APPLICATIONS_PER_TENANT, STUDIO_MANAGED_REGISTRY_ID, generateRuntimeKey, isApplicationId, isRuntimeKey, registrySourceOf } from "./applications.js";
+import { MAX_APPLICATIONS_PER_TENANT, STUDIO_MANAGED_REGISTRY_ID, generateRuntimeKey, isApplicationId, isRuntimeKey, registrySourceOf, tenantOfRuntimeKey } from "./applications.js";
 import type { ApplicationEnvironment, ApplicationRecord, ApplicationRouting } from "./applications.js";
 import type { ApplicationEnabledOutcome, ApplicationSaveOutcome, ApplicationStore, RuntimeKeyOutcome } from "./application-store.js";
 
@@ -56,7 +56,7 @@ export function createPostgresApplicationStore(pool: TenantPool): ApplicationSto
       });
     },
 
-    async save(scope, id, config, candidateKey = generateRuntimeKey()): Promise<ApplicationSaveOutcome> {
+    async save(scope, id, config, candidateKey = generateRuntimeKey(scope.tenantId)): Promise<ApplicationSaveOutcome> {
       if (!isApplicationId(id) || !ACTOR(scope.actor)) return "id_refused";
       const routing = config.routing ?? "hash";
       const runtimeAccess = config.runtimeAccess === true;
@@ -90,8 +90,19 @@ export function createPostgresApplicationStore(pool: TenantPool): ApplicationSto
       }
     },
 
+    async findByRuntimeKey(tenantId, key) {
+      if (!isRuntimeKey(key)) return null;
+      return withTenant(pool, tenantId, async (client) => {
+        const { rows } = await client.query(
+          `SELECT ${COLUMNS} FROM public.studio_applications a
+            WHERE a.tenant_id = $1::uuid AND a.runtime_key = $2 AND a.runtime_access AND a.enabled AND a.registry_id = '${STUDIO_MANAGED_REGISTRY_ID}'`, [tenantId, key]);
+        const row = rows[0];
+        return row === undefined ? null : toRecord(row);
+      });
+    },
+
     async rotateRuntimeKey(scope, id, newKey): Promise<RuntimeKeyOutcome> {
-      if (!isApplicationId(id) || !ACTOR(scope.actor) || !isRuntimeKey(newKey)) return "id_refused";
+      if (!isApplicationId(id) || !ACTOR(scope.actor) || !isRuntimeKey(newKey) || tenantOfRuntimeKey(newKey) !== scope.tenantId) return "id_refused";
       return withTenant(pool, scope.tenantId, async (client) => {
         const { rows } = await client.query("SELECT registry_id FROM public.studio_applications WHERE tenant_id = $1::uuid AND application_id = $2 FOR UPDATE", [scope.tenantId, id]);
         const row = rows[0];

@@ -96,8 +96,8 @@ export interface ApplicationCapabilityDeps {
   readonly store: ApplicationStore;
   /** The host-trusted registry catalog whose keys an application may name. */
   readonly catalog: RegistryCatalog;
-  /** Runtime key source (default: 16 random bytes). Injectable for tests; the keys never appear in an audit record, a parameter or a log. */
-  readonly newKey?: () => string;
+  /** Runtime key source for a tenant (default: the tenant id + 16 random bytes). Injectable for tests; a key never appears in an audit record, a parameter or a log. */
+  readonly newKey?: (tenantId: string) => string;
 }
 
 const MAX_RECORDED = 100;
@@ -105,7 +105,7 @@ const failure = (code: ApplicationFailureCode) => ({ status: "failure" as const,
 
 export function createApplicationExecutors(deps: ApplicationCapabilityDeps): { readonly executors: readonly ActionExecutor[]; readonly trusted: ApplicationTrustedHandle } {
   const { store, catalog } = deps;
-  const newKey = deps.newKey ?? (() => generateRuntimeKey());
+  const newKey = deps.newKey ?? ((tenantId: string) => generateRuntimeKey(tenantId));
   const received = new Map<string, unknown[]>();
   let total = 0;
   const record = (actionId: string, params: unknown): void => {
@@ -127,7 +127,7 @@ export function createApplicationExecutors(deps: ApplicationCapabilityDeps): { r
       const checked = validateApplicationConfig(candidate, registryIdsOf(catalog));
       if (!checked.ok) return failure("invalid_application");
       try {
-        const outcome = await store.save(scope, applicationId, checked.config, newKey());
+        const outcome = await store.save(scope, applicationId, checked.config, newKey(scope.tenantId));
         switch (outcome) {
           case "created": case "updated": return { status: "success", affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
           case "limit_reached": return failure("limit_reached");
@@ -162,7 +162,7 @@ export function createApplicationExecutors(deps: ApplicationCapabilityDeps): { r
       const { applicationId } = call.params;
       if (!isApplicationId(applicationId)) return failure("id_refused");
       try {
-        const outcome = await store.rotateRuntimeKey(scope, applicationId, newKey());
+        const outcome = await store.rotateRuntimeKey(scope, applicationId, newKey(scope.tenantId));
         if (outcome === "rotated") return { status: "success", affected: { type: APPLICATION_RESOURCE_TYPE, id: applicationId } };
         return failure(outcome === "not_found" ? "not_found" : outcome === "registry_not_managed" ? "registry_not_managed" : "id_refused");
       } catch { return failure("store_unavailable"); }

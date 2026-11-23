@@ -1,15 +1,15 @@
 -- 076: Studio routing and independent runtime delivery (Studio COMPLETION, S1 and S7). Owner: dap_owner (applied by the migration runner as dap_owner). 072-075 are untouched.
 --
---   studio_applications += routing ('hash' | 'history'), runtime_access (boolean) and runtime_key (`rk-` + 32 lower-case hex, UNIQUE, a PUBLIC identifier and not a secret: it is rotated by
---     replacing it). Defences: only a Studio-managed application may use history routing or runtime access or hold a key; runtime_access requires a key; routing cannot change once the
---     application has registered routes (trigger, race-safe through a share lock on the application row).
+--   studio_applications += routing ('hash' | 'history'), runtime_access (boolean) and runtime_key (`rk-` + the tenant id without dashes (32 hex) + `-` + 32 random hex, UNIQUE, a PUBLIC
+--     identifier and not a secret: it is rotated by replacing it; the embedded tenant must equal the row's tenant_id, so a key can only ever name an application of the tenant it carries).
+--     Defences: only a Studio-managed application may use history routing or runtime access or hold a key; runtime_access requires a key; routing cannot change once the application has
+--     registered routes (trigger, race-safe through a share lock on the application row).
 --   studio_registry_routes.page: the V1B hash-only CHECK of 074 is replaced by a grammar chosen by the APPLICATION's routing (trigger, share lock on the application row):
 --       hash      `/` or `/#/segments`, at most 120 characters (exactly as 074)
 --       history   a '/'-rooted pathname of `[A-Za-z0-9._~-]` segments, at most 200 characters, no query, no fragment, no trailing slash except `/`, no `.` or `..` segment
 --     plus a generic shape CHECK (rooted, at most 200 characters, none of `?`, `#`... outside the hash grammar) so a page can never be arbitrary text.
---   public.studio_runtime_application(p_key): the ONLY door through which the key-addressed runtime endpoints find an application before any tenant is known. SECURITY DEFINER with a pinned
---     search_path, EXECUTE for dap_app only, returning ONLY (tenant_id, application_id) and ONLY for an ENABLED, Studio-managed application whose runtime_access is on. It reads the table
---     through a narrow SELECT policy that exists for the table owner only (dap_owner): dap_app's own access is exactly what 072 gave it, tenant-isolated, and is not widened.
+--   There is NO SECURITY DEFINER function and NO extra policy: the key-addressed runtime routes parse the tenant out of the key and open the NORMAL tenant-scoped transaction, so row-level
+--     security stays the only isolation (a key whose tenant part names another tenant simply finds nothing) and dap_app's access is exactly what 072 gave it.
 -- Every statement is idempotent.
 
 DO $$
@@ -27,7 +27,11 @@ BEGIN
     ALTER TABLE public.studio_applications ADD CONSTRAINT studio_applications_routing_check CHECK (routing IN ('hash', 'history'));
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.studio_applications'::regclass AND conname = 'studio_applications_runtime_key_shape') THEN
-    ALTER TABLE public.studio_applications ADD CONSTRAINT studio_applications_runtime_key_shape CHECK (runtime_key IS NULL OR runtime_key ~ '^rk-[a-f0-9]{32}$');
+    ALTER TABLE public.studio_applications ADD CONSTRAINT studio_applications_runtime_key_shape CHECK (runtime_key IS NULL OR runtime_key ~ '^rk-[a-f0-9]{32}-[a-f0-9]{32}$');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.studio_applications'::regclass AND conname = 'studio_applications_runtime_key_tenant') THEN
+    ALTER TABLE public.studio_applications ADD CONSTRAINT studio_applications_runtime_key_tenant CHECK (
+      runtime_key IS NULL OR runtime_key LIKE 'rk-' || replace(tenant_id::text, '-', '') || '-%');
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.studio_applications'::regclass AND conname = 'studio_applications_runtime_key_key') THEN
     ALTER TABLE public.studio_applications ADD CONSTRAINT studio_applications_runtime_key_key UNIQUE (runtime_key);
@@ -93,21 +97,3 @@ END $$;
 REVOKE ALL ON FUNCTION public.studio_applications_routing_locked() FROM PUBLIC;
 DROP TRIGGER IF EXISTS studio_applications_routing_locked ON public.studio_applications;
 CREATE TRIGGER studio_applications_routing_locked BEFORE UPDATE ON public.studio_applications FOR EACH ROW EXECUTE FUNCTION public.studio_applications_routing_locked();
-
--- --- the runtime lookup ---------------------------------------------------------------------------------------------------------------------------------------------
-DROP POLICY IF EXISTS runtime_lookup ON public.studio_applications;
-CREATE POLICY runtime_lookup ON public.studio_applications FOR SELECT TO dap_owner
-  USING (enabled AND runtime_access AND registry_id = 'studio-managed' AND runtime_key IS NOT NULL);
-
-CREATE OR REPLACE FUNCTION public.studio_runtime_application(p_key text) RETURNS TABLE (tenant_id uuid, application_id text)
-LANGUAGE sql STABLE SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-  SELECT a.tenant_id, a.application_id
-    FROM public.studio_applications a
-   WHERE a.runtime_key = p_key AND p_key ~ '^rk-[a-f0-9]{32}$'
-     AND a.enabled AND a.runtime_access AND a.registry_id = 'studio-managed'
-   LIMIT 1;
-$$;
-REVOKE ALL ON FUNCTION public.studio_runtime_application(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.studio_runtime_application(text) TO dap_app;
