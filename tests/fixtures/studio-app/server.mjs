@@ -35,7 +35,9 @@ function page(config, dapOrigin, extras) {
   <button type="button">Cancel</button>
   <label>Password <input type="password" data-ai-id="orders.secret"></label>
   <button type="button" data-ai-id="orders.private" data-ai-private>Private action</button>
-  <button type="button" data-ai-id="admin.reset">Reset</button>` : ""}
+  <button type="button" data-ai-id="admin.reset">Reset</button>
+  <button type="button" data-ai-id="orders.twin">Twin alpha</button>
+  <button type="button" data-ai-id="orders.twin">Twin beta</button>` : ""}
 </main>
 <main data-route="dense" hidden>
   <h2>Many approved links</h2>

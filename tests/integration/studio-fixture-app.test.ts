@@ -234,6 +234,7 @@ it("serves only an explicitly configured embed and keeps optional registration f
   const defaultPage = await text(defaultApp.origin);
   expect(defaultPage.body).not.toContain("/dap-embed.js");
   expect(defaultPage.body).not.toContain("orders.secret");
+  expect(defaultPage.body).not.toContain("orders.twin");
   expect((await fetch(defaultApp.origin + "/dap-embed.js")).status).toBe(404);
   const dapOrigin = "http://127.0.0.1:5186";
   const source = new URL("../fixtures/studio-app/server.mjs", import.meta.url);
@@ -243,6 +244,7 @@ it("serves only an explicitly configured embed and keeps optional registration f
   expect(page.body).toContain('type="password" data-ai-id="orders.secret"');
   expect(page.body).toContain('data-ai-id="orders.private" data-ai-private');
   expect(page.body).toContain('data-ai-id="admin.reset"');
+  expect(page.body.match(/data-ai-id="orders\.twin"/g)).toHaveLength(2);
   const script = await text(app.origin + "/dap-embed.js");
   expect(script.response.headers.get("cache-control")).toBe("no-store");
   expect(script.response.headers.get("content-type")).toContain("text/javascript");
