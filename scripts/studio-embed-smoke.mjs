@@ -78,6 +78,7 @@ try {
   const studio = await findTab(tab => tab.url.startsWith(studioOrigin));
   await wait("Guides in other applications");
   await command("errors", "--clear");
+  await command("console", "--clear");
   const launch = performance.now();
   await command("find", "role", "button", "click", "--name", "Start in Orders fixture: Fixture order walkthrough", "--exact");
   const target = await findTab(tab => tab.url.startsWith(appOrigin));
@@ -87,6 +88,7 @@ try {
   await command("tab", target);
   assert.equal(await evaluate("Boolean(window.opener)"), true);
   await wait("Open Orders from Home.");
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".dap-guide-ring")).borderTopColor'), "rgb(129, 47, 116)");
   const start = performance.now();
   await command("click", '[data-ai-id="nav.orders"]');
   await wait("Enter an order note.");
@@ -98,6 +100,7 @@ try {
   const completionMs = elapsed(start);
   assert.equal((await command("get", "text", "#order-status")).text, "Order submitted.");
   assert.deepEqual((await command("errors")).errors, []);
+  assert.deepEqual((await command("console")).messages.filter(message => message.type === "error"), []);
   await command("tab", studio);
   await wait("Walkthrough finished.");
   assert.equal(bundleReads, 1);
@@ -115,9 +118,8 @@ try {
   await command("tab", target);
   await sleep(850);
   assert.deepEqual(await evaluate("window.proof()"), { ready: false, opener: true, overlay: false });
-  console.log("PASS popup with wrong-origin opener received no ready signal and refused the forged run");
+  console.log("PASS popup with wrong-origin opener received no ready signal and ignored the run request");
 } finally {
-  if (chrome) await command("close").catch(() => {});
-  await vite?.close();
-  await fixture?.close();
+  const stopped = await Promise.allSettled([chrome ? command("close") : undefined, vite?.close(), fixture?.close()]);
+  assert.ok(stopped.every(result => result.status === "fulfilled"), "Every owned browser and server must close.");
 }

@@ -698,6 +698,7 @@ it("registers, refreshes the editor registry, and saves only the durable target 
   };
   const { root } = await setup("editor", { ...host, fetch: browserFetch });
   expect(options(root, "editor-target")).toEqual([""]);
+  expect(button(root, c.preview).disabled).toBe(true);
   await click(root, "Connect Chrome"); await click(root, "Inspect current page");
   expect(root.querySelector(".studio-list-note")?.textContent).toContain("8 elements are not shown");
   expect(root.querySelector(".studio-list-note")?.textContent).toContain("64");
@@ -727,11 +728,31 @@ it("registers, refreshes the editor registry, and saves only the durable target 
   fill(root, "editor-title", "Orders tour"); fill(root, "editor-description", "Submit orders."); fill(root, "editor-completion", "Done.");
   fill(root, "editor-text", "Press Submit order."); fill(root, "editor-wait", "click", "change");
   expect(button(root, c.preview).disabled).toBe(false);
-  const open = vi.spyOn(window, "open").mockReturnValue(null);
+  const postMessage = vi.fn();
+  const child = { closed: false, postMessage } as unknown as Window;
+  const send = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin: managed.origin, source: child }));
+  const open = vi.spyOn(window, "open").mockReturnValueOnce(null).mockReturnValue(child);
   try {
     await click(root, c.preview);
     expect(open).toHaveBeenCalledExactlyOnceWith(managed.origin + "/", "_blank");
     expect(notice(root)).toContain("The application window was blocked.");
+    await click(root, c.preview);
+    expect(notice(root)).toBe("Opening the application window…");
+    expect(button(root, c.preview).disabled).toBe(true);
+    send({ type: "dap-embed-ready", version: 1 });
+    expect(postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      type: "dap-run", version: 1, bundle: expect.objectContaining({
+        application: { id: ORD, name: managed.name, origin: managed.origin },
+        definition: expect.objectContaining({ title: "Orders tour", steps: expect.arrayContaining([expect.objectContaining({ target: "orders.submit" })]) }),
+        registry: expect.objectContaining({ pages: { "/#/orders": "orders" }, postconditionNames: ["route.orders"] }),
+      }),
+    }), managed.origin);
+    send({ type: "dap-run-status", version: 1, status: "WAITING" });
+    expect(notice(root)).toBe("Walkthrough running in the application window.");
+    send({ type: "dap-run-status", version: 1, status: "COMPLETED" }); await turn();
+    expect(notice(root)).toBe("Walkthrough finished.");
+    expect(button(root, c.preview).disabled).toBe(false);
+    expect(host.writes()).toEqual([]);
   } finally { open.mockRestore(); }
   await click(root, c.save);
   const body = JSON.stringify(host.writes().at(-1)?.body);

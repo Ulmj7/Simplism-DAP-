@@ -218,7 +218,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
       hint.textContent = issue?.message ?? "";
       hint.hidden = hint.textContent === "";
     }
-    // Preview runs the reference application's own runtime, so only its registry can be previewed in this release.
+    // The registry names the preview runtime. A managed preview needs at least one registered route.
     const canPreview = previewable && (previewMode === "in-app" || (registry.routes.length > 0 && applicationNamed(session.applicationId)?.enabled === true));
     previewHint.textContent = previewMode === "application-window" ? "Add a route and select an enabled application to preview in its window." : c.application.noPreview;
     previewHint.hidden = canPreview || unassigned;

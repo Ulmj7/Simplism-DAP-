@@ -68,6 +68,7 @@ it("bounds lists and strings, rejects extra keys or non-plain data, and takes an
     { ...bundle, definition: { ...bundle.definition, steps: [{ ...steps[0], targetWaitMs: 10_001 }] } },
     { ...bundle, definition: { ...bundle.definition, steps: [{ ...steps[0], maxAttempts: 11 }] } },
     { ...bundle, definition: { ...bundle.definition, steps: [Object.create(steps[0]!)] } },
+    { ...bundle, definition: { ...bundle.definition, steps: [Object.defineProperty({ ...steps[0] }, "id", { enumerable: false })] } },
     { ...bundle, definition: { ...bundle.definition, steps: [{ ...steps[0], extra: 1 }] } },
     { ...bundle, definition: { ...bundle.definition, steps: Array(1) } },
     { ...bundle, registry: { ...registry, elements: [...elements, elements[0]] } },

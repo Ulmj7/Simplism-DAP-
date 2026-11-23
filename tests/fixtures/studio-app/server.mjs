@@ -51,8 +51,7 @@ function page(config, dapOrigin, extras) {
   var timer;
   var dense = document.querySelector('[data-route="dense"]');
   var ordersLink = document.querySelector('[data-ai-id="nav.orders"]');
-  for (var repeat = 0; repeat < 70; repeat += 1) dense.appendChild(ordersLink.cloneNode(true));${dapOrigin ? `
-  for (var clone of dense.querySelectorAll("[data-ai-id]")) clone.removeAttribute("data-ai-id");` : ""}
+${dapOrigin ? "  var denseLinks = document.createDocumentFragment();\n" : ""}  for (var repeat = 0; repeat < 70; repeat += 1) ${dapOrigin ? "denseLinks" : "dense"}.appendChild(ordersLink.cloneNode(true));
   function show(kind) {
     var sections = document.querySelectorAll("[data-route]");
     for (var index = 0; index < sections.length; index += 1) sections[index].hidden = sections[index].dataset.route !== kind;
@@ -62,7 +61,9 @@ function page(config, dapOrigin, extras) {
   }
   function route() {
     clearTimeout(timer);
-    var name = location.hash.replace(/^#\\//, "");
+    var name = location.hash.replace(/^#\\//, "");${dapOrigin ? `
+    if (name === "dense") dense.appendChild(denseLinks);
+    else while (dense.children.length > 1) denseLinks.appendChild(dense.lastElementChild);` : ""}
     if (name === "orders") show("orders");
     else if (name === "dense") show("dense");
     else if (name === "leave-origin") { show("leave"); leave(config.leaveOrigin); }
