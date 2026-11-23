@@ -59,6 +59,16 @@ async function run() {
       (button.getAttribute("aria-label") || button.textContent.trim()) === ${JSON.stringify(name)} && !button.disabled && button.getClientRects().length > 0)`), `Missing enabled button ${name}`);
     await ui("find", "role", "button", "click", "--name", name, "--exact");
   }
+  async function tabOrder(surface, selectors, startAtFirst = true) {
+    if (startAtFirst) await read(`document.querySelector(${JSON.stringify(selectors[0])}).focus()`);
+    for (const [index, selector] of selectors.entries()) {
+      if (index > 0) await ui("press", "Tab");
+      const focus = await read(`({ matches: document.activeElement.matches(${JSON.stringify(selector)}),
+        actual: document.activeElement.id || document.activeElement.getAttribute("aria-label") || document.activeElement.textContent.trim().slice(0, 80) })`);
+      assert.ok(focus.matches, `${surface}: expected focus on ${selector}, found ${focus.actual}`);
+    }
+    console.log(`KEYBOARD PASS ${surface}`);
+  }
   async function enroll(name, origin, routing, runtime = false) {
     await route("applications");
     await wait("#application-name");
@@ -68,7 +78,11 @@ async function run() {
     await select("#application-environment", "test");
     await select("#application-registry", "studio-managed");
     await select("#application-routing", routing);
-    if (runtime) await ui("check", "#application-runtime");
+    if (runtime) {
+      await tabOrder("Application Manager", ["#application-name", "#application-origin", "#application-allowed", "#application-environment",
+        "#application-registry", "#application-routing", "#application-runtime", 'form button[type="submit"]']);
+      await ui("check", "#application-runtime");
+    }
     await click("Enroll application");
     await text("Application saved.");
     const item = (await request("GET", applications, 200)).applications.find(app => app.name === name);
@@ -97,6 +111,11 @@ async function run() {
   async function register(name, marker) {
     await click(`Register target: ${name}`);
     await wait("form.studio-register");
+    if (marker === "nav.profile") {
+      await tabOrder("Registration", ["form.studio-register h3", '[id$="-register-id"]', 'form.studio-register input[value="click"]',
+        'form.studio-register input[value="focus"]', '[id$="-register-label"]', '[id$="-register-description"]',
+        '[id$="-register-route"]', 'form.studio-register button[type="submit"]', 'form.studio-register button[type="button"]'], false);
+    }
     assert.equal(await read('document.querySelector(\'form.studio-register [id$="-register-id"]\').value'), marker);
     await fill('form.studio-register textarea', `Acceptance target ${name}.`);
     await click("Register target");
@@ -118,14 +137,19 @@ async function run() {
       await fill("#editor-text", instructions[index]);
     }
   }
-  async function popup(origin) {
+  async function setVerification() {
+    await click("Set verification");
+    await until(() => read('document.querySelector("#editor-verification-words")?.textContent.startsWith("Current verification:")'),
+      "The selected step did not receive its verification");
+  }
+  async function popup(origin, button = "Preview") {
     const existing = new Set((await ui("tab")).tabs.map(tab => tab.tabId));
-    await click("Preview");
+    await click(button);
     let child;
     await until(async () => {
       child = (await ui("tab")).tabs.find(tab => !existing.has(tab.tabId) && tab.url.startsWith(origin + "/"));
       return Boolean(child);
-    }, "Preview application tab did not open");
+    }, `${button} did not open an application tab`);
     await trackProcesses();
     await ui("tab", child.tabId);
     assert.equal(await read("Boolean(window.opener)"), true);
@@ -136,6 +160,18 @@ async function run() {
     await text("Preview results");
     await ui("tab", "close", tab);
   }
+  async function runPublished(application, title, origin, id, interact) {
+    const from = requests.length;
+    const tab = await popup(origin, `Start in ${application}: ${title}`);
+    await interact();
+    await text(finished);
+    await ui("tab", studioTab);
+    await text("Walkthrough finished.");
+    await ui("tab", "close", tab);
+    const reads = requests.slice(from).filter(item => item.method === "GET" && item.path === `/api/walkthroughs/published/${id}/bundle`);
+    assert.deepEqual(reads.map(item => [item.status, item.role]), [[200, "user"]]);
+    console.log(`PUBLISHED OPENER PASS ${application}`);
+  }
   async function publish() {
     await click("Publish");
     await wait(".publish-review");
@@ -143,6 +179,7 @@ async function run() {
     assert.equal(await read('document.activeElement.textContent'), "Cancel");
     await ui("press", "Shift+Tab");
     assert.equal(await read('document.activeElement.textContent'), "Publish");
+    await tabOrder("Publish review", [".publish-review button:last-child", ".publish-review button:nth-last-child(2)", ".publish-review button:last-child"], false);
     await ui("press", "Enter");
     await wait('table[aria-label="Workflows"]');
   }
@@ -163,6 +200,8 @@ async function run() {
       await openEditor("History acceptance");
       await click("Connect Chrome");
       await inspect();
+      await tabOrder("Inspector", [".studio-workspace .admin-actions > button:nth-child(3)", ".studio-workspace .admin-actions > button:nth-child(4)",
+        'button[aria-label="Highlight: Profile"]', 'button[aria-label="Register target: Profile"]']);
       await register("Profile", "nav.profile");
       await capture("open", profile + "/profile");
       await inspect();
@@ -172,16 +211,38 @@ async function run() {
       await inspect();
       await register("Saved", "profile.savedStatus");
       await author(profileTitle, ["nav.profile", "profile.displayName", "profile.save"], steps);
-      await select("#editor-verification-condition", "text");
+      await click("Step 1");
+      await select("#editor-verification-condition", "route");
+      await select("#editor-verification-route", "profile");
+      await setVerification();
+      await click("Step 2");
+      await tabOrder("Steps", ['.editor-steps button[aria-pressed="true"]', 'button[aria-label="Move up: Step 2"]',
+        'button[aria-label="Move down: Step 2"]', 'button[aria-label="Duplicate: Step 2"]',
+        'button[aria-label="Remove: Step 2"]', ".editor-steps li:last-child button"], false);
+      await select("#editor-verification-condition", "visible");
+      await select("#editor-verification-target", "profile.displayName");
+      await setVerification();
+      await click("Step 3");
+      await select("#editor-verification-condition", "visible");
       await select("#editor-verification-target", "profile.savedStatus");
+      await select("#editor-verification-condition", "text");
       await fill("#editor-verification-expected", "Saved");
-      await click("Set verification");
-      await text("Verification set:");
+      await tabOrder("Step properties", ["#editor-target", "#editor-wait", "#editor-text", "#editor-verification-condition",
+        "#editor-verification-target", "#editor-verification-expected", ".verification .admin-actions button:first-child"]);
+      await setVerification();
       await click("Save draft");
       await wait('#editor-save-state[data-state="saved"]');
       workflowId = await stored(profileTitle, historyId);
       const record = await request("GET", `${workflows}/${workflowId}`, 200);
-      assert.match(record.definition.steps.find(item => item.target === "profile.save").verify, /^check\.v[0-9a-f]{10}$/u);
+      const { checks } = await request("GET", `${applications}/${historyId}/checks`, 200);
+      assert.deepEqual(record.definition.steps.filter(item => item.kind === "guide").map(item => {
+        const check = checks.find(check => check.name === item.verify && check.status === "active");
+        return [item.target, check?.kind, check?.route, check?.targetId, check?.expected];
+      }), [
+        ["nav.profile", "route.equals", "profile", null, null],
+        ["profile.displayName", "element.visible", null, "profile.displayName", null],
+        ["profile.save", "element.text.equals", null, "profile.savedStatus", "Saved"],
+      ]);
       await click("Disconnect");
     });
     await step(2, async () => {
@@ -190,7 +251,10 @@ async function run() {
       await text(steps[1]); await ui("click", "#display-name"); await ui("press", "A");
       await text(steps[2]); await ui("click", '[data-ai-id="profile.save"]');
       await text(finished); await returnFromPopup(successful);
-      await click("Edit");
+      await text("Every step ran and every verification passed.");
+      await tabOrder("Preview results", ["#editor-preview-title", "#editor-preview-restart", "#editor-preview-edit"], false);
+      await ui("press", "Enter");
+      assert.equal(await read('document.activeElement.textContent'), "Preview");
       historyApp().setVariant("moved");
       const failed = await popup(profile);
       await text(steps[0]); await ui("click", '[data-ai-id="nav.profile"]');
@@ -274,6 +338,22 @@ async function run() {
       await publish();
       const hash = await stored(ordersTitle, ordersId);
       assert.equal((await request("GET", `${workflows}/${hash}`, 200)).liveVersion, 1);
+      await select("#demo-role", "user");
+      await route("dashboard");
+      await text("Guides in other applications");
+      await runPublished("Hash acceptance", ordersTitle, originB, hash, async () => {
+        await text(orderSteps[0]); await ui("click", '[data-ai-id="nav.orders"]');
+        await text(orderSteps[1]); await ui("click", "#order-note"); await ui("press", "A");
+        await text(orderSteps[2]); await ui("click", '[data-ai-id="orders.submit"]');
+        await text("Order submitted.");
+      });
+      await runPublished("History acceptance", changedTitle, profile, workflowId, async () => {
+        await text(steps[0]); await ui("click", '[data-ai-id="nav.profile"]');
+        await text(steps[1]); await ui("click", "#display-name"); await ui("press", "A");
+        await text(steps[2]); await ui("click", '[data-ai-id="profile.submit"]');
+        assert.equal(await read('document.querySelector("#saved-status").textContent'), "Saved");
+      });
+      await select("#demo-role", "maintainer");
     });
     await step(7, async () => {
       await route("walkthroughs"); await click(`Edit: ${profileTitle}`); await wait("#editor-title");
