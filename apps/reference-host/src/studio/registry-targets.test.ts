@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ALLOWED_OPERATIONS, DEFAULT_OPERATIONS, MAX_PAGE_CHARS, REGISTRABLE_ROLES, RESERVED_TARGET_PREFIXES, TARGET_ISSUE_PHRASES, isPage, isRouteName, isTargetId, managedPostconditionName,
-  registerTargetInputSchema, snapshotRoleToTargetRole, targetStatusInputSchema, validateTargetRegistration,
+  MAX_HISTORY_PAGE_CHARS, isHashPage, isHistoryPage, isPageFor, registerTargetInputSchema, snapshotRoleToTargetRole, targetStatusInputSchema, validateTargetRegistration,
 } from "./registry-targets.js";
 
 const valid = (patch: Record<string, unknown> = {}) => ({
@@ -119,5 +119,38 @@ describe("the capability input schemas", () => {
     expect(targetStatusInputSchema.safeParse(status).success).toBe(true);
     expect(targetStatusInputSchema.safeParse({ ...status, status: "active" }).success).toBe(true);
     for (const bad of [{ ...status, status: "deleted" }, { ...status, status: "" }, { ...status, extra: 1 }, { applicationId: status.applicationId, status: "active" }]) expect(targetStatusInputSchema.safeParse(bad).success).toBe(false);
+  });
+});
+
+describe("history pages (Studio COMPLETION, S1)", () => {
+  it.each(["/", "/profile", "/users/123", "/a/b-c/d.e_f~g", `/${"a".repeat(199)}`, "/.hidden", "/a..b", "/a.b/c"])("%j is a history page", (page) => { expect(isHistoryPage(page)).toBe(true); });
+  it.each(["", "profile", "/profile/", "/a//b", "/a/./b", "/a/../b", "/..", "/.", "/a?b=1", "/a#b", "/#/orders", "/a b", "/a%20b", "/a\\b", "/a:b", "/caf\u00e9", "/a\nb", `/${"a".repeat(200)}`, "https://x.example/a", 5, null, undefined])(
+    "%j is not a history page", (page) => { expect(isHistoryPage(page)).toBe(false); });
+  it("the hash grammar is unchanged: `/` and `/#/segments` up to 120 characters, never a pathname", () => {
+    expect(isHashPage("/")).toBe(true);
+    expect(isHashPage("/#/orders/open")).toBe(true);
+    expect(isHashPage("/orders")).toBe(false);
+    expect(isHashPage(`/#/${"a".repeat(118)}`)).toBe(false);
+    expect(isHashPage(`/#/${"a".repeat(117)}`)).toBe(true);
+  });
+  it("isPageFor applies the application's own routing; `/` is a page of both; isPage accepts either grammar", () => {
+    expect(isPageFor("hash", "/#/orders")).toBe(true);
+    expect(isPageFor("hash", "/users/123")).toBe(false);
+    expect(isPageFor("history", "/users/123")).toBe(true);
+    expect(isPageFor("history", "/#/orders")).toBe(false);
+    expect(isPageFor("hash", "/")).toBe(true);
+    expect(isPageFor("history", "/")).toBe(true);
+    expect(isPage("/users/123")).toBe(true);
+    expect(isPage("/#/orders")).toBe(true);
+    expect(isPage("/a/./b")).toBe(false);
+    expect(MAX_HISTORY_PAGE_CHARS).toBe(200);
+  });
+  it("the validator accepts a history page structurally (the store applies the application's routing) and still refuses malformed ones", () => {
+    expect(validateTargetRegistration(valid({ page: "/users/123", route: "users123" }))).toMatchObject({ ok: true, value: { page: "/users/123" } });
+    for (const page of ["/users/", "/a?x=1", "/a#x", "/a//b", "/a/../b", `/${"a".repeat(200)}`]) expect(issuesOf(valid({ page }))).toEqual([TARGET_ISSUE_PHRASES.page]);
+  });
+  it("the capability input schema allows pages up to 200 characters", () => {
+    expect(registerTargetInputSchema.safeParse({ applicationId: "app-0123456789ab", targetId: "a.b", route: "a", page: `/${"a".repeat(199)}`, elementRole: "button", label: "L", description: "D", operations: ["highlight"], privacy: "public" }).success).toBe(true);
+    expect(registerTargetInputSchema.safeParse({ applicationId: "app-0123456789ab", targetId: "a.b", route: "a", page: `/${"a".repeat(200)}`, elementRole: "button", label: "L", description: "D", operations: ["highlight"], privacy: "public" }).success).toBe(false);
   });
 });

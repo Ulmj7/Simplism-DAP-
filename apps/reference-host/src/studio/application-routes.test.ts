@@ -10,10 +10,11 @@ import { createGuidanceTransport } from "../http/transport.js";
 import { createProposalStore } from "../http/proposal-store.js";
 import { demoCatalogView } from "../guidance/walkthrough-summaries.js";
 import { APPLICATION_MESSAGES, registerApplicationRoutes } from "./application-routes.js";
-import { ENABLE_APPLICATION_ACTION_ID, SAVE_APPLICATION_ACTION_ID } from "./application-capabilities.js";
+import { ENABLE_APPLICATION_ACTION_ID, ROTATE_KEY_ACTION_ID, SAVE_APPLICATION_ACTION_ID } from "./application-capabilities.js";
 import { FakeApplicationStore } from "./fake-application-store.js";
+import { FakeTargetStore } from "./fake-target-store.js";
 import { FIXTURE_ENTRY } from "./fixture-registry.js";
-import { MAX_APPLICATIONS_PER_TENANT, validateApplicationConfig } from "./applications.js";
+import { MAX_APPLICATIONS_PER_TENANT, generateRuntimeKey, registryIdsOf, validateApplicationConfig } from "./applications.js";
 import { createRegistryCatalog } from "./registries.js";
 
 const TENANT_A = "1111aaaa-2222-4333-8444-5555bbbb5555";
@@ -29,6 +30,7 @@ interface Submitted { who: Who; action: string; params: Record<string, unknown> 
 
 function build(over: { feedback?: (action: string) => unknown; newIds?: string[]; extra?: boolean } = {}) {
   const store = new FakeApplicationStore();
+  const targets = new FakeTargetStore(store);
   const catalog = createRegistryCatalog(over.extra === true ? [FIXTURE_ENTRY] : []);
   const submitted: Submitted[] = [];
   const principals = new Map<Who, AuthoringPrincipal>();
@@ -45,7 +47,7 @@ function build(over: { feedback?: (action: string) => unknown; newIds?: string[]
         const scope = { tenantId: tenant, actor: who };
         if (action === SAVE_APPLICATION_ACTION_ID) {
           const { applicationId, ...candidate } = params;
-          const checked = validateApplicationConfig(candidate, catalog.ids());
+          const checked = validateApplicationConfig(candidate, registryIdsOf(catalog));
           if (!checked.ok) return { outcome: "ALLOWED", category: "try_later" };
           const outcome = await store.save(scope, applicationId as string, checked.config);
           return { outcome: "ALLOWED", category: outcome === "created" || outcome === "updated" ? "ok" : "try_later" };
@@ -54,6 +56,10 @@ function build(over: { feedback?: (action: string) => unknown; newIds?: string[]
           const outcome = await store.setEnabled(scope, params.applicationId as string, params.enabled as boolean);
           return { outcome: "ALLOWED", category: outcome === "changed" || outcome === "unchanged" ? "ok" : "try_later" };
         }
+        if (action === ROTATE_KEY_ACTION_ID) {
+          const outcome = await store.rotateRuntimeKey(scope, params.applicationId as string, generateRuntimeKey());
+          return { outcome: "ALLOWED", category: outcome === "rotated" ? "ok" : "try_later" };
+        }
         return { outcome: "INVALID_ACTION", category: "not_available" };
       },
     });
@@ -61,7 +67,7 @@ function build(over: { feedback?: (action: string) => unknown; newIds?: string[]
   const app = createGuidanceTransport({ ask: async () => ({ kind: "clarify", message: "x" }), catalog: demoCatalogView, resolveSession: async () => null, proposals: createProposalStore({ now: Date.now, newId: () => "proposal-id-0000000000000000" }) });
   const ids = [...(over.newIds ?? [])];
   registerApplicationRoutes(app, {
-    applications: store, catalog,
+    applications: store, catalog, targets,
     resolvePrincipal: async (headers) => {
       const who = String(headers["x-test-principal"] ?? "none") as Who;
       if (who === "throws") throw new Error(SECRET);
@@ -79,7 +85,7 @@ function build(over: { feedback?: (action: string) => unknown; newIds?: string[]
     try { body = JSON.parse(res.body) as Record<string, unknown>; } catch { /* not JSON */ }
     return { status: res.statusCode, body, raw: res.body };
   };
-  return { app, store, catalog, submitted, call };
+  return { app, store, targets, catalog, submitted, call };
 }
 
 const A1 = "app-0000000000a1";
@@ -325,5 +331,192 @@ describe("update and enable/disable", () => {
     await t.call("POST", "/api/admin/applications", { who: "maintainer", body: config() });
     for (const method of ["DELETE", "PATCH"] as const) expect((await t.call(method, `/api/admin/applications/${A1}`, { who: "maintainer" })).status).toBeGreaterThanOrEqual(400);
     expect(t.store.rows).toHaveLength(1);
+  });
+});
+
+// --- Studio COMPLETION S1/S2: routing, runtime access and key, counts, overview ---------------------------------------------------------------------------------------------
+const MANAGED = (over: Record<string, unknown> = {}) => ({ ...config({ registryId: "studio-managed" }), ...over });
+const MANAGED_FULL = (over: Record<string, unknown> = {}) => ({ ...MANAGED(), routing: "hash", runtimeAccess: false, ...over });
+const TARGET = { targetId: "orders.submit", route: "orders", page: "/#/orders", role: "button" as const, label: "Submit", description: "Submits.", operations: ["highlight", "click"] as never, privacy: "public" as const };
+const SCOPE = { tenantId: TENANT_A, actor: "maintainer" };
+
+describe("routing and runtime access on enrolment", () => {
+  it("POST defaults routing to hash and runtimeAccess to false when omitted, and the view says so (no key yet)", async () => {
+    const t = build({ newIds: [A1] });
+    const res = await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ id: A1, routing: "hash", runtimeAccess: false, runtimeKey: null, source: "studio-managed", counts: { targets: 0, drafts: 0, published: 0 } });
+    expect(t.submitted[0]!.params).toMatchObject({ routing: "hash", runtimeAccess: false });
+  });
+  it("POST accepts routing alone, runtimeAccess alone or both; a history managed application with runtime access gets a server-made rk- key", async () => {
+    const t = build({ newIds: [A1, A2, "app-0000000000a3"] });
+    expect((await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ routing: "history" }) })).body).toMatchObject({ routing: "history", runtimeAccess: false, runtimeKey: null });
+    expect((await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ runtimeAccess: true }) })).body).toMatchObject({ routing: "hash", runtimeAccess: true, runtimeKey: expect.stringMatching(/^rk-[a-f0-9]{32}$/) });
+    const both = await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ routing: "history", runtimeAccess: true }) });
+    expect(both.body).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: expect.stringMatching(/^rk-[a-f0-9]{32}$/) });
+    expect(JSON.stringify(t.submitted.map((call) => call.params))).not.toMatch(/rk-[a-f0-9]{32}/u); // the key never travels through the Gateway parameters
+  });
+  it.each([
+    ["a built-in application with history routing", config({ routing: "history" }), "routing: built-in applications use hash routing"],
+    ["a built-in application with runtime access", config({ runtimeAccess: true }), "runtimeAccess: only Studio-managed applications can serve guides to their own pages"],
+    ["an unknown routing", MANAGED({ routing: "path" }), "routing: must be hash or history"], ["a non-boolean runtimeAccess", MANAGED({ runtimeAccess: "yes" }), "runtimeAccess: must be true or false"],
+    ["a null routing", MANAGED({ routing: null }), "routing: must be hash or history"],
+  ])("%s is 422 with a fixed phrase, nothing submitted", async (_name, body, phrase) => {
+    const t = build({ newIds: [A1] });
+    const res = await t.call("POST", "/api/admin/applications", { who: "maintainer", body });
+    expect(res.status).toBe(422);
+    expect(res.body.issues).toEqual([phrase]);
+    expect(t.submitted).toEqual([]);
+  });
+  it("POST refuses unknown keys (400) even next to the new optional ones", async () => {
+    const t = build();
+    expect((await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ routing: "hash", runtimeKey: `rk-${"a".repeat(32)}` }) })).status).toBe(400);
+    expect((await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ counts: {} }) })).status).toBe(400);
+    expect(t.submitted).toEqual([]);
+  });
+  it("PUT must carry the FULL body: a body without routing or runtimeAccess is 400", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    t.submitted.length = 0;
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED() })).status).toBe(400);
+    const noRouting: Record<string, unknown> = MANAGED_FULL();
+    delete noRouting.routing;
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: noRouting })).status).toBe(400);
+    expect(t.submitted).toEqual([]);
+  });
+  it("the runtime key is generated the first time access is turned on, is stable across later saves and across access off/on, and only rotation changes it", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    const on = await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ runtimeAccess: true }) });
+    const key = on.body.runtimeKey as string;
+    expect(key).toMatch(/^rk-[a-f0-9]{32}$/);
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ runtimeAccess: true, name: "Renamed" }) })).body).toMatchObject({ name: "Renamed", runtimeKey: key });
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ runtimeAccess: false }) })).body).toMatchObject({ runtimeAccess: false, runtimeKey: key });
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ runtimeAccess: true }) })).body).toMatchObject({ runtimeAccess: true, runtimeKey: key });
+  });
+  it("routing can change before the first route and is 409 ROUTING_LOCKED after it, with no Gateway call for the refused change; the same routing is still accepted", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ routing: "history" }) })).body).toMatchObject({ routing: "history" });
+    await t.targets.register(SCOPE, A1, { ...TARGET, page: "/orders" });
+    t.submitted.length = 0;
+    const locked = await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ routing: "hash" }) });
+    expect(locked).toMatchObject({ status: 409, body: { kind: "conflict", code: "ROUTING_LOCKED", message: APPLICATION_MESSAGES.routingLocked } });
+    expect(t.submitted).toEqual([]);
+    expectNoLeak(locked.raw);
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ routing: "history", name: "Still fine" }) })).status).toBe(200);
+  });
+  it("a routing change that loses a race with the first route (the executor refuses it) is reported as ROUTING_LOCKED too", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    const real = t.store.save.bind(t.store);
+    t.store.save = async (scope, id, config, key) => { await t.targets.register(SCOPE, id, TARGET); return real(scope, id, config, key); };
+    expect((await t.call("PUT", `/api/admin/applications/${A1}`, { who: "maintainer", body: MANAGED_FULL({ routing: "history" }) })).body).toMatchObject({ code: "ROUTING_LOCKED" });
+  });
+  it("the views of another tenant's applications are invisible and the key of a tenant never appears in another tenant's reads", async () => {
+    const t = build({ newIds: [A1] });
+    const created = await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ runtimeAccess: true }) });
+    const key = created.body.runtimeKey as string;
+    expect((await t.call("GET", "/api/admin/applications", { who: "maintainerB" })).raw).not.toContain(key);
+    expect((await t.call("GET", `/api/admin/applications/${A1}`, { who: "maintainerB" })).raw).not.toContain(key);
+    expect((await t.call("GET", `/api/admin/applications/${A1}/overview`, { who: "maintainerB" })).status).toBe(404);
+  });
+});
+
+describe("rotating the runtime key", () => {
+  it("replaces the key through the Gateway (parameters carry the application id only), returns the new view, and the old key stops resolving", async () => {
+    const t = build({ newIds: [A1] });
+    const created = await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED({ runtimeAccess: true }) });
+    const old = created.body.runtimeKey as string;
+    t.submitted.length = 0;
+    const res = await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer" });
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(VIEW_KEYS);
+    expect(res.body.runtimeKey).toMatch(/^rk-[a-f0-9]{32}$/);
+    expect(res.body.runtimeKey).not.toBe(old);
+    expect(t.submitted).toEqual([{ who: "maintainer", action: "rotateStudioRuntimeKey", params: { applicationId: A1 } }]);
+    expect(t.store.lookupRuntimeKey(old)).toBeNull();
+    expect(t.store.lookupRuntimeKey(res.body.runtimeKey as string)).toEqual({ tenantId: TENANT_A, applicationId: A1 });
+    expect((await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer", body: {} })).status, "an empty JSON object is accepted").toBe(200);
+  });
+  it("works for a managed application whose runtime access is off (it only replaces the key and leaves access alone)", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    const res = await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer" });
+    expect(res.body).toMatchObject({ runtimeAccess: false, runtimeKey: expect.stringMatching(/^rk-[a-f0-9]{32}$/) });
+  });
+  it("a built-in application is 409 REGISTRY_NOT_MANAGED, an unknown, malformed or other tenant's id is 404, a body with keys is 400; none of them reaches the Gateway", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: config() });
+    t.submitted.length = 0;
+    expect((await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer" })).body).toMatchObject({ kind: "conflict", code: "REGISTRY_NOT_MANAGED" });
+    for (const [who, id] of [["maintainer", A2], ["maintainer", "nope"], ["maintainerB", A1]] as const) expect((await t.call("POST", `/api/admin/applications/${id}/runtime-key`, { who })).body, `${who} ${id}`).toMatchObject({ code: "APPLICATION_NOT_FOUND" });
+    expect((await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer", body: { key: "x" } })).status).toBe(400);
+    expect(t.submitted).toEqual([]);
+  });
+  it("needs a session (401) and the maintain permission (403)", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    expect((await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "none" })).status).toBe(401);
+    expect((await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "user" })).status).toBe(403);
+    expect((await t.call("POST", `/api/admin/applications/${A1}/runtime-key`, { who: "maintainer", feedback: undefined } as never)).status).toBe(200);
+  });
+});
+
+describe("counts and the overview", () => {
+  it("list and get carry the counts of the store (targets, drafts, published) and nothing else changes", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    t.store.counts.set(`${TENANT_A}/${A1}`, { targets: 4, drafts: 2, published: 1 });
+    expect((await t.call("GET", `/api/admin/applications/${A1}`, { who: "maintainer" })).body.counts).toEqual({ targets: 4, drafts: 2, published: 1 });
+    expect(((await t.call("GET", "/api/admin/applications", { who: "maintainer" })).body.applications as { counts: unknown }[])[0]!.counts).toEqual({ targets: 4, drafts: 2, published: 1 });
+  });
+  it("a built-in application's target count is the number of public elements of its catalog registry", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: config() });
+    const view = (await t.call("GET", `/api/admin/applications/${A1}`, { who: "maintainer" })).body;
+    const elements = t.catalog.get("reference")!.registry.elements.filter((element) => element.privacy === "public").length;
+    expect(elements).toBeGreaterThan(0);
+    expect(view.counts).toMatchObject({ targets: elements });
+  });
+  it("the overview of a managed application: total, active, disabled from its targets; unverified = active, healthy and broken 0 for now; the workflow counts", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    await t.targets.register(SCOPE, A1, TARGET);
+    await t.targets.register(SCOPE, A1, { ...TARGET, targetId: "orders.note", label: "Note" });
+    await t.targets.register(SCOPE, A1, { ...TARGET, targetId: "orders.cancel", label: "Cancel" });
+    await t.targets.setStatus(SCOPE, A1, "orders.cancel", "disabled");
+    t.store.counts.set(`${TENANT_A}/${A1}`, { targets: 3, drafts: 2, published: 1 });
+    const res = await t.call("GET", `/api/admin/applications/${A1}/overview`, { who: "maintainer" });
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["application", "targets", "workflows"]);
+    expect(res.body.targets).toEqual({ total: 3, active: 2, disabled: 1, healthy: 0, unverified: 2, broken: 0 });
+    expect(res.body.workflows).toEqual({ draft: 2, published: 1 });
+    expect(res.body.application).toMatchObject({ id: A1, counts: { targets: 3, drafts: 2, published: 1 } });
+  });
+  it("the overview of a built-in application counts its catalog elements as active", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: config() });
+    const res = await t.call("GET", `/api/admin/applications/${A1}/overview`, { who: "maintainer" });
+    const total = (res.body.targets as { total: number }).total;
+    expect(total).toBeGreaterThan(0);
+    expect(res.body.targets).toEqual({ total, active: total, disabled: 0, healthy: 0, unverified: total, broken: 0 });
+  });
+  it("needs a session and the maintain permission; a malformed, unknown or other tenant's id is 404; nothing leaks", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    expect((await t.call("GET", `/api/admin/applications/${A1}/overview`, { who: "none" })).status).toBe(401);
+    expect((await t.call("GET", `/api/admin/applications/${A1}/overview`, { who: "user" })).status).toBe(403);
+    for (const id of [A2, "nope", "app-0123456789AB"]) expect((await t.call("GET", `/api/admin/applications/${id}/overview`, { who: "maintainer" })).body).toMatchObject({ code: "APPLICATION_NOT_FOUND" });
+    const ok = await t.call("GET", `/api/admin/applications/${A1}/overview`, { who: "maintainer" });
+    expectNoLeak(ok.raw);
+  });
+  it("a failing store is a fixed 503", async () => {
+    const t = build({ newIds: [A1] });
+    await t.call("POST", "/api/admin/applications", { who: "maintainer", body: MANAGED() });
+    t.store.failWith = new Error(SECRET);
+    const res = await t.call("GET", `/api/admin/applications/${A1}/overview`, { who: "maintainer" });
+    expect(res.status).toBe(503);
+    expectNoLeak(res.raw);
   });
 });

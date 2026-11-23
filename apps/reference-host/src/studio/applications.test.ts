@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  ENVIRONMENTS, MAX_ORIGIN_HOST_PART_CHARS, MAX_APPLICATION_ISSUES, MAX_APPLICATION_ISSUE_CHARS, applicationConfigSchema, capApplicationIssues, generateApplicationId, isApplicationId, normalizeOrigin,
+  ENVIRONMENTS, MAX_ORIGIN_HOST_PART_CHARS, NO_COUNTS, ROUTINGS, RUNTIME_KEY, generateRuntimeKey, isRuntimeKey, MAX_APPLICATION_ISSUES, MAX_APPLICATION_ISSUE_CHARS, applicationConfigSchema, capApplicationIssues, generateApplicationId, isApplicationId, normalizeOrigin,
   saveApplicationInputSchema, toApplicationView, validateApplicationConfig,
 } from "./applications.js";
 import type { ApplicationRecord } from "./applications.js";
@@ -306,5 +306,53 @@ describe("the origin length bound agrees with the database CHECK (migration 072)
     const result = normalizeOrigin(typed);
     if (result.ok) expect(result.origin.length - "https://".length).toBeLessThanOrEqual(190);
     else expect(result.problem).toBe("hostlength");
+  });
+});
+
+describe("routing, runtime access and the runtime key (Studio COMPLETION)", () => {
+  const MANAGED = ["reference", "fixture", "studio-managed"];
+  const managed = (patch: Record<string, unknown> = {}) => valid({ registryId: "studio-managed", ...patch });
+  it("routing defaults to hash and runtimeAccess to false when omitted", () => {
+    const result = validateApplicationConfig(managed(), MANAGED);
+    expect(result).toMatchObject({ ok: true, config: { routing: "hash", runtimeAccess: false } });
+  });
+  it("accepts a managed application with history routing and runtime access", () => {
+    expect(validateApplicationConfig(managed({ routing: "history", runtimeAccess: true }), MANAGED)).toMatchObject({ ok: true, config: { routing: "history", runtimeAccess: true } });
+    expect(ROUTINGS).toEqual(["hash", "history"]);
+  });
+  it.each([["History"], ["path"], [""], [5], [null], [["hash"]], [{}], ["hash "]])("refuses the routing %j with one fixed phrase", (routing) => {
+    expect(issuesOf(managed({ routing }), MANAGED)).toEqual(["routing: must be hash or history"]);
+  });
+  it.each([["true"], [1], [null], [0], [[]]])("refuses the runtimeAccess %j with one fixed phrase", (runtimeAccess) => {
+    expect(issuesOf(managed({ runtimeAccess }), MANAGED)).toEqual(["runtimeAccess: must be true or false"]);
+  });
+  it("a built-in registry cannot use history routing or runtime access (fixed phrases, never the maintainer's own text)", () => {
+    expect(issuesOf(valid({ routing: "history" }))).toEqual(["routing: built-in applications use hash routing"]);
+    expect(issuesOf(valid({ runtimeAccess: true }))).toEqual(["runtimeAccess: only Studio-managed applications can serve guides to their own pages"]);
+    expect(issuesOf(valid({ routing: "history", runtimeAccess: true }))).toHaveLength(2);
+    expect(validateApplicationConfig(valid({ routing: "hash", runtimeAccess: false }), KNOWN)).toMatchObject({ ok: true });
+  });
+  it("the result carries routing and runtimeAccess and nothing else new (no key, no counts)", () => {
+    const result = validateApplicationConfig(managed({ runtimeKey: "rk-x" }), MANAGED);
+    expect(result.ok).toBe(false); // an unknown field is refused
+    const ok = validateApplicationConfig(managed({ routing: "history" }), MANAGED);
+    expect(ok.ok && Object.keys(ok.config).sort()).toEqual(["allowedOrigins", "environment", "name", "origin", "registryId", "routing", "runtimeAccess"]);
+  });
+  it("runtime keys are rk- plus 32 lower-case hex, generated from the random source and never accepted in any other shape", () => {
+    const key = generateRuntimeKey();
+    expect(key).toMatch(RUNTIME_KEY);
+    expect(isRuntimeKey(key)).toBe(true);
+    expect(generateRuntimeKey(() => Buffer.alloc(16, 0xab))).toBe(`rk-${"ab".repeat(16)}`);
+    expect(new Set(Array.from({ length: 50 }, () => generateRuntimeKey())).size).toBe(50);
+    for (const bad of ["", "rk-", `rk-${"A".repeat(32)}`, `rk-${"a".repeat(31)}`, `rk-${"a".repeat(33)}`, `rj-${"a".repeat(32)}`, `rk-${"g".repeat(32)}`, `rk-${"a".repeat(32)}\n`, 5, null, undefined]) expect(isRuntimeKey(bad), String(bad)).toBe(false);
+    expect(() => generateRuntimeKey(() => Buffer.alloc(8))).toThrow();
+  });
+  it("the view carries routing, runtimeAccess, runtimeKey and counts; a counts override replaces the record's", () => {
+    const record: ApplicationRecord = { id: "app-0123456789ab", name: "A", origin: "http://localhost:5184", allowedOrigins: ["http://localhost:5184"], environment: "test", registryId: "studio-managed", routing: "history", runtimeAccess: true,
+      runtimeKey: `rk-${"c".repeat(32)}`, counts: { targets: 1, drafts: 2, published: 3 }, enabled: true, createdAt: "x", updatedAt: "y" };
+    expect(toApplicationView(record)).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: `rk-${"c".repeat(32)}`, counts: { targets: 1, drafts: 2, published: 3 }, source: "studio-managed" });
+    expect(toApplicationView(record, { targets: 9, drafts: 8, published: 7 }).counts).toEqual({ targets: 9, drafts: 8, published: 7 });
+    expect(Object.isFrozen(toApplicationView(record).counts)).toBe(true);
+    expect(NO_COUNTS).toEqual({ targets: 0, drafts: 0, published: 0 });
   });
 });

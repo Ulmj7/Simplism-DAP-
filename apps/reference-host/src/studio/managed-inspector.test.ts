@@ -34,6 +34,67 @@ describe("pageOfUrl / routeOfPage", () => {
   });
 });
 
+describe("pageOfUrl for a history application (Studio COMPLETION)", () => {
+  it.each([
+    [`${ORIGIN}/`, "/"], [`${ORIGIN}/profile`, "/profile"], [`${ORIGIN}/users/123`, "/users/123"], [`${ORIGIN}/profile/`, "/profile"], [`${ORIGIN}/profile?x=1`, "/profile"], [`${ORIGIN}/profile#frag`, "/profile"], [`${ORIGIN}/profile/?x=1#frag`, "/profile"],
+    [`${ORIGIN}/?q=1`, "/"], [`${ORIGIN}/#/orders`, "/"], [`${ORIGIN}/a/b-c/d.e_f~g`, "/a/b-c/d.e_f~g"], [`${ORIGIN}/${"a".repeat(199)}`, `/${"a".repeat(199)}`],
+    [`${ORIGIN}/${"a".repeat(200)}`, null], [`${ORIGIN}/a%20b`, null], [`${ORIGIN}/a%2fb`, null], [`${ORIGIN}/caf\u00e9`, null], [`${ORIGIN}/a//b`, null], [`${ORIGIN}/a/./b`, "/a/b"], [`${ORIGIN}/a/../b`, "/b"], ["not a url", null],
+  ])("%s -> %s", (url, page) => { expect(pageOfUrl(url, "history")).toBe(page); });
+  it("the default is hash: a pathname is no hash page, and the hash behavior is the same as before", () => {
+    expect(pageOfUrl(`${ORIGIN}/profile`)).toBeNull();
+    expect(pageOfUrl(`${ORIGIN}/profile`, "hash")).toBeNull();
+    expect(pageOfUrl(`${ORIGIN}/#/orders`, "hash")).toBe("/#/orders");
+    expect(pageOfUrl(`${ORIGIN}/#/orders`)).toBe("/#/orders");
+  });
+  it("a history page maps to its registry route like a hash page does", () => {
+    expect(routeOfPage("/users/123", [{ route: "users123", page: "/users/123" }])).toBe("users123");
+    expect(routeOfPage("/users/124", [{ route: "users123", page: "/users/123" }])).toBeNull();
+  });
+});
+
+describe("suggestRouteName for history pages", () => {
+  it.each([
+    ["/", [], "home"], ["/users/123", [], "users123"], ["/profile", [], "profile"], ["/order-list", [], "orderList"], ["/orders/open", [], "ordersOpen"], ["/2fa", [], "p2fa"], ["/Orders", [], "orders"], ["/a.b_c", [], "aBC"],
+    ["/users/123", ["users123"], "users1232"], ["/profile", ["profile", "profile2"], "profile3"], ["/", ["home"], "home2"],
+  ])("%s with %j -> %s", (page, existing, expected) => { expect(suggestRouteName(page, existing)).toBe(expected); });
+  it("is at most 40 characters, with or without a numeric suffix, and always matches the route-name grammar", () => {
+    const page = `/${"segment/".repeat(10)}end`;
+    const first = suggestRouteName(page, []);
+    expect(first.length).toBeLessThanOrEqual(40);
+    const second = suggestRouteName(page, [first]);
+    expect(second.length).toBeLessThanOrEqual(40);
+    expect(second).not.toBe(first);
+    expect(second).toMatch(/^[a-z][A-Za-z0-9]{0,39}$/u);
+  });
+});
+
+describe("classifyManaged for a history application", () => {
+  const historyRegistry = (over: Partial<ManagedRegistryView> = {}): ManagedRegistryView => ({ routes: [{ route: "profile", page: "/profile" }], targets: [], ...over });
+  const run = (controls: readonly Control[], url: string, reg: ManagedRegistryView = historyRegistry()) => classifyManaged({ ...input(controls, url, reg), routing: "history" });
+  it("a new marker on a registered pathname is registrable on its route; on a new pathname the route is new and named from the path", () => {
+    const known = run([{ name: "Save", role: "button", id: "profile.save" }], `${ORIGIN}/profile?x=1#y`);
+    expect(known.elements[0]).toMatchObject({ route: "profile", status: "registrable", proposal: { page: "/profile", route: "profile", routeIsNew: false } });
+    const fresh = run([{ name: "Save", role: "button", id: "users.save" }], `${ORIGIN}/users/123`);
+    expect(fresh.elements[0]).toMatchObject({ route: null, status: "registrable", proposal: { page: "/users/123", route: "users123", routeIsNew: true } });
+  });
+  it("a registered target is trusted on its history route and not on another pathname", () => {
+    const reg = historyRegistry({ routes: [{ route: "profile", page: "/profile" }, { route: "settings", page: "/settings" }], targets: [{ ...target("profile.save", "profile", "button"), page: "/profile" }] });
+    expect(run([{ name: "Save", role: "button", id: "profile.save" }], `${ORIGIN}/profile/`, reg).elements[0]).toMatchObject({ status: "trusted", route: "profile" });
+    expect(run([{ name: "Save", role: "button", id: "profile.save" }], `${ORIGIN}/settings`, reg).elements).toEqual([]);
+  });
+  it("the same privacy gate, name check, ambiguity rule and caps apply as for hash pages", () => {
+    expect(run([{ name: "Secret", role: "textbox", id: "profile.x", facts: { ...PUBLIC, dataAiPrivate: true } }], `${ORIGIN}/profile`).elements).toEqual([]);
+    expect(run([{ name: "Password", role: "textbox", id: "profile.pw" }], `${ORIGIN}/profile`).elements).toEqual([]);
+    expect(run([{ name: "A", role: "button", id: "profile.same" }, { name: "B", role: "button", id: "profile.same" }], `${ORIGIN}/profile`)).toEqual({ elements: [], hidden: 2, truncated: false });
+    const routes = Array.from({ length: MAX_ROUTES_PER_APPLICATION }, (_, i) => ({ route: `r${i}`, page: `/r${i}` }));
+    expect(run([{ name: "X", role: "button", id: "orders.fresh" }], `${ORIGIN}/brandNew`, historyRegistry({ routes })).elements).toEqual([]);
+  });
+  it("a hash-style URL (a fragment route) is just the pathname `/` for a history application, and the default routing stays hash", () => {
+    expect(run([{ name: "X", role: "button", id: "home.x" }], `${ORIGIN}/#/orders`).elements[0]).toMatchObject({ proposal: { page: "/", route: "home" } });
+    expect(classifyManaged(input([{ name: "X", role: "button", id: "orders.x" }], `${ORIGIN}/profile`)).elements).toEqual([]);
+  });
+});
+
 describe("suggestRouteName", () => {
   it.each([
     ["/", [], "home"], ["/#/orders", [], "orders"], ["/#/order-list", [], "orderList"], ["/#/orders/open", [], "ordersOpen"], ["/#/Orders", [], "orders"], ["/#/2fa", [], "p2fa"], ["/#/a.b_c", [], "aBC"],

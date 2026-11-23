@@ -64,12 +64,12 @@ interface Call { readonly action: string; readonly params: Record<string, unknow
 const open: Array<{ close: () => Promise<unknown> }> = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(open.splice(0).map((app) => app.close())); });
 
-async function harness(options: { controls?: Control[]; url?: string; ids?: string[] } = {}) {
+async function harness(options: { controls?: Control[]; url?: string; ids?: string[]; routing?: "hash" | "history" } = {}) {
   const app = createGuidanceTransport({ ask: async () => ({ kind: "clarify", message: "Unused" }), catalog: { list: () => [] }, resolveSession: async () => null, proposals: createProposalStore({ now: Date.now, newId: () => "unused" }) });
   open.push(app);
   const applications = new FakeApplicationStore();
   const targets = new FakeTargetStore(applications);
-  await applications.save({ tenantId: TENANT_A, actor: "seed" }, MANAGED, managedConfig("Orders application"));
+  await applications.save({ tenantId: TENANT_A, actor: "seed" }, MANAGED, { ...managedConfig("Orders application"), ...(options.routing === undefined ? {} : { routing: options.routing }) });
   await applications.save({ tenantId: TENANT_A, actor: "seed" }, MANAGED_2, managedConfig("Second managed", "http://127.0.0.1:5188"));
   await applications.save({ tenantId: TENANT_A, actor: "seed" }, BUILT_IN, builtInConfig);
   await applications.save({ tenantId: TENANT_B, actor: "seed" }, MANAGED_OTHER_TENANT, managedConfig("Other tenant"));
@@ -679,5 +679,89 @@ describe("duplicate markers fail closed (H5)", () => {
     expect((await h.command(registerBody())).status).toBe(409);
     h.runtimes[0]!.controls[3] = control("Save", "button", null);
     expect((await h.command(registerBody())).status).toBe(200);
+  });
+});
+
+describe("history routing (Studio COMPLETION, S1)", () => {
+  const HOME = `${ORIGIN}/`;
+  const profile = () => [control("Display name", "textbox", "profile.displayName"), control("Save", "button", "profile.save")];
+  const reg = (over: Record<string, unknown> = {}) => registerBody({ ref: "@e2", targetId: "profile.save", route: "profile", operations: ["highlight", "click"], label: "Save", description: "Saves the profile.", ...over });
+
+  it("connect passes routing:\"history\" to the adapter ONLY for a history application; a hash application's configuration is exactly the V1B one", async () => {
+    const history = await harness({ routing: "history", controls: profile() });
+    await history.connect();
+    expect(history.configs).toEqual([{ labels: "all", routes: "any", routing: "history", origins: [ORIGIN, "http://localhost:5187"] }]);
+    const hash = await harness();
+    await hash.connect();
+    expect(hash.configs).toEqual([{ labels: "all", routes: "any", origins: [ORIGIN, "http://localhost:5187"] }]);
+    expect("routing" in hash.configs[0]!).toBe(false);
+  });
+  it("refresh reports the PATHNAME as the page: query and fragment are dropped and never returned, a trailing slash is removed", async () => {
+    for (const [url, page] of [[`${ORIGIN}/profile?token=abc#section`, "/profile"], [`${ORIGIN}/profile/`, "/profile"], [`${ORIGIN}/users/123?x=1`, "/users/123"], [HOME, "/"], [`${ORIGIN}/?q=1#/orders`, "/"]] as const) {
+      const h = await harness({ routing: "history", controls: profile(), url });
+      await h.connect();
+      const res = await h.command(refresh());
+      expect(res.body, url).toMatchObject({ page, route: null });
+      expect(res.raw).not.toMatch(/token=abc|section|q=1/u);
+    }
+  });
+  it("a pathname outside the grammar (a percent escape, an encoded slash, 201 characters) is no page: nothing is registrable there", async () => {
+    for (const path of ["/a%20b", "/a%2fb", `/${"a".repeat(200)}`]) {
+      const h = await harness({ routing: "history", controls: profile(), url: `${ORIGIN}${path}` });
+      await h.connect();
+      const res = await h.command(refresh());
+      expect(res.body, path).toMatchObject({ page: null, elements: [], hidden: 2 });
+    }
+  });
+  it("registers on a history page: the proposal and the capability parameters carry the pathname, the route is suggested from it, and the page is the pathname in the reply", async () => {
+    const h = await harness({ routing: "history", controls: profile(), url: `${ORIGIN}/users/123?x=1#y` });
+    await h.connect();
+    const shown = await h.command(refresh());
+    expect((shown.body.elements as { name: string; proposal: { page: string; route: string; routeIsNew: boolean } }[]).map((e) => [e.name, e.proposal.page, e.proposal.route, e.proposal.routeIsNew])).toEqual([
+      ["Display name", "/users/123", "users123", true], ["Save", "/users/123", "users123", true]]);
+    const res = await h.command(reg({ route: "users123" }));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ route: { route: "users123", page: "/users/123", created: true }, target: { id: "profile.save", page: "/users/123" } });
+    expect(h.calls[0]!.params).toMatchObject({ page: "/users/123", route: "users123" });
+    expect(JSON.stringify(h.calls[0]!.params)).not.toMatch(/x=1|#y/u);
+  });
+  it("two URLs of the same page (different query or fragment, with or without the trailing slash) are ONE page: the second registration reuses the route", async () => {
+    const h = await harness({ routing: "history", controls: profile(), url: `${ORIGIN}/profile?a=1` });
+    await h.connect();
+    await h.command(refresh());
+    expect((await h.command(reg({ route: "profile" }))).body).toMatchObject({ route: { route: "profile", page: "/profile", created: true } });
+    h.runtimes[0]!.url = `${ORIGIN}/profile/#top`;
+    const again = await h.command(refresh());
+    expect(again.body).toMatchObject({ page: "/profile", route: "profile" });
+    expect((await h.command(registerBody({ ref: "@e1", targetId: "profile.displayName", route: "profile", operations: ["highlight", "input"], label: "Name", description: "The name." }))).body).toMatchObject({ route: { route: "profile", page: "/profile", created: false } });
+  });
+  it("a hash URL on a history application is the page `/` (the fragment is dropped): hash pages do not exist for it", async () => {
+    const h = await harness({ routing: "history", controls: profile(), url: `${ORIGIN}/#/orders` });
+    await h.connect();
+    expect((await h.command(refresh())).body).toMatchObject({ page: "/" });
+  });
+  it("a hash application never treats a pathname as a page (V1B behavior unchanged)", async () => {
+    const h = await harness({ controls: profile(), url: `${ORIGIN}/users/123` });
+    await h.connect();
+    expect((await h.command(refresh())).body).toMatchObject({ page: null, elements: [], hidden: 2 });
+  });
+  it("the store refuses a page of the wrong routing (page_refused) and the registration is a typed refusal, never a stored row", async () => {
+    const h = await harness({ routing: "history", controls: profile(), url: HOME });
+    await h.connect();
+    await h.command(refresh());
+    const real = h.targets.register.bind(h.targets);
+    let outcome = "";
+    h.targets.register = async (scope, app, value) => { const result = await real(scope, app, { ...value, page: "/#/orders" }); outcome = result.kind; return result; };
+    const res = await h.command(reg({ route: "home" }));
+    expect(outcome).toBe("page_refused");
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(await storedTargets(h)).toEqual([]);
+  });
+  it("changing the application's routing while a session is open closes the session at the next command (the adapter's policy would be stale)", async () => {
+    const h = await harness({ routing: "history", controls: profile(), url: HOME });
+    await h.connect();
+    await h.applications.save({ tenantId: TENANT_A, actor: "seed" }, MANAGED, { ...managedConfig("Orders application"), routing: "hash" });
+    expect((await h.command(refresh())).body).toEqual({ error: "APPLICATION_MISMATCH" });
+    expect(h.runtimes[0]!.close).toHaveBeenCalledOnce();
   });
 });

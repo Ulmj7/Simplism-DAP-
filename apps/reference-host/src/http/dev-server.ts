@@ -31,6 +31,7 @@ import { createRegistryResolver } from "../studio/registry-resolver.js";
 import { createTargetExtension } from "../studio/target-capabilities.js";
 import { createRegistryCatalog } from "../studio/registries.js";
 import { registerStudioBrowser } from "../studio/browser.js";
+import { createPostgresRuntimeLookup, registerRuntimeRoutes } from "../studio/runtime-routes.js";
 import { composeReferenceHost } from "../compose.js";
 import { parseDevSessions } from "../dev-auth/index.js";
 import { createGuidanceHost } from "../guidance/compose-guidance.js";
@@ -86,6 +87,7 @@ try {
   const resolvePrincipal = createDemoPrincipalResolver({ sessions: parseDevSessions(env.DEV_SESSIONS), userToken: token, maintainerToken, openSession: (evidence) => host.openSession(evidence) });
   registerAuthoringRoutes(app, { store, applications, catalog, targets, resolver, resolvePrincipal });
   registerApplicationRoutes(app, { applications, catalog, targets, resolver, resolvePrincipal });
+  registerRuntimeRoutes(app, { lookup: createPostgresRuntimeLookup(authoringPool), applications, store, catalog, targets, resolver });
   registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: store, targets, resolver });
   close = async () => { await app.close(); await host.close(); await authoringPool.end(); };
   phase = "listen";

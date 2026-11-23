@@ -96,6 +96,11 @@ interface Options {
   readonly makeId?: () => string;
 }
 
+/** `origin + pathname` of a URL (no query, no fragment), bounded; an unparsable URL is reported as the empty string. */
+function withoutQueryAndFragment(url: string): string {
+  try { const parsed = new URL(url); return `${parsed.origin}${parsed.pathname}`.slice(0, MAX_URL_CHARS); } catch { return ""; }
+}
+
 /** The fields of an application that shape the adapter's policy. A rename does not; an origin, allowed-origin or registry change does. */
 const policyOf = (application: ApplicationRecord): string => JSON.stringify([application.origin, application.allowedOrigins, application.registryId, application.routing]);
 
@@ -254,7 +259,9 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     session.snapshot = snapshot;
     session.candidates = new Map(inspection.elements.map((candidate) => [candidate.ref, candidate]));
     const page = pageOfUrl(snapshot.url, session.routing);
-    return { url: snapshot.url.slice(0, MAX_URL_CHARS), route: routeOfPage(page, registry.routes), page, elements: inspection.elements, hidden: inspection.hidden, truncated: inspection.truncated };
+    // A history application's query string and fragment are never stored or returned (they may carry tokens or ids): its URL is reported without them.
+    const url = session.routing === "history" ? withoutQueryAndFragment(snapshot.url) : snapshot.url.slice(0, MAX_URL_CHARS);
+    return { url, route: routeOfPage(page, registry.routes), page, elements: inspection.elements, hidden: inspection.hidden, truncated: inspection.truncated };
   }
 
   async function register(command: Extract<StudioCommand, { action: "register" }>, session: Session, record: ApplicationRecord, principal: NonNullable<Awaited<ReturnType<AuthoringRouteDeps["resolvePrincipal"]>>>, deny: Deny) {

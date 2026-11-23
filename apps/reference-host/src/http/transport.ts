@@ -108,7 +108,8 @@ export function createGuidanceTransport(deps: GuidanceTransportDeps): FastifyIns
     // A browser names where the request came from: only the page's own origin (via the Vite proxy) or a direct navigation may call in. No header
     // (curl, tests) passes; a browser that sends it can't be talked out of it by page script.
     const site = request.headers["sec-fetch-site"];
-    if (site !== undefined && site !== "same-origin" && site !== "none") return send(reply, 403, unsupported(TRANSPORT_MESSAGES.forbiddenHost));
+    // Except the key-addressed RUNTIME routes (Studio completion, S7): an application's own page on another origin calls them by design, and they authorise by key + exact Origin themselves.
+    if (site !== undefined && site !== "same-origin" && site !== "none" && !request.url.startsWith("/api/runtime/")) return send(reply, 403, unsupported(TRANSPORT_MESSAGES.forbiddenHost));
   });
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("cache-control", "no-store");

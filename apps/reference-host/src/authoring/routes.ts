@@ -40,6 +40,7 @@ import type { RegistryCatalog } from "../studio/registries.js";
 import { createRegistryResolver } from "../studio/registry-resolver.js";
 import type { RegistryResolver, ResolvedRegistry } from "../studio/registry-resolver.js";
 import type { TargetStore } from "../studio/target-store.js";
+import { buildGuideBundle } from "../studio/guide-bundle.js";
 import { emptyTargetStore } from "../studio/empty-target-store.js";
 import { generateWalkthroughId, isAuthoredId } from "./ids.js";
 import { STATUSES } from "./schema.js";
@@ -200,13 +201,8 @@ export function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringRou
     try {
       const guide = (await publishedGuides(principal.tenantId)).find((candidate) => candidate.definition.id === id);
       if (guide === undefined || guide.source !== "studio-managed" || guide.application === null) return notFound(reply);
-      const { registry, pages } = guide.resolved;
-      // The bundle the application's embed runs (D11): the definition, the application and the CURRENT active public registry. Nothing else of the host leaves.
-      return send(reply, 200, {
-        definition: guide.definition,
-        application: { id: guide.application.id, name: guide.application.name, origin: guide.application.origin },
-        registry: { routes: registry.routes, elements: registry.elements.filter((element) => element.privacy === "public"), postconditionNames: registry.postconditionNames, pages },
-      });
+      // The bundle the application's embed runs (D11): the definition, the application and the CURRENT active public registry. One builder shared with the runtime route; nothing else of the host leaves.
+      return send(reply, 200, buildGuideBundle({ definition: guide.definition, application: guide.application, resolved: guide.resolved }));
     } catch { return unavailable(reply); }
   });
   app.get("/api/admin/walkthroughs", async (request, reply) => {
