@@ -51,7 +51,7 @@ describe("the new columns, their defaults and their checks", () => {
     for (const routing of ["History", "path", "", "hash ", "HASH"]) await expect(enroll(tenant, { routing })).rejects.toThrow(/check constraint/);
   });
   it.each([
-    ["the old 32-hex format", (t: string) => `rk-${"a".repeat(32)}`], ["no prefix", (t: string) => `${t.replace(/-/g, "")}-${"a".repeat(32)}`],
+    ["the old 32-hex format", () => `rk-${"a".repeat(32)}`], ["no prefix", (t: string) => `${t.replace(/-/g, "")}-${"a".repeat(32)}`],
     ["upper-case hex in the random part", (t: string) => `rk-${t.replace(/-/g, "")}-${"A".repeat(32)}`], ["31 random hex", (t: string) => `rk-${t.replace(/-/g, "")}-${"a".repeat(31)}`],
     ["33 random hex", (t: string) => `rk-${t.replace(/-/g, "")}-${"a".repeat(33)}`], ["a non-hex letter", (t: string) => `rk-${t.replace(/-/g, "")}-${"g".repeat(32)}`],
     ["a wrong separator", (t: string) => `rk-${t.replace(/-/g, "")}_${"a".repeat(32)}`], ["a trailing newline", (t: string) => `rk-${t.replace(/-/g, "")}-${"a".repeat(32)}\n`],

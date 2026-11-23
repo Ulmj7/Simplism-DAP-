@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FetchLike } from "../help/client.js";
 import { WALKTHROUGHS } from "../walkthroughs/index.js";
+import { parseApplication } from "./applications.js";
 import { createAdminClient } from "./client.js";
 
 const appId = "app-0123456789ab";
 const application = {
   id: appId, name: "Orders application", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185", "http://localhost:5185"],
-  environment: "test", registryId: "fixture-b", source: "built-in", enabled: true, updatedAt: "2026-11-23T10:00:00.000Z",
+  environment: "test", registryId: "fixture-b", source: "built-in", enabled: true, updatedAt: "2026-11-23T10:00:00.000Z", routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 },
 };
 const body = { name: application.name, origin: application.origin, allowedOrigins: application.allowedOrigins, environment: "test" as const, registryId: "fixture-b" };
 const list = { applications: [application], registries: [{ id: "reference", label: "Reference application", source: "built-in" }, { id: "fixture-b", label: "Fixture application B", source: "built-in" }] };
@@ -333,4 +334,25 @@ it("keeps the managed targets wire closed and sends status alone", async () => {
   expect(url).toBe(`/api/admin/applications/${appId}/targets/orders.submit/status`);
   expect(request.method).toBe("POST");
   expect(JSON.parse(String(request.body))).toEqual({ status: "disabled" });
+});
+
+describe("the ApplicationView parser accepts the Studio completion fields (S2) and nothing looser", () => {
+  const KEY = `rk-${"1".repeat(32)}-${"a".repeat(32)}`;
+  const view = (patch: Record<string, unknown> = {}) => ({ ...application, ...patch });
+  it("parses routing, runtimeAccess, runtimeKey and counts", () => {
+    expect(parseApplication(view({ routing: "history", runtimeAccess: true, runtimeKey: KEY, counts: { targets: 3, drafts: 2, published: 1 } }))).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: KEY, counts: { targets: 3, drafts: 2, published: 1 } });
+    expect(parseApplication(view())).toMatchObject({ routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 } });
+  });
+  it.each([
+    ["a missing field", (v: Record<string, unknown>) => { delete v.routing; }], ["a missing counts", (v: Record<string, unknown>) => { delete v.counts; }], ["an unknown extra field", (v: Record<string, unknown>) => { v.extra = 1; }],
+    ["an unknown routing", (v: Record<string, unknown>) => { v.routing = "path"; }], ["a non-boolean runtimeAccess", (v: Record<string, unknown>) => { v.runtimeAccess = "yes"; }],
+    ["a key of the old shape", (v: Record<string, unknown>) => { v.runtimeKey = `rk-${"a".repeat(32)}`; }], ["an upper-case key", (v: Record<string, unknown>) => { v.runtimeKey = KEY.toUpperCase(); }],
+    ["a key over 80 characters", (v: Record<string, unknown>) => { v.runtimeKey = `${KEY}${"a".repeat(20)}`; }], ["an undefined key", (v: Record<string, unknown>) => { v.runtimeKey = undefined; }],
+    ["a negative count", (v: Record<string, unknown>) => { v.counts = { targets: -1, drafts: 0, published: 0 }; }], ["a fractional count", (v: Record<string, unknown>) => { v.counts = { targets: 1.5, drafts: 0, published: 0 }; }],
+    ["a count over a million", (v: Record<string, unknown>) => { v.counts = { targets: 1_000_001, drafts: 0, published: 0 }; }], ["counts with an extra key", (v: Record<string, unknown>) => { v.counts = { targets: 0, drafts: 0, published: 0, x: 1 }; }],
+    ["counts as an array", (v: Record<string, unknown>) => { v.counts = [0, 0, 0]; }], ["a string count", (v: Record<string, unknown>) => { v.counts = { targets: "1", drafts: 0, published: 0 }; }],
+  ])("refuses %s", (_name, mutate) => {
+    const value = view(); mutate(value);
+    expect(parseApplication(value)).toBeNull();
+  });
 });

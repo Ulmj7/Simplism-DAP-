@@ -27,7 +27,7 @@ const published = "/api/walkthroughs/published";
 const appId = "app-000000000001";
 const referenceApplication = {
   id: appId, name: "Reference application", origin: "http://127.0.0.1:5173", allowedOrigins: ["http://127.0.0.1:5173"],
-  environment: "development", registryId: "reference", source: "built-in", enabled: true, updatedAt: "2026-11-20T00:00:00.000Z",
+  environment: "development", registryId: "reference", source: "built-in", enabled: true, updatedAt: "2026-11-20T00:00:00.000Z", routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 },
 };
 const referenceRegistry = () => ({
   routes: registry.routes, previewable: true, source: "built-in", pages: {}, previewMode: "in-app", postconditionNames: [...POSTCONDITION_NAMES],

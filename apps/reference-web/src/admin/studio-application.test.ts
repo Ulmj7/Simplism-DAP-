@@ -18,9 +18,9 @@ const OFF = "app-00000000000c";
 const savedId = "wt-000000000001";
 const stamp = "2026-11-23T10:00:00.000Z";
 
-interface App { id: string; name: string; origin: string; allowedOrigins: string[]; environment: string; registryId: string; source: "built-in" | "studio-managed"; enabled: boolean; updatedAt: string }
+interface App { id: string; name: string; origin: string; allowedOrigins: string[]; environment: string; registryId: string; source: "built-in" | "studio-managed"; enabled: boolean; updatedAt: string; routing: "hash" | "history"; runtimeAccess: boolean; runtimeKey: string | null; counts: { targets: number; drafts: number; published: number } }
 const app = (id: string, name: string, port: number, registryId: string, enabled = true): App => ({
-  id, name, origin: `http://127.0.0.1:${port}`, allowedOrigins: [`http://127.0.0.1:${port}`], environment: "development", registryId, source: registryId === "studio-managed" ? "studio-managed" : "built-in", enabled, updatedAt: stamp,
+  id, name, origin: `http://127.0.0.1:${port}`, allowedOrigins: [`http://127.0.0.1:${port}`], environment: "development", registryId, source: registryId === "studio-managed" ? "studio-managed" : "built-in", enabled, updatedAt: stamp, routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 },
 });
 const demo = createDemoRegistry();
 // A second application with its own, different targets: proves the editor follows the SELECTED application's registry.
@@ -101,9 +101,9 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
     }
     if (path === "/api/admin/applications" && method === "GET") return json({ applications: [...apps.values()], registries });
     if (path === "/api/admin/applications" && method === "POST") {
-      const input = body as unknown as Omit<App, "id" | "enabled" | "updatedAt">;
+      const input = body as unknown as Omit<App, "id" | "enabled" | "updatedAt" | "routing" | "runtimeAccess" | "runtimeKey" | "counts">;
       if (input.name === "") return json({ kind: "invalid", message: "Invalid application", issues: ["name: <b>must not be empty</b>", "origin: must be https"] }, 422);
-      const created = { ...input, source: input.registryId === "studio-managed" ? "studio-managed" as const : "built-in" as const, id: `app-${String(apps.size + 100).padStart(12, "0")}`, enabled: true, updatedAt: stamp };
+      const created = { ...input, source: input.registryId === "studio-managed" ? "studio-managed" as const : "built-in" as const, id: `app-${String(apps.size + 100).padStart(12, "0")}`, enabled: true, updatedAt: stamp, routing: "hash" as const, runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 } };
       apps.set(created.id, created); return json(created, 201);
     }
     const application = /^\/api\/admin\/applications\/(app-[a-f0-9]{12})(\/status|\/registry)?$/u.exec(path);

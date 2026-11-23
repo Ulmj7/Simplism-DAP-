@@ -11,7 +11,7 @@ const ORD = "app-00000000000b";
 const stamp = "2026-11-23T10:00:00.000Z";
 const apps = [REF, ORD].map((id, index) => ({
   id, name: index === 0 ? "Reference application" : "Orders application", origin: `http://127.0.0.1:${5173 + index}`, allowedOrigins: [`http://127.0.0.1:${5173 + index}`],
-  environment: "development", registryId: index === 0 ? "reference" : "fixture-b", source: "built-in", enabled: true, updatedAt: stamp,
+  environment: "development", registryId: index === 0 ? "reference" : "fixture-b", source: "built-in", enabled: true, updatedAt: stamp, routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 },
 }));
 const element = (id: string, route: string, role: string, label: string) => ({ id, route, role, label, description: `${label} control`, operations: ["highlight", "click"], privacy: "public" });
 const registries: Record<string, object> = {

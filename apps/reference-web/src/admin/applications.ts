@@ -20,7 +20,13 @@ export interface ApplicationInput {
   readonly environment: ApplicationEnvironment;
   readonly registryId: string;
 }
-export interface ApplicationView extends ApplicationInput { readonly id: string; readonly enabled: boolean; readonly updatedAt: string; readonly source: RegistrySource }
+export type ApplicationRouting = "hash" | "history";
+export interface ApplicationCounts { readonly targets: number; readonly drafts: number; readonly published: number }
+export interface ApplicationView extends ApplicationInput {
+  readonly id: string; readonly enabled: boolean; readonly updatedAt: string; readonly source: RegistrySource;
+  /** Studio completion S1/S2/S7: how pages are addressed, runtime delivery access and its public key (`rk-` + tenant + `-` + random), and the overview counts. */
+  readonly routing: ApplicationRouting; readonly runtimeAccess: boolean; readonly runtimeKey: string | null; readonly counts: ApplicationCounts;
+}
 export interface RegistryChoice { readonly id: string; readonly label: string; readonly source: RegistrySource }
 export interface ApplicationList { readonly applications: readonly ApplicationView[]; readonly registries: readonly RegistryChoice[] }
 export interface ApplicationRegistry {
@@ -47,13 +53,25 @@ function origins(value: unknown, origin: string): value is string[] {
     && new Set(value as string[]).size === value.length && (value as string[]).includes(origin);
 }
 
+const RUNTIME_KEY = /^rk-[a-f0-9]{32}-[a-f0-9]{32}$/;
+const MAX_COUNT = 1_000_000;
+const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_COUNT;
+function parseCounts(value: unknown): ApplicationCounts | null {
+  if (!object(value) || !exact(value, ["targets", "drafts", "published"]) || !count(value.targets) || !count(value.drafts) || !count(value.published)) return null;
+  return { targets: value.targets, drafts: value.drafts, published: value.published };
+}
+
 export function parseApplication(value: unknown, id?: string): ApplicationView | null {
-  if (!object(value) || !exact(value, ["id", "name", "origin", "allowedOrigins", "environment", "registryId", "enabled", "updatedAt", "source"])) return null;
+  if (!object(value) || !exact(value, ["id", "name", "origin", "allowedOrigins", "environment", "registryId", "enabled", "updatedAt", "source", "routing", "runtimeAccess", "runtimeKey", "counts"])) return null;
   const { name, origin, allowedOrigins, registryId, updatedAt } = value;
   if (typeof value.id !== "string" || !APPLICATION_ID.test(value.id) || (id !== undefined && value.id !== id) || !text(name, LIMITS.applicationName) || !normalizedOrigin(origin)
     || !origins(allowedOrigins, origin) || !environment(value.environment) || typeof registryId !== "string" || !REGISTRY_ID.test(registryId) || !sourceValue(value.source, registryId)
     || typeof value.enabled !== "boolean" || !text(updatedAt, LIMITS.updatedAt) || !Number.isFinite(Date.parse(updatedAt))) return null;
-  return { id: value.id, name, origin, allowedOrigins: [...allowedOrigins], environment: value.environment, registryId, enabled: value.enabled, updatedAt, source: value.source };
+  const { routing, runtimeAccess, runtimeKey } = value;
+  if ((routing !== "hash" && routing !== "history") || typeof runtimeAccess !== "boolean" || !(runtimeKey === null || (typeof runtimeKey === "string" && runtimeKey.length <= 80 && RUNTIME_KEY.test(runtimeKey)))) return null;
+  const counts = parseCounts(value.counts);
+  if (counts === null) return null;
+  return { id: value.id, name, origin, allowedOrigins: [...allowedOrigins], environment: value.environment, registryId, enabled: value.enabled, updatedAt, source: value.source, routing, runtimeAccess, runtimeKey, counts };
 }
 
 export function parseApplicationList(value: unknown): ApplicationList | null {
