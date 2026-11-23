@@ -1,5 +1,5 @@
 import { isPlainText } from "@dap/walkthrough";
-import { LIMITS, bounded, count, exact, managedOperations, managedPageOf, record, routeKey, targetIdOf } from "./wire.js";
+import { LIMITS, bounded, count, exact, managedOperations, registryPageOf, record, routeKey, targetIdOf } from "./wire.js";
 import type { Bag } from "./wire.js";
 
 /**
@@ -37,7 +37,7 @@ export function parseTargetView(value: unknown, id?: string): TargetView | null 
   if (!record(value) || !exact(value, KEYS)) return null;
   const { references, updatedAt } = value;
   if (!targetIdOf(value.id) || (id !== undefined && value.id !== id) || !targetIdOf(value.marker) || !(HEALTHS as readonly unknown[]).includes(value.health)
-    || !(value.healthCheckedAt === null || when(value.healthCheckedAt)) || !count(value.revision, LIMITS.revision) || value.revision < 1 || !routeKey(value.route) || !managedPageOf(value.page) || !bounded(value.role, LIMITS.role)
+    || !(value.healthCheckedAt === null || when(value.healthCheckedAt)) || !count(value.revision, LIMITS.revision) || value.revision < 1 || !routeKey(value.route) || !registryPageOf(value.page) || !bounded(value.role, LIMITS.role)
     || !isPlainText(value.label, LIMITS.label) || !isPlainText(value.description, LIMITS.description) || !managedOperations(value.role, value.operations)
     || value.privacy !== "public" || (value.status !== "active" && value.status !== "disabled")
     || !record(references) || !exact(references, ["drafts", "published"]) || !count(references.drafts, LIMITS.references) || !count(references.published, LIMITS.references)
@@ -49,7 +49,7 @@ export function parseTargetView(value: unknown, id?: string): TargetView | null 
 }
 
 export function parseTargetRoute(value: unknown): TargetRoute | null {
-  return record(value) && exact(value, ["route", "page"]) && routeKey(value.route) && managedPageOf(value.page) ? { route: value.route, page: value.page } : null;
+  return record(value) && exact(value, ["route", "page"]) && routeKey(value.route) && registryPageOf(value.page) ? { route: value.route, page: value.page } : null;
 }
 
 export function parseTargetList(value: unknown): TargetList | null {

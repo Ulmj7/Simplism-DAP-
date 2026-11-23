@@ -252,3 +252,23 @@ it("reads a managed registry with its checks and all 120 postconditions, keeping
   expect(parseApplicationRegistry({ routes: ["home"], elements: [], postconditionNames: ["route.home"], source: "built-in",
     previewMode: "in-app", previewable: true, pages: { "/": "home" } })?.checks).toEqual([]);
 });
+
+it("carries history paths through snapshot, registration, target listing and registry replies", async () => {
+  const { parseApplicationRegistry } = await import("./applications.js");
+  const page = "/profile";
+  const target = { ...view(), page };
+  const route = { route: "profile", page };
+  const candidate = { ref: "@e1", name: "Save", role: "button", route: null, status: "registrable",
+    proposal: { targetId: target.id, role: "button", page, route: "profile", routeIsNew: true, suggestedLabel: "Save",
+      allowedOperations: ["highlight", "click"], defaultOperations: ["highlight", "click"], privacy: "public" } };
+  const snapshot = { url: "http://127.0.0.1:5188/profile", route: null, page, elements: [candidate], hidden: 0, truncated: false };
+  expect(parseStudioReply("refresh", snapshot)).toMatchObject({ kind: "snapshot", elements: [candidate] });
+  expect(parseStudioReply("register", { target, route: { ...route, created: true } })).toMatchObject({ kind: "registered", target });
+  expect(parseTargetList({ targets: [target], routes: [route], limits: { maxTargets: 200, maxRoutes: 20 } })).toMatchObject({ routes: [route] });
+  expect(parseApplicationRegistry({ routes: ["profile"], elements: [], postconditionNames: ["route.profile"], source: "studio-managed",
+    previewMode: "application-window", previewable: true, pages: { "/profile": "profile" }, checks: [] })?.pages).toEqual({ "/profile": "profile" });
+  expect(parseTargetView({ ...target, page: "/" + "p".repeat(199) })).not.toBeNull();
+  for (const invalid of ["/" + "p".repeat(200), "/profile/", "/profile?tab=1", "//profile", "/profile/../settings"]) {
+    expect(parseTargetView({ ...target, page: invalid })).toBeNull();
+  }
+});

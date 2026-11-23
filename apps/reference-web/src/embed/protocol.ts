@@ -1,6 +1,6 @@
 import { isPlainText, MAX_LABEL as MAX_TITLE, MAX_DESCRIPTION as MAX_TEXT } from "@dap/walkthrough";
 import type { SemanticElementDef, WalkthroughDef } from "@dap/walkthrough";
-import { applicationIdOf, LIMITS, POSTCONDITION, managedOperations, managedPageOf, normalizedOrigin, routeKey, targetIdOf } from "../admin/wire.js";
+import { applicationIdOf, historyPageOf, LIMITS, POSTCONDITION, managedOperations, managedPageOf, normalizedOrigin, routeKey, targetIdOf } from "../admin/wire.js";
 import { CHECK_ATTRIBUTES, CHECK_KINDS, CHECK_NAME, expectedOf, MAX_ATTRIBUTE_EXPECTED, MAX_CHECKS, MAX_EXPECTED, VALUE_ROLES } from "./checks.js";
 import type { CheckDef } from "./checks.js";
 
@@ -61,9 +61,7 @@ const optional = (value: Bag, key: string, check: (field: unknown) => boolean) =
 const within = (value: unknown, min: number, max: number) => typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 const routeName = (name: unknown): name is string => typeof name === "string" && name.startsWith("route.") && routeKey(name.slice(6));
 const postconditionName = (name: unknown): name is string => routeName(name) || (typeof name === "string" && CHECK_NAME.test(name));
-/** Pathnames of a history-routed application: static, `[A-Za-z0-9._~/-]`, at most 200 characters, no empty segment, no trailing slash except `/`. */
-export const historyPageOf = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= LIMITS.page
-  && /^\/[A-Za-z0-9._~/-]*$/u.test(value) && !value.includes("//") && (value === "/" || !value.endsWith("/"));
+export { historyPageOf } from "../admin/wire.js";
 /** Postconditions of one bundle: every route plus at most 100 checks. */
 export const MAX_EMBED_POSTCONDITIONS = LIMITS.registryRoutes + MAX_CHECKS;
 

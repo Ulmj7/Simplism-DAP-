@@ -35,6 +35,9 @@ export const routeKey = (value: unknown): value is string => bounded(value, LIMI
 export const routeOrNull = (value: unknown): value is string | null => value === null || routeKey(value);
 export const pageOf = (value: unknown): value is string => bounded(value, LIMITS.page) && PAGE_PATTERN.test(value);
 export const managedPageOf = (value: unknown): value is string => bounded(value, LIMITS.managedPage) && /^\/(?:#\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?$/u.test(value);
+export const historyPageOf = (value: unknown): value is string => bounded(value, LIMITS.page)
+  && /^\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?$/u.test(value) && !value.split("/").some(segment => segment === "." || segment === "..");
+export const registryPageOf = (value: unknown): value is string => managedPageOf(value) || historyPageOf(value);
 export const targetIdOf = (value: unknown): value is string => bounded(value, LIMITS.targetId) && ID_PATTERN.test(value);
 export const operationList = (value: unknown): value is readonly string[] => Array.isArray(value) && value.length >= 1 && value.length <= LIMITS.operations
   && new Set(value as unknown[]).size === value.length && (value as unknown[]).every(item => (OPERATIONS as readonly unknown[]).includes(item));

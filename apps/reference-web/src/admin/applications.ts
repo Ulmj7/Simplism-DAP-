@@ -2,7 +2,7 @@ import { createSemanticRegistry, ID_PATTERN, isPlainText, MAX_DESCRIPTION, MAX_L
 import type { SemanticElementDef, SemanticRegistry } from "@dap/walkthrough";
 import { parseCheckList } from "./checks.js";
 import type { CheckView } from "./checks.js";
-import { LIMITS, POSTCONDITION, REGISTRY_ID, APPLICATION_ID, exact, managedPageOf, normalizedOrigin, pageOf, record, routeKey, unsafeKey } from "./wire.js";
+import { LIMITS, POSTCONDITION, REGISTRY_ID, APPLICATION_ID, exact, registryPageOf, normalizedOrigin, pageOf, record, routeKey, unsafeKey } from "./wire.js";
 import type { Bag } from "./wire.js";
 
 /** Applications (Studio V1A, D1/D2): trusted, tenant-scoped records the host owns. Every reply is parsed against an exact shape. */
@@ -110,7 +110,7 @@ function parsePages(value: unknown, routes: readonly unknown[], managed: boolean
   if (entries.length > LIMITS.pages) return null;
   const pages: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [page, route] of entries) {
-    if (unsafeKey(page) || !(managed ? managedPageOf(page) : pageOf(page)) || !routeKey(route) || !routes.includes(route)) return null;
+    if (unsafeKey(page) || !(managed ? registryPageOf(page) : pageOf(page)) || !routeKey(route) || !routes.includes(route)) return null;
     pages[page] = route;
   }
   return Object.freeze({ ...pages });

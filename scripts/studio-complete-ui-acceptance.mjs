@@ -87,8 +87,12 @@ async function run() {
   async function inspect() {
     const from = requests.length;
     await click("Inspect current page");
-    await until(() => requests.slice(from).some(item => item.body?.action === "refresh" && item.status === 200), "Inspector did not return a fresh result");
-    await wait('.studio-workspace[data-state="CONNECTED"]');
+    let reply;
+    await until(() => Boolean(reply = requests.slice(from).find(item => item.body?.action === "refresh")), "Inspector did not return a fresh result");
+    assert.equal(reply.status, 200, JSON.stringify(reply.response));
+    await until(() => read('["CONNECTED", "ERROR"].includes(document.querySelector(".studio-workspace")?.dataset.state)'), "Inspector did not settle");
+    assert.equal(await read('document.querySelector(".studio-workspace").dataset.state'), "CONNECTED",
+      `Studio refused a refresh for ${reply.response.page}`);
   }
   async function register(name, marker) {
     await click(`Register target: ${name}`);
@@ -221,6 +225,7 @@ async function run() {
     await step(4, async () => {
       await publish();
       await click(`Create draft from published: ${profileTitle}`);
+      await wait("#editor-title");
       await fill("#editor-title", changedTitle);
       await click("Save draft"); await wait('#editor-save-state[data-state="saved"]');
       assert.equal((await request("GET", `${workflows}/${workflowId}`, 200)).liveVersion, 1);

@@ -1,7 +1,7 @@
 import { isPlainText, MAX_LABEL } from "@dap/walkthrough";
 import { parseRepairFields, parseTargetView, parseUsage } from "./targets.js";
 import type { RepairFields, TargetUsage, TargetView } from "./targets.js";
-import { APPLICATION_ID, LIMITS, REF_PATTERN, applicationIdOf, bounded, count, exact, managedOperations, managedPageOf, normalizedOrigin, operationList, pageOf, record, reference, routeKey, routeOrNull, targetIdOf } from "./wire.js";
+import { APPLICATION_ID, LIMITS, REF_PATTERN, applicationIdOf, bounded, count, exact, managedOperations, registryPageOf, normalizedOrigin, operationList, pageOf, record, reference, routeKey, routeOrNull, targetIdOf } from "./wire.js";
 
 export { APPLICATION_ID, REF_PATTERN, normalizedOrigin };
 
@@ -128,7 +128,7 @@ const registrySource = (value: unknown): value is RegistrySource => value === "b
 function proposal(value: unknown): TargetProposal | null {
   if (!record(value) || !exact(value, ["targetId", "role", "page", "route", "routeIsNew", "suggestedLabel", "allowedOperations", "defaultOperations", "privacy"])) return null;
   const { allowedOperations, defaultOperations } = value;
-  if (!targetIdOf(value.targetId) || !bounded(value.role, LIMITS.role) || !managedPageOf(value.page) || !routeKey(value.route) || typeof value.routeIsNew !== "boolean"
+  if (!targetIdOf(value.targetId) || !bounded(value.role, LIMITS.role) || !registryPageOf(value.page) || !routeKey(value.route) || typeof value.routeIsNew !== "boolean"
     || !isPlainText(value.suggestedLabel, MAX_LABEL) || !managedOperations(value.role, allowedOperations) || !managedOperations(value.role, defaultOperations) || value.privacy !== "public"
     // `highlight` is always allowed and always part of the default; the default never goes beyond what is allowed.
     || !defaultOperations.every(operation => allowedOperations.includes(operation))) return null;
