@@ -170,10 +170,12 @@ async function startHost() {
     ask: async () => ({ kind: "clarify", message: "Acceptance host" }), catalog: { list: () => [] },
     resolveSession: async () => null, proposals: createProposalStore({ now: Date.now, newId: randomUUID }),
   });
+  const requestStartedAt = new WeakMap();
+  app.addHook("onRequest", async (request) => { requestStartedAt.set(request, performance.now()); });
   app.addHook("onSend", async (request, reply, payload) => {
     const response = request.url === "/api/studio/browser" && typeof payload === "string" ? JSON.parse(payload) : undefined;
     requests.push({ method: request.method, path: request.url, role: request.headers["x-demo-role"],
-      body: request.body, response, status: reply.statusCode, ms: Math.round(reply.elapsedTime) });
+      body: request.body, response, status: reply.statusCode, ms: elapsed(requestStartedAt.get(request)) });
     return payload;
   });
   registerAuthoringRoutes(app, { store, applications, catalog, targets, resolver, resolvePrincipal });
