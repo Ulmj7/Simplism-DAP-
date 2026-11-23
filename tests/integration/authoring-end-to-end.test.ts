@@ -140,7 +140,15 @@ it("authors, previews, publishes and measures two real runs through the Gateway 
     expect(app.current()?.runtime.getState().walkthroughId).toBe("wt-preview");
     overlay("cancel")!.click();
     button(dialogue()!, copy.result.close).click();
-    await vi.waitFor(() => expect(button(root, c.publish).disabled).toBe(false));
+    await vi.waitFor(() => expect(root.querySelector("#editor-preview-title")?.textContent).toBe("Preview results"));
+    expect(root.querySelector("#editor-preview-status")?.textContent).toContain("Preview stopped");
+    expect(button(root, c.publish).disabled).toBe(true);
+    button(root, "Edit").click();
+    await vi.waitFor(() => {
+      expect(root.querySelector("#editor-preview-title")).toBeNull();
+      expect(button(root, c.publish).disabled).toBe(false);
+    });
+    expect(document.activeElement).toBe(button(root, c.preview));
     expect((await store.get(tenant, id))?.status).toBe("draft");
     expect(requests.filter(request => request.path === EVENTS)).toEqual([]);
     expect(await eventRows()).toEqual([]);
