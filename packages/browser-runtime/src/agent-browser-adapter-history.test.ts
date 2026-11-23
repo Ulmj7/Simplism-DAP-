@@ -20,6 +20,7 @@ function harness(options: Partial<AgentBrowserAdapterOptions> = {}, initial = pa
   const state = { page: initial };
   const run = vi.fn<(args: readonly string[], timeout: number) => Promise<string>>(async args => {
     if (args.includes("snapshot")) return reply(state.page);
+    if (args.includes("count")) return reply({ count: 0, selector: "x" });
     if (args.includes("attr")) return reply({ origin: state.page.origin, value: null });
     if (args.includes("get")) return reply({ url: state.page.origin });
     return reply({});
@@ -170,7 +171,7 @@ describe("hash mode and explicit route arrays are unchanged", () => {
     await expect(h.runtime.snapshot()).resolves.toMatchObject({ url: origin + "/profile/" });
   });
   it("explicit route arrays behave as before", async () => {
-    const run = vi.fn<(args: readonly string[], timeout: number) => Promise<string>>(async args => args.includes("snapshot") ? reply(page(origin + "/#/orders")) : reply({ url: origin + "/#/orders" }));
+    const run = vi.fn<(args: readonly string[], timeout: number) => Promise<string>>(async args => args.includes("snapshot") ? reply(page(origin + "/#/orders")) : args.includes("count") ? reply({ count: 0 }) : reply({ url: origin + "/#/orders" }));
     const runtime = createAgentBrowserAdapter({ labels: "all", routes: ["/#/orders"], origins: [origin] }, run);
     await runtime.start({ url: origin + "/#/orders" });
     await expect(runtime.snapshot()).resolves.toMatchObject({ url: origin + "/#/orders" });

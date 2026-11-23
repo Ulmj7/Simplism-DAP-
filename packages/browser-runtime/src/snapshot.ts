@@ -19,11 +19,15 @@ export const MAX_ALL_ELEMENTS = 512;
 const INTERACTIVE_ROLES: ReadonlySet<string> = new Set([
   "button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "combobox", "listbox", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
 ]);
-// Non-operable TEXT elements, exposed in "all" mode only (never with explicit labels): their name is the element's text, bounded like every name (a longer one is dropped, never truncated). They can only
-// be the subject of a read-only target (`highlight`) or of a verification check, and, like every element of "all" mode, they leave the HOST only when the host's own marker and privacy gate passes (the
-// host forwards a candidate only when it carries a valid data-ai-id marker and its role maps to a registrable one). NOTE (pinned CLI 0.43, verified in Chromium): `snapshot -i` gives headings a ref
-// but never gives `status` or `alert` elements one, so those two roles reach this list only if a CLI version ever assigns them a ref.
-const TEXT_ROLES: ReadonlySet<string> = new Set(["status", "alert", "heading"]);
+// Headings are non-operable TEXT elements, exposed in "all" mode only (never with explicit labels): their name is the element's text, bounded like every name (a longer one is dropped, never truncated).
+// They can only be the subject of a read-only target (`highlight`) or of a verification check, and, like every element of "all" mode, they leave the HOST only when the host's own marker and privacy gate
+// passes. `status` and `alert` regions never get a ref from the pinned CLI (0.43, verified in Chromium): the adapter reads the marker-carrying ones with constant XPath queries instead (see the adapter).
+const TEXT_ROLES: ReadonlySet<string> = new Set(["heading"]);
+/** A usable name: non-blank after whitespace is collapsed, at most 120 characters, no control or bidirectional character. Returns the collapsed name, or `null`. */
+export function usableName(text: string): string | null {
+  const name = text.replace(/\s+/gu, " ").trim();
+  return name.length > 0 && name.length <= MAX_NAME_CHARS && !UNSAFE_NAME.test(name) ? name : null;
+}
 /** Control characters, line and paragraph separators and bidirectional overrides: not part of any name that is shown to a maintainer. */
 const UNSAFE_NAME = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u;
 

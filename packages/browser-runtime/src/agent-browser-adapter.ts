@@ -5,9 +5,9 @@ import { browserCommand, localCli } from "./cli.js";
 import type { RunCli } from "./cli.js";
 import { BrowserRuntimeError } from "./errors.js";
 import type { BrowserRuntimeErrorCode } from "./errors.js";
-import { normalizeSnapshot } from "./snapshot.js";
+import { MAX_ALL_ELEMENTS, normalizeSnapshot, usableName } from "./snapshot.js";
 import type { ApprovedLabel } from "./snapshot.js";
-import type { BrowserRuntime, BrowserSnapshot, ElementFacts, ElementRef } from "./types.js";
+import type { BrowserElement, BrowserRuntime, BrowserSnapshot, ElementFacts, ElementRef } from "./types.js";
 
 const executable = fileURLToPath(new URL("../../../vendor/agent-browser/cli/target/release/agent-browser", import.meta.url));
 const config = fileURLToPath(new URL("../agent-browser.json", import.meta.url));
@@ -25,6 +25,17 @@ const maxPageChars = 200;
 // History routing (`routing: "history"`): the page is the PATHNAME only. Query and fragment of the observed URL are ignored (never returned, never stored, never a reason to refuse), the pathname is
 // a static path of letters, digits and `._~/-` without an empty segment, and a trailing slash (except the root) is removed.
 const historyPath = /^\/[A-Za-z0-9._~/-]*$/u;
+
+// STATUS AND ALERT REGIONS (labels "all" only). The pinned CLI gives these roles no ref in any snapshot form (verified in Chromium: `snapshot`, `-i`, `-c`, `-s` all list them without one), so the adapter reads
+// the ones that carry a data-ai-id marker with CONSTANT XPath queries and a DAP-chosen integer index (never caller text): `get count`, then per element `get attr … data-ai-id`, `is visible` and `get text`.
+// Each gets a synthetic ref (`@e9000000NN`, far above any real ref) that maps to its selector for exactly the observation it was returned with: a later page change invalidates it like any other ref.
+// Unmarked regions are never read, the text leaves only as a bounded name, and the host still decides what it forwards.
+const textRefBase = 900_000_000;
+const maxTextElements = 32;
+const textKinds = [
+  { role: "status", xpath: '//*[@data-ai-id][@role="status" or self::output]' },
+  { role: "alert", xpath: '//*[@data-ai-id][@role="alert"]' },
+] as const;
 
 interface TrustedObservation {
   readonly route: string;
@@ -95,7 +106,7 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
   let busy = false;
   // The origin the session was opened on; a trusted observation is only read there.
   let home = "";
-  let latest: { snapshot: BrowserSnapshot; revision: string } | undefined;
+  let latest: { snapshot: BrowserSnapshot; revision: string; selectors: ReadonlyMap<ElementRef, string> } | undefined;
   let highlightUntil = 0;
 
   const command = (args: readonly string[], failure: BrowserRuntimeErrorCode, timeout = commandTimeout) =>
@@ -142,7 +153,9 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
     const budget = () => Math.max(1, Math.ceil(deadline - performance.now()));
     const data = await command(["snapshot", "-i"], "SNAPSHOT_FAILED", budget());
     const url = approvedUrl(data.origin);
-    const elements = normalizeSnapshot(data, labels);
+    const controls = normalizeSnapshot(data, labels);
+    const selectors = new Map<ElementRef, string>();
+    const elements = labels === "all" ? [...controls, ...await textElements(url, selectors, controls.length, budget)] : controls;
     let observation: string | undefined;
     if (trusted && url === home + trusted.route) {
       const reply = await command(["get", "text", trusted.selector], "SNAPSHOT_FAILED", budget());
@@ -152,8 +165,44 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
     // Raw browser output stays local and is discarded. The digest is only for
     // equality, so typing can trigger a rescan without publishing form values.
     const revision = createHash("sha256").update(JSON.stringify([url, data.snapshot, elements, observation])).digest("hex");
-    return { snapshot: Object.freeze({ url, elements, ...(observation === undefined ? {} : { observation }) }), revision };
+    return { snapshot: Object.freeze({ url, elements: Object.freeze(elements), ...(observation === undefined ? {} : { observation }) }), revision, selectors };
   }
+
+  // The marker-carrying status and alert regions of the page, in document order per kind (status first), with their synthetic refs.
+  async function textElements(url: string, selectors: Map<ElementRef, string>, taken: number, budget: () => number): Promise<BrowserElement[]> {
+    const found: BrowserElement[] = [];
+    for (const { role, xpath } of textKinds) {
+      const counted = await command(["get", "count", `xpath=${xpath}`], "SNAPSHOT_FAILED", budget());
+      if (typeof counted.count !== "number" || !Number.isInteger(counted.count) || counted.count < 0 || counted.count > 100_000) throw new BrowserRuntimeError("INVALID_BROWSER_OUTPUT");
+      for (let index = 1; index <= counted.count && found.length < maxTextElements && taken + found.length < MAX_ALL_ELEMENTS; index += 1) {
+        const selector = `xpath=(${xpath})[${index}]`;
+        const read = async (args: readonly string[]): Promise<Record<string, unknown> | undefined> => {
+          try { return await command(args, "REF_NOT_FOUND", budget()); }
+          catch (error) {
+            // One region that vanished (or answered unusably) is only unknown; a timeout means the browser is unusable.
+            if (!(error instanceof BrowserRuntimeError) || (error.code !== "REF_NOT_FOUND" && error.code !== "INVALID_BROWSER_OUTPUT")) throw error;
+            return undefined;
+          }
+        };
+        const marker = await read(["get", "attr", selector, "data-ai-id"]);
+        if (marker === undefined) continue;
+        if (approvedUrl(marker.origin) !== url) throw new BrowserRuntimeError("SNAPSHOT_FAILED");
+        if (semanticId(marker.value) === null) continue;
+        const visible = await read(["is", "visible", selector]);
+        if (visible?.visible !== true) continue;
+        const reply = await read(["get", "text", selector]);
+        const name = typeof reply?.text === "string" ? usableName(reply.text) : null;
+        if (name === null) continue;
+        const ref = `@e${textRefBase + found.length}` as ElementRef;
+        selectors.set(ref, selector);
+        found.push(Object.freeze({ ref, role, name }));
+      }
+    }
+    return found;
+  }
+
+  // The command target of a ref of one observation: the CLI ref itself, or the selector of a status or alert region.
+  const targetOf = (ref: ElementRef, from: { readonly selectors: ReadonlyMap<ElementRef, string> }): string => from.selectors.get(ref) ?? ref;
 
   // One fresh observation compared with the one `from` was taken from: refs are only valid while
   // the page is unchanged, so any drift invalidates them all.
@@ -175,7 +224,7 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
   }
 
   // The facts of one element from five constant attribute reads. null = not readable (gone, unusable reply, or a value too long to represent): never trusted.
-  async function readFacts(ref: ElementRef, url: string): Promise<ElementFacts | null> {
+  async function readFacts(ref: string, url: string): Promise<ElementFacts | null> {
     const values: (string | null)[] = [];
     for (const attribute of factAttributes) {
       let reply: Record<string, unknown>;
@@ -224,7 +273,7 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
     }),
     inspectSemanticId: (ref, from) => exclusive(async () => {
       const current = await currentTarget(ref, from);
-      const attribute = await command(["get", "attr", ref, "data-ai-id"], "REF_NOT_FOUND");
+      const attribute = await command(["get", "attr", targetOf(ref, current), "data-ai-id"], "REF_NOT_FOUND");
       if (approvedUrl(attribute.origin) !== current.snapshot.url) throw new BrowserRuntimeError("REF_NOT_FOUND");
       return semanticId(attribute.value);
     }),
@@ -234,7 +283,7 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
       // Candidates past the bound are not inspected and are absent from the result.
       for (const { ref } of from.elements.slice(0, maxInspected)) {
         let attribute: Record<string, unknown> | undefined;
-        try { attribute = await command(["get", "attr", ref, "data-ai-id"], "REF_NOT_FOUND"); }
+        try { attribute = await command(["get", "attr", targetOf(ref, current), "data-ai-id"], "REF_NOT_FOUND"); }
         catch (error) {
           // A timeout means the browser is unusable: abort. One unreadable element (gone, no attribute,
           // unusable reply) is only unknown, which is never a trusted target.
@@ -256,19 +305,21 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
       for (const ref of refs as readonly unknown[]) if (typeof ref !== "string" || !/^@e[1-9]\d{0,8}$/u.test(ref) || !known.has(ref)) throw new BrowserRuntimeError("REF_NOT_FOUND");
       const current = await currentSnapshot(from);
       const found = new Map<ElementRef, ElementFacts | null>();
-      for (const ref of new Set(refs)) found.set(ref, await readFacts(ref, current.snapshot.url));
+      for (const ref of new Set(refs)) found.set(ref, await readFacts(targetOf(ref, current), current.snapshot.url));
       return found;
     }),
     highlight: (ref, from) => exclusive(async () => {
       const current = await currentTarget(ref, from);
-      for (const property of ["visible", "enabled"]) {
-        const reply = await command(["is", property, ref], "HIGHLIGHT_FAILED");
+      const target = targetOf(ref, current);
+      // A status or alert region is read-only text: it must be visible; enabled does not apply to it.
+      for (const property of target === ref ? ["visible", "enabled"] : ["visible"]) {
+        const reply = await command(["is", property, target], "HIGHLIGHT_FAILED");
         if (approvedUrl(reply.origin) !== current.snapshot.url || reply[property] !== true) {
           throw new BrowserRuntimeError("REF_NOT_FOUND");
         }
       }
-      const highlighted = await command(["highlight", ref], "HIGHLIGHT_FAILED");
-      if (highlighted.highlighted !== ref) throw new BrowserRuntimeError("INVALID_BROWSER_OUTPUT");
+      const highlighted = await command(["highlight", target], "HIGHLIGHT_FAILED");
+      if (highlighted.highlighted !== target) throw new BrowserRuntimeError("INVALID_BROWSER_OUTPUT");
       if (approvedUrl((await command(["get", "url"], "HIGHLIGHT_FAILED")).url) !== current.snapshot.url) {
         throw new BrowserRuntimeError("REF_NOT_FOUND");
       }

@@ -36,6 +36,7 @@ function harness(options: Options = {}, initial = page(operable)) {
   };
   const run = vi.fn<(args: readonly string[], timeout: number) => Promise<string>>(async args => {
     if (args.includes("snapshot")) return reply(state.page);
+    if (args.includes("count")) return reply({ count: 0, selector: "x" });
     if (args.includes("attr")) return state.read(args.at(-2) as string, args.at(-1) as string);
     if (args.includes("get")) return reply({ url: state.page.origin });
     return reply({});
@@ -76,18 +77,15 @@ describe('labels: "all"', () => {
     expect(normalizeSnapshot(page(items), "all").map(element => element.ref)).toEqual(["@e12", "@e13", "@e14", "@e15"]);
   });
 
-  it("also exposes named headings, status and alert text in document order (their name is their text, at most 120 characters), never in explicit-label mode", () => {
+  it("also exposes named headings in document order (their name is their text, at most 120 characters), never in explicit-label mode; status and alert have no ref and come from the adapter's XPath reads", () => {
     const items: Item[] = [
       { key: "e1", role: "heading", name: "Orders", flags: "level=1" }, { key: "e2", role: "link", name: "Orders" }, { key: "e3", role: "status", name: "Saved" }, { key: "e4", role: "alert", name: "Could not save" },
-      { key: "e5", role: "heading", name: "h".repeat(121) }, { key: "e6", role: "heading" }, { key: "e7", role: "status", name: "   " }, { key: "e8", role: "alert", name: "bidi\u202eoverride" },
-      { key: "e9", role: "heading", name: "h".repeat(120) }, { key: "e10", role: "paragraph", name: "Plain text" }, { key: "e11", role: "StaticText", name: "Saved" }, { key: "e12", role: "alert", name: "No newline\nallowed" },
+      { key: "e5", role: "heading", name: "h".repeat(121) }, { key: "e6", role: "heading" }, { key: "e7", role: "heading", name: "   " }, { key: "e8", role: "heading", name: "bidi\u202eoverride" },
+      { key: "e9", role: "heading", name: "h".repeat(120) }, { key: "e10", role: "paragraph", name: "Plain text" }, { key: "e11", role: "StaticText", name: "Saved" }, { key: "e12", role: "heading", name: "No newline\nallowed" },
     ];
-    expect(normalizeSnapshot(page(items), "all")).toEqual([
-      { ref: "@e1", role: "heading", name: "Orders" }, { ref: "@e2", role: "link", name: "Orders" }, { ref: "@e3", role: "status", name: "Saved" }, { ref: "@e4", role: "alert", name: "Could not save" },
-      { ref: "@e9", role: "heading", name: "h".repeat(120) },
-    ]);
-    const labels = [{ role: "link", name: "Orders" }];
-    expect(normalizeSnapshot(page(items), labels)).toEqual([{ ref: "@e2", role: "link", name: "Orders" }]);
+    // Even if a CLI ever gave a status or an alert a ref, normalizeSnapshot does not list it: the adapter's own reads are the one source (no duplicates).
+    expect(normalizeSnapshot(page(items), "all")).toEqual([{ ref: "@e1", role: "heading", name: "Orders" }, { ref: "@e2", role: "link", name: "Orders" }, { ref: "@e9", role: "heading", name: "h".repeat(120) }]);
+    expect(normalizeSnapshot(page(items), [{ role: "link", name: "Orders" }])).toEqual([{ ref: "@e2", role: "link", name: "Orders" }]);
     expect(normalizeSnapshot(page(items), [{ role: "heading", name: "Orders" }, { role: "status", name: "Saved" }])).toEqual([{ ref: "@e1", role: "heading", name: "Orders" }, { ref: "@e3", role: "status", name: "Saved" }]);
   });
 

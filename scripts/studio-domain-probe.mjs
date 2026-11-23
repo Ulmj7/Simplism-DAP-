@@ -333,6 +333,25 @@ try {
     const settings = await handle.adapter.snapshot();
     seen.push(settings.url);
     const reloaded = served() !== requestsBefore;
+    // Status regions (SC-W3): no ref exists for them in the pinned CLI, so the adapter reads the marker-carrying ones by constant XPath queries. Empty until Save, listed after it, readable like any ref, drift after.
+    await cliJson(handle.session, ["open", `${c.origin}/profile`]);
+    await sleep(300);
+    let t0;
+    const beforeSave = await handle.adapter.snapshot();
+    assert.equal((await cliJson(handle.session, ["click", '[data-ai-id="profile.save"]'])).success, true);
+    await sleep(300);
+    const afterSave = await handle.adapter.snapshot();
+    const savedStatus = afterSave.elements.find(element => element.role === "status");
+    const savedIds = await handle.adapter.inspectSemanticIds(afterSave);
+    const savedFacts = savedStatus ? await handle.adapter.inspectElementFacts([savedStatus.ref], afterSave) : new Map();
+    let highlighted = false;
+    try { await handle.adapter.highlight(savedStatus.ref, afterSave); highlighted = true; } catch { highlighted = false; }
+    const drift = await handle.adapter.inspectSemanticIds(beforeSave).then(() => "accepted", error => error.code);
+    const statusOk = !beforeSave.elements.some(element => element.role === "status") && savedStatus?.name === "Saved" && /^@e9\d{8}$/u.test(savedStatus.ref) && savedIds.get(savedStatus.ref) === "profile.savedStatus"
+      && savedFacts.get(savedStatus?.ref)?.dataAiPrivate === false && highlighted && drift === "REF_NOT_FOUND";
+    t0 = performance.now();
+    await handle.adapter.snapshot();
+    latency.snapshotWithStatusMs = ms(t0);
     // A trailing slash and a query are not part of the page; a double slash is refused; the other port and host are refused.
     const outcomes = {};
     for (const [label, path] of [["trailing", "/profile/?a=1#b"], ["double", "//evil"], ["unicode", "/%C3%A9"], ["deep", "/users/123?x=y"]]) {
@@ -346,10 +365,10 @@ try {
     await sleep(300);
     const otherHost = await handle.adapter.snapshot().then(snapshot => (snapshot.url.endsWith("/users/123") ? "stayed" : "moved"), error => error.code);
     const leaked = /canary-secret|frag-secret|variant|token/u.test(JSON.stringify([seen, names]));
-    const ok = deep.url === `${c.origin}/profile` && names.includes("textbox:Display name") && names.includes("button:Save") && settings.url === `${c.origin}/settings` && !reloaded
+    const ok = statusOk && deep.url === `${c.origin}/profile` && names.includes("textbox:Display name") && names.includes("button:Save") && settings.url === `${c.origin}/settings` && !reloaded
       && outcomes.trailing === "/profile" && outcomes.double === "DOMAIN_BLOCKED" && outcomes.unicode === "DOMAIN_BLOCKED" && outcomes.deep === "/users/123" && cliRefused && otherHost === "stayed" && !leaked;
     record("(viii) history routing", ok,
-      `deep link with query+fragment -> ${deep.url.slice(c.origin.length)}; SPA click -> ${settings.url.slice(c.origin.length)} (reloaded: ${reloaded}); ${JSON.stringify(outcomes)}; localhost spelling refused by the CLI: ${cliRefused} (page ${otherHost}); query/fragment ever returned: ${leaked}`);
+      `status region: ${statusOk ? `status "Saved" ${savedStatus.ref} marker ${savedIds.get(savedStatus.ref)}, highlight ok, old observation refused (${drift})` : `FAILED (before ${beforeSave.elements.length}, after ${JSON.stringify(afterSave.elements.map(e => e.role + ":" + e.name))}, drift ${drift})`}; deep link with query+fragment -> ${deep.url.slice(c.origin.length)}; SPA click -> ${settings.url.slice(c.origin.length)} (reloaded: ${reloaded}); ${JSON.stringify(outcomes)}; localhost spelling refused by the CLI: ${cliRefused} (page ${otherHost}); query/fragment ever returned: ${leaked}`);
     await handle.adapter.close();
   }
 
