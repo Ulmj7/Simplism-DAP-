@@ -1,0 +1,17 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dap-migrate
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ai-support-agent-clean:minikube-v1
+          imagePullPolicy: Never
+          command: ["node", "db/migrate.mjs"]
+          envFrom:
+            - secretRef:
+                name: dap-migrate

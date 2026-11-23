@@ -49,3 +49,5 @@ The optional `DAP_OWNER_PASSWORD` and `DAP_APP_PASSWORD` overrides must use
 URL-safe characters and match the passwords used to initialize the PostgreSQL
 volume. Repeat the build after changing a backend TypeScript file to verify
 that both npm install steps are cached while TypeScript recompiles.
+
+For the three-replica Kubernetes version, see the [Minikube lab](../../deploy/k8s/README.md).

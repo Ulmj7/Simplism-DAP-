@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dap-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: dap-app
+  template:
+    metadata:
+      labels:
+        app: dap-app
+    spec:
+      containers:
+        - name: app
+          image: ai-support-agent-clean:minikube-v1
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - secretRef:
+                name: dap-app
+            - configMapRef:
+                name: dap-lab-web
+          env:
+            - name: NODE_ENV
+              value: development
+            - name: DAP_ALLOW_DEV_AUTH
+              value: "1"
+            - name: DAP_ENABLED_ACTIONS
+              value: startWalkthrough
+            - name: DAP_GUIDANCE_MODEL
+              value: fake
+            - name: DAP_HTTP_HOST
+              value: 0.0.0.0
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
+            periodSeconds: 3
+            timeoutSeconds: 4

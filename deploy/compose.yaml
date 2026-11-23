@@ -17,9 +17,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ../db/migrations/000_roles.sql:/docker-entrypoint-initdb.d/000_roles.sql:ro
-    configs:
-      - source: postgres-passwords
-        target: /docker-entrypoint-initdb.d/001_passwords.sh
+      - ../db/bootstrap/001_passwords.sh:/docker-entrypoint-initdb.d/001_passwords.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 2s
@@ -58,19 +56,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-
-configs:
-  postgres-passwords:
-    content: |
-      #!/bin/sh
-      set -eu
-      psql --set=ON_ERROR_STOP=1 --username="$$POSTGRES_USER" --dbname="$$POSTGRES_DB" \
-        --set=owner_password="$$DAP_OWNER_PASSWORD" --set=app_password="$$DAP_APP_PASSWORD" \
-        --set=database_name="$$POSTGRES_DB" <<'SQL'
-      ALTER ROLE dap_owner PASSWORD :'owner_password';
-      ALTER ROLE dap_app PASSWORD :'app_password';
-      ALTER DATABASE :"database_name" OWNER TO dap_owner;
-      SQL
 
 volumes:
   postgres-data:

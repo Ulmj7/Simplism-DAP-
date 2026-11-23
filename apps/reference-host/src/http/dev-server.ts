@@ -38,7 +38,7 @@ import { createApprovalRecorder, createGatewayStart } from "./approved-start.js"
 import { createProposalStore } from "./proposal-store.js";
 import { startupFailureMessage } from "./startup-message.js";
 import type { StartupPhase } from "./startup-message.js";
-import { HTTP_HOST, createGuidanceTransport, parseHttpPort } from "./transport.js";
+import { HTTP_HOST, createGuidanceTransport, isLabHttpHost, parseHttpPort } from "./transport.js";
 import type { GuidanceSession } from "./transport.js";
 
 const env = process.env;
@@ -48,6 +48,10 @@ try {
   const bindHost = env.DAP_HTTP_HOST ?? HTTP_HOST;
   if (bindHost !== HTTP_HOST && bindHost !== "0.0.0.0") {
     throw new GuidanceConfigError("DAP_HTTP_HOST must be 127.0.0.1 or 0.0.0.0");
+  }
+  const allowedHost = env.DAP_HTTP_ALLOWED_HOST;
+  if (allowedHost !== undefined && (bindHost !== "0.0.0.0" || !isLabHttpHost(allowedHost))) {
+    throw new GuidanceConfigError("DAP_HTTP_ALLOWED_HOST requires a lab IPv4 address and port with DAP_HTTP_HOST=0.0.0.0");
   }
   const port = parseHttpPort(env.DAP_HTTP_PORT);
   if (port === null) throw new GuidanceConfigError("DAP_HTTP_PORT must be a port number from 1 to 65535");
@@ -72,10 +76,19 @@ try {
   if ((await host.openSession(token)) === null) throw new GuidanceConfigError("DAP_DEMO_SESSION_TOKEN session was refused");
   const demoSession: GuidanceSession = Object.freeze({ key: "dev-demo-session", start: createGatewayStart({ openSession: () => host.openSession(token), recorder }) });
   const app = createGuidanceTransport({
+    ...(allowedHost === undefined ? {} : { allowedHost }),
     ask: guidance.askGuidance,
     catalog: demoCatalogView,
     resolveSession: async () => demoSession,
     proposals: createProposalStore({ now: Date.now, newId: () => randomBytes(32).toString("base64url") }),
+  });
+  app.get("/readyz", async (_request, reply) => {
+    try {
+      await authoringPool.query("SELECT 1 FROM public.walkthrough_definitions LIMIT 0");
+      return reply.code(200).send({ status: "ready" });
+    } catch {
+      return reply.code(503).send({ status: "unavailable" });
+    }
   });
   // Feature 004: the authoring routes on the SAME instance, before listen, so every transport guard applies to them. The principal comes from the host's own
   // session table (see principal.ts); the demo role header only picks one of the two server-held sessions.
