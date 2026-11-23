@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { installEmbed } from "./installer.js";
+import { runMessage } from "./protocol.js";
 import { createSimplism } from "./sdk.js";
 import type { Simplism } from "./sdk.js";
 import type { ManagedBundle } from "./protocol.js";
@@ -33,6 +35,7 @@ function init(fetcher: typeof fetch): Simplism {
 
 afterEach(() => {
   window.dispatchEvent(new Event("pagehide"));
+  window.opener = null;
   document.body.replaceChildren();
   document.head.replaceChildren();
   history.replaceState(null, "", "/");
@@ -199,5 +202,167 @@ describe("public Simplism SDK lifecycle", () => {
     expect(signals.slice(1)).toHaveLength(2);
     expect(signals.slice(1).every(signal => signal.aborted)).toBe(true);
     expect(root()).toBeNull();
+  });
+});
+
+describe("catalog refresh focus", () => {
+  const second = { ...listed, id: "wt-000000000002", title: "Update settings" };
+
+  it("restores the same guide after reorder and falls back to the first guide if it was removed", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ guides: [second, listed] }))
+      .mockResolvedValueOnce(response({ guides: [listed, second] }))
+      .mockResolvedValueOnce(response({ guides: [listed] }));
+    const runtime = init(fetcher);
+    await runtime.openLauncher();
+    const settings = panel()?.querySelector<HTMLButtonElement>(`[data-simplism-guide="${second.id}"]`);
+    settings?.focus();
+    const refreshing = runtime.listGuides();
+    expect(document.activeElement).toBe(panel()?.querySelector("h2"));
+    await refreshing;
+    expect(document.activeElement?.getAttribute("data-simplism-guide")).toBe(second.id);
+    await runtime.listGuides();
+    expect(document.activeElement?.getAttribute("data-simplism-guide")).toBe(listed.id);
+  });
+
+  it.each([
+    ["empty", () => response({ guides: [] }), "H2"],
+    ["invalid", () => response({ guides: false }), "H2"],
+    ["temporary error", () => response({}, 503), "BUTTON"],
+  ] as const)("provides a keyboard focus target for a refreshed %s result", async (_name, reply, tag) => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ guides: [listed] }))
+      .mockImplementation(async () => reply());
+    const runtime = init(fetcher);
+    await runtime.openLauncher();
+    expect(document.activeElement?.getAttribute("data-simplism-guide")).toBe(listed.id);
+    await runtime.listGuides();
+    const nextFocus = tag === "BUTTON" ? button("Retry") : panel()?.querySelector("h2");
+    expect(nextFocus).toBeDefined();
+    expect(document.activeElement).toBe(nextFocus);
+  });
+
+  it("leaves focus where the user moved it during refresh", async () => {
+    const runtime = init(fetchMock());
+    await runtime.openLauncher();
+    const refreshing = runtime.listGuides();
+    button("Close")?.focus();
+    await refreshing;
+    expect(document.activeElement).toBe(button("Close"));
+  });
+});
+
+describe("page caching", () => {
+  const cached = (type: "pagehide" | "pageshow") => window.dispatchEvent(new PageTransitionEvent(type, { persisted: true }));
+
+  it("ends the run, aborts an old catalog refresh, and reloads once on return with the same launcher and stylesheet", async () => {
+    const fetcher = fetchMock();
+    const runtime = init(fetcher);
+    const target = document.createElement("button");
+    target.dataset.aiId = "profile.saveNow";
+    document.body.append(target);
+    await runtime.startGuide(listed.id);
+    const firstLauncher = launcher();
+    const link = document.querySelector("link");
+    let staleSignal: AbortSignal | undefined;
+    fetcher.mockImplementationOnce((_url, options) => {
+      staleSignal = options?.signal ?? undefined;
+      return new Promise((_, reject) => staleSignal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    });
+    const outdated = runtime.listGuides();
+    cached("pagehide");
+    expect(staleSignal?.aborted).toBe(true);
+    expect(runtime.getRun()).toEqual({ status: "stopped", guideId: listed.id });
+    expect(owned()).toBeNull();
+    expect(launcher()).toBe(firstLauncher);
+    expect(document.querySelector("link")).toBe(link);
+    const fresh = { ...listed, title: "Refreshed guide" };
+    fetcher.mockResolvedValueOnce(response({ guides: [fresh] }));
+    cached("pageshow");
+    cached("pageshow");
+    await expect(runtime.start()).resolves.toEqual({ ok: true, value: [fresh] });
+    await expect(outdated).resolves.toEqual({ ok: false, code: "NETWORK_UNAVAILABLE" });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(document.querySelectorAll("[data-simplism-runtime]")).toHaveLength(1);
+    expect(document.querySelectorAll("link")).toHaveLength(1);
+
+    runtime.destroy();
+    cached("pageshow");
+    await expect(runtime.start()).resolves.toEqual({ ok: false, code: "RUNTIME_DESTROYED" });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(root()).toBeNull();
+  });
+
+  it("does not bootstrap a created instance on restore before its first start", () => {
+    const fetcher = fetchMock();
+    init(fetcher);
+    cached("pagehide");
+    cached("pageshow");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(root()).toBeNull();
+  });
+});
+
+describe("Studio Preview ownership", () => {
+  const dapOrigin = "https://studio.example";
+
+  function preview() {
+    const postMessage = vi.fn();
+    const opener = { postMessage } as unknown as Window;
+    window.opener = opener;
+    installEmbed(window, { dapOrigin });
+    const launch = (value = bundle()) => window.dispatchEvent(new MessageEvent("message", {
+      origin: dapOrigin, source: opener, data: runMessage(value),
+    }));
+    return { launch, postMessage };
+  }
+
+  function target() {
+    const button = document.createElement("button");
+    button.dataset.aiId = "profile.saveNow";
+    document.body.append(button);
+  }
+
+  it("lets Preview take over an active SDK guide and rejects reinstall while Preview owns the page", async () => {
+    target();
+    const fetcher = fetchMock();
+    const runtime = init(fetcher);
+    await runtime.startGuide(listed.id);
+    expect(document.querySelectorAll(".dap-guide-card")).toHaveLength(1);
+
+    const studio = preview();
+    expect(studio.postMessage).toHaveBeenCalledWith({ type: "dap-embed-ready", version: 1 }, dapOrigin);
+    studio.launch();
+    expect(document.querySelectorAll(".dap-guide-card")).toHaveLength(1);
+    expect(root()).toBeNull();
+    await expect(runtime.startGuide(listed.id)).resolves.toEqual({ ok: false, code: "RUNTIME_DESTROYED" });
+    expect(createSimplism(config)).toEqual({ ok: false, code: "ALREADY_INITIALIZED" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks a later SDK install while Preview is running, with no SDK UI or requests", () => {
+    target();
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    preview().launch();
+    expect(document.querySelectorAll(".dap-guide-card")).toHaveLength(1);
+    expect(createSimplism(config)).toEqual({ ok: false, code: "ALREADY_INITIALIZED" });
+    expect(root()).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+    window.dispatchEvent(new Event("pagehide"));
+    expect(createSimplism(config).ok).toBe(true);
+  });
+
+  it("keeps SDK playback available with no authenticated Preview run, including an ordinary opener", async () => {
+    target();
+    const studio = preview();
+    const runtime = init(fetchMock());
+    await runtime.startGuide(listed.id);
+    const guide = document.querySelector(".dap-guide-card");
+    expect(guide).not.toBeNull();
+    studio.launch({ ...bundle(), application: { ...bundle().application, origin: "https://another.example" } });
+    expect(root()).not.toBeNull();
+    expect(document.querySelector(".dap-guide-card")).toBe(guide);
+    expect(runtime.getRun()).toEqual({ status: "running", guideId: listed.id });
   });
 });

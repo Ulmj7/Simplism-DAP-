@@ -42,7 +42,7 @@ Applications without a bundler can self-host `index.js` and `simplism.css` from 
 
 ## API reference
 
-`createSimplism(options)` returns `{ ok: true, value: instance }` or `{ ok: false, code }`. Calls with the same effective configuration reuse one instance per page. A competing configuration or standalone legacy embed yields `ALREADY_INITIALIZED`. Use the existing `dap-embed.js` integration for Studio’s opener-based Preview. The SDK’s independent mode uses neither an opener nor a Studio session.
+`createSimplism(options)` returns `{ ok: true, value: instance }` or `{ ok: false, code }`. Calls with the same effective configuration reuse one instance per page. A competing configuration or standalone legacy embed yields `ALREADY_INITIALIZED`. Use the existing `dap-embed.js` integration for Studio’s opener-based Preview. A valid Preview launch takes over the page and closes any SDK launcher there. The SDK’s independent mode uses neither an opener nor a Studio session.
 
 | Method | Behavior |
 |---|---|
@@ -59,7 +59,7 @@ Asynchronous calls return a discriminated result with either `value` or a stable
 
 ## Routing and verification
 
-Hash applications match the current pathname and hash. History applications match the pathname, normalize a trailing slash, and ignore queries and fragments. For programmatic history navigation, the SDK uses `pushState` and sends `popstate` so the app can render. It observes changes during a guide without replacing the app’s history methods. Unexpected navigation stops a guide safely when its active control belongs to another route. Cross-origin or full-page navigation ends the current page’s run. On reload, initialization starts again with no restored progress.
+Hash applications match the current pathname and hash. History applications match the pathname, normalize a trailing slash, and ignore queries and fragments. For programmatic history navigation, the SDK uses `pushState` and sends `popstate` so the app can render. It observes changes during a guide without replacing the app’s history methods. Unexpected navigation stops a guide safely when its active control belongs to another route. Cross-origin or full-page navigation ends the current page’s run. On reload, initialization starts again with no restored progress. When the browser restores a cached page on Back or Forward, the existing launcher refreshes its catalog and any previous run stays ended.
 
 The engine resolves unique registered markers on the active route and advances after the declared click, input, or acknowledgement and its verification. Route, visibility, text, value, and supported attribute checks have the same semantics as Studio. Missing or ambiguous controls and failed checks cannot advance a guide. Use public expected values. Completion is announced in the result dialog. Dismissing it returns focus to the launcher.
 

@@ -85,9 +85,10 @@ export interface MountOptions {
   /** Called when the maintainer closes the result dialog of a finished run (standalone delivery uses it to tear the run down). */
   readonly onDismiss?: () => void;
   readonly onUnexpectedRoute?: () => void;
+  readonly beforeMount?: () => void;
 }
 
-export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = true, onStatus, onDismiss, onUnexpectedRoute }: MountOptions) {
+export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = true, onStatus, onDismiss, onUnexpectedRoute, beforeMount }: MountOptions) {
   const doc = win.document;
   const root = doc.body;
   if (!root) return { ok: false, reason: "invalid_bundle" } as const;
@@ -104,6 +105,7 @@ export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = t
   let catalog;
   try { catalog = createWalkthroughCatalog(registry, bundle.registry.postconditionNames, [mapped]); }
   catch { return { ok: false, reason: "invalid_bundle" } as const; }
+  beforeMount?.();
   const router = history ? historyRouter(win, bundle.registry.pages) : managedRouter(win.location, bundle.registry.pages);
   const postconditions = checkPostconditions(bundle.registry.routes, checks, { root, route: () => router.current(), markerOf: id => markerOf.get(id), roleOf: id => roleOf.get(id) });
   const pageTargets = createTargets(root, registry);

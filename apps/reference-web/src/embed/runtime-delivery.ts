@@ -30,6 +30,7 @@ export function parseGuideList(value: unknown): readonly GuideSummary[] | null {
 }
 
 export const SDK_INSTANCE = Symbol.for("simplism.runtime.v1");
+export const PREVIEW_OWNER = Symbol.for("simplism.preview.v1");
 
 type JsonResult = { readonly ok: true; readonly body: unknown }
   | { readonly ok: false; readonly reason: "not_found" | "unavailable" | "invalid" };

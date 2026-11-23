@@ -1,6 +1,7 @@
 import { normalizedOrigin } from "../admin/wire.js";
 import { mountManagedRuntime } from "./managed-runtime.js";
 import { parseRun, readyMessage, statusMessage } from "./protocol.js";
+import { PREVIEW_OWNER, SDK_INSTANCE } from "./runtime-delivery.js";
 import { installStandalone } from "./standalone.js";
 
 export interface InstallOptions {
@@ -55,24 +56,32 @@ export function installEmbed(win: Window, options: InstallOptions = {}) {
     return;
   }
   let mounted: ReturnType<typeof mountManagedRuntime> | undefined;
-  let accepted = false;
+  const slot = win as Window & { [PREVIEW_OWNER]?: symbol; [SDK_INSTANCE]?: { instance: { destroy(): void } } };
+  const owner = Symbol();
   const sheet = linkStylesheet(win, scriptSrc);
   const send = (status: Parameters<typeof statusMessage>[0]) => opener.postMessage(statusMessage(status), dapOrigin);
   const listen = (event: MessageEvent) => {
     if (event.origin !== dapOrigin || event.source !== opener) return;
     const run = parseRun(event.data);
     if (!run) return;
-    if (accepted) { send({ status: "refused", reason: "already_running" }); return; }
+    if (slot[PREVIEW_OWNER]) { send({ status: "refused", reason: "already_running" }); return; }
     if (!run.ok) { send({ status: "refused", reason: run.reason }); return; }
     if (run.bundle.application.origin !== win.location.origin) { send({ status: "refused", reason: "invalid_bundle" }); return; }
-    mounted = mountManagedRuntime({ window: win, bundle: run.bundle, trustedEventsOnly, onStatus: status => { send(status); } });
-    if (mounted.ok) accepted = true;
-    else send({ status: "refused", reason: mounted.reason });
+    mounted = mountManagedRuntime({
+      window: win, bundle: run.bundle, trustedEventsOnly, onStatus: status => { send(status); },
+      beforeMount() {
+        // A validated Preview takes over before creating any overlay or document listeners.
+        slot[PREVIEW_OWNER] = owner;
+        slot[SDK_INSTANCE]?.instance.destroy();
+      },
+    });
+    if (!mounted.ok) send({ status: "refused", reason: mounted.reason });
   };
   const destroy = () => {
     win.removeEventListener("message", listen);
     win.removeEventListener("pagehide", destroy);
     if (mounted?.ok) mounted.destroy();
+    if (slot[PREVIEW_OWNER] === owner) delete slot[PREVIEW_OWNER];
     sheet.remove();
   };
   win.addEventListener("message", listen);

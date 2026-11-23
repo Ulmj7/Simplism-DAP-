@@ -4,7 +4,7 @@ import { stepProgress } from "../progress.js";
 import { mountManagedRuntime } from "./managed-runtime.js";
 import { parseBundle } from "./protocol.js";
 import type { RunFailure } from "./protocol.js";
-import { getRuntimeJson, GUIDE_ID, parseGuideList, RUNTIME_KEY, SDK_INSTANCE } from "./runtime-delivery.js";
+import { getRuntimeJson, GUIDE_ID, parseGuideList, PREVIEW_OWNER, RUNTIME_KEY, SDK_INSTANCE } from "./runtime-delivery.js";
 
 export interface SimplismOptions {
   readonly applicationId: string;
@@ -81,6 +81,7 @@ export function createSimplism(options: SimplismOptions): RuntimeResult<Simplism
   }
   const slot = win as Window & { [SDK_INSTANCE]?: Slot };
   const config = JSON.stringify([options.applicationId, options.runtimeKey, options.apiOrigin, style?.href]);
+  if (Object.hasOwn(win, PREVIEW_OWNER)) return failure("ALREADY_INITIALIZED");
   const previous = slot[SDK_INSTANCE];
   if (previous) return previous.key === config ? success(previous.instance) : failure("ALREADY_INITIALIZED");
   if (Object.hasOwn(win, "DapEmbed")) return failure("ALREADY_INITIALIZED");
@@ -97,7 +98,7 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
   let root: HTMLElement | undefined;
   let stylesheet: HTMLLinkElement | undefined;
   let guideList: readonly Guide[] | undefined;
-  let loading: Promise<RuntimeResult<readonly Guide[]>> | undefined;
+  let loading: { controller: AbortController; result: Promise<RuntimeResult<readonly Guide[]>> } | undefined;
   let pending: AbortController | undefined;
   let mounted: Extract<ReturnType<typeof mountManagedRuntime>, { ok: true }> | undefined;
   let lastGuide: string | undefined;
@@ -119,7 +120,7 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     if (open) (panel.querySelector("li button:not(:disabled)") as HTMLElement | null ?? heading).focus();
     else trigger.focus();
   }
-  function showList(guides: readonly Guide[]) {
+  function showList(guides: readonly Guide[], focusedGuide?: string) {
     if (guides.length === 0) { contents.replaceChildren(h("p", {}, "No guides are available for this application.")); return; }
     const list = h("ul", { "aria-label": "Published guides" });
     for (const guide of guides) {
@@ -127,7 +128,10 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
       list.append(h("li", {}, h("strong", {}, guide.title), h("p", {}, guide.description), button));
     }
     contents.replaceChildren(list);
-    if (!panel.hidden && doc.activeElement === heading) list.querySelector("button")?.focus();
+    if (!panel.hidden && doc.activeElement === heading) {
+      const buttons = Array.from(list.querySelectorAll("button"));
+      (buttons.find(button => button.dataset.simplismGuide === focusedGuide) ?? buttons[0])?.focus();
+    }
   }
   function announce(code: ErrorCode) { status.textContent = messages[code]; }
   function showError(code: ErrorCode) {
@@ -135,6 +139,7 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     if (code !== "NETWORK_UNAVAILABLE") { contents.replaceChildren(message); return; }
     const retry = h("button", { type: "button", "data-simplism-retry": "" }, "Retry");
     contents.replaceChildren(message, retry);
+    if (!panel.hidden && doc.activeElement === heading) retry.focus();
   }
   function mountLauncher() {
     root = h("div", { class: "dap-launcher", "data-ai-ignore": "", "data-simplism-runtime": "" }, panel, trigger, status);
@@ -147,10 +152,10 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     doc.body.append(root);
   }
 
-  async function load(): Promise<RuntimeResult<readonly Guide[]>> {
-    contents.replaceChildren(h("p", { role: "status" }, "Loading guides…"));
-    const reply = await fetchJson(url(), lifetime.signal);
+  async function load(signal: AbortSignal, focusedGuide?: string): Promise<RuntimeResult<readonly Guide[]>> {
+    const reply = await fetchJson(url(), AbortSignal.any([lifetime.signal, signal]));
     if (lifetime.signal.aborted) return failure("RUNTIME_DESTROYED");
+    if (signal.aborted) return failure("NETWORK_UNAVAILABLE");
     if (!reply.ok) {
       const code = reply.reason === "not_found" ? "APPLICATION_UNAVAILABLE" : reply.reason === "invalid" ? "INVALID_RESPONSE" : "NETWORK_UNAVAILABLE";
       showError(code);
@@ -159,7 +164,7 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     const guides = parseGuideList(reply.body);
     if (!guides) { showError("INVALID_RESPONSE"); return failure("INVALID_RESPONSE"); }
     guideList = guides;
-    showList(guides);
+    showList(guides, focusedGuide);
     return success(guides);
   }
 
@@ -168,8 +173,18 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     if (!doc.body) return Promise.resolve(failure("INVALID_CONFIGURATION"));
     if (!root) mountLauncher();
     if (guideList) return Promise.resolve(success(guideList));
-    loading ??= load().finally(() => { loading = undefined; });
-    return loading;
+    if (loading) return loading.result;
+    const controller = new AbortController();
+    const focused = doc.activeElement;
+    const moveFocus = !panel.hidden && contents.contains(focused);
+    const focusedGuide = focused?.getAttribute("data-simplism-guide") ?? undefined;
+    contents.replaceChildren(h("p", { role: "status" }, "Loading guides…"));
+    const result = load(controller.signal, focusedGuide).finally(() => {
+      if (loading?.controller === controller) loading = undefined;
+    });
+    loading = { controller, result };
+    if (moveFocus) heading.focus();
+    return result;
   }
 
   function listGuides() {
@@ -270,14 +285,19 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
     return startGuide(lastGuide);
   }
 
+  function cancelLoad() {
+    loading?.controller.abort();
+    loading = undefined;
+  }
+
   function destroy() {
     if (lifetime.signal.aborted) return;
     lifetime.abort();
+    cancelLoad();
     stopGuide();
     run = { status: "idle" };
     root?.remove();
     stylesheet?.remove();
-    win.removeEventListener("pagehide", destroy);
     release();
   }
 
@@ -297,7 +317,15 @@ function createInstance(win: Window, { applicationId, runtimeKey, apiOrigin }: S
   panel.addEventListener("keydown", event => {
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); showPanel(false); }
   }, ownedListener);
-  win.addEventListener("pagehide", destroy, { once: true });
+  win.addEventListener("pagehide", event => {
+    if (!event.persisted) { destroy(); return; }
+    stopGuide();
+    guideList = undefined;
+    cancelLoad();
+  }, ownedListener);
+  win.addEventListener("pageshow", event => {
+    if (event.persisted && root) void listGuides();
+  }, ownedListener);
 
   return Object.freeze({ start, listGuides, openLauncher, startGuide, stopGuide, getRun: () => ({ ...run }), restartGuide, destroy });
 }
