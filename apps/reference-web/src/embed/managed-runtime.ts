@@ -84,9 +84,10 @@ export interface MountOptions {
   readonly onStatus: (status: RunStatus) => void;
   /** Called when the maintainer closes the result dialog of a finished run (standalone delivery uses it to tear the run down). */
   readonly onDismiss?: () => void;
+  readonly onUnexpectedRoute?: () => void;
 }
 
-export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = true, onStatus, onDismiss }: MountOptions) {
+export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = true, onStatus, onDismiss, onUnexpectedRoute }: MountOptions) {
   const doc = win.document;
   const root = doc.body;
   if (!root) return { ok: false, reason: "invalid_bundle" } as const;
@@ -105,7 +106,11 @@ export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = t
   catch { return { ok: false, reason: "invalid_bundle" } as const; }
   const router = history ? historyRouter(win, bundle.registry.pages) : managedRouter(win.location, bundle.registry.pages);
   const postconditions = checkPostconditions(bundle.registry.routes, checks, { root, route: () => router.current(), markerOf: id => markerOf.get(id), roleOf: id => roleOf.get(id) });
-  const targets = createTargets(root, registry);
+  const pageTargets = createTargets(root, registry);
+  const targets = onUnexpectedRoute === undefined ? pageTargets : {
+    ...pageTargets,
+    find: (id: string) => registry.get(id)?.route === router.current() ? pageTargets.find(id) : null,
+  };
   const overlay = createOverlay(doc);
   const dialog = createStatusDialog(doc, () => null);
   const presenter = createPresenter({ overlay, targets, registry, catalog, state: () => runtime.getState(),
@@ -113,8 +118,25 @@ export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = t
   const runtime = createWalkthroughRuntime({ registry, catalog, router, postconditions, presenter,
     targets: { resolve: id => targets.find(id) ? "available" : "unavailable" },
     timers: { set: (callback, ms) => { const handle = win.setTimeout(callback, ms); return () => win.clearTimeout(handle); } } });
+  const checkRoute = () => {
+    const snapshot = runtime.getState();
+    if (snapshot.status !== "WAITING" && snapshot.status !== "RESOLVING") return;
+    const step = catalog.get(bundle.definition.id)?.steps.find(item => item.id === snapshot.stepId);
+    if (step?.kind === "guide" && registry.get(step.target)?.route !== router.current()) onUnexpectedRoute?.();
+  };
+  const interactionEvents = ["click", "input", "change"] as const;
+  if (onUnexpectedRoute) for (const event of interactionEvents) root.addEventListener(event, checkRoute, true);
   const bridge = createSemanticBridge({ root, registry, targets, dispatch: runtime.dispatch, trustedEventsOnly });
-  const availability = createAvailabilityFeed({ registry, targets, dispatch: runtime.dispatch });
+  const availabilityTimers = new Set<number>();
+  const dispatchAvailability = onUnexpectedRoute === undefined ? runtime.dispatch : (event: unknown) => {
+    // Deliver DOM changes after any user interaction the bridge queued during event capture.
+    const timer = win.setTimeout(() => {
+      availabilityTimers.delete(timer);
+      runtime.dispatch(event);
+    }, 0);
+    availabilityTimers.add(timer);
+  };
+  const availability = createAvailabilityFeed({ registry, targets: pageTargets, dispatch: dispatchAvailability });
   const stopPlacement = targets.observe(() => overlay.reposition());
   let seen = historyPageOfPath(win.location.pathname);
   const routeChanged = () => {
@@ -125,7 +147,19 @@ export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = t
   };
   // History routing: popstate AND a run-scoped pathname poll (an application's own pushState raises no event). The poll only lives while the run is active.
   let poll: number | undefined;
-  const startPoll = () => { if (history && poll === undefined) poll = win.setInterval(() => { if (historyPageOfPath(win.location.pathname) !== seen) routeChanged(); }, POLL_MS); };
+  let previousRoute = router.current();
+  const startPoll = () => {
+    if ((!history && !onUnexpectedRoute) || poll !== undefined) return;
+    poll = win.setInterval(() => {
+      if (history && historyPageOfPath(win.location.pathname) !== seen) routeChanged();
+      if (onUnexpectedRoute) {
+        const nextRoute = router.current();
+        // A native link action may change the route before its queued semantic event is delivered.
+        if (nextRoute === previousRoute) checkRoute();
+        previousRoute = nextRoute;
+      }
+    }, POLL_MS);
+  };
   const stopPoll = () => { if (poll !== undefined) { win.clearInterval(poll); poll = undefined; } };
   const escape = (event: KeyboardEvent) => {
     if (event.key === "Escape" && !dialog.isOpen() && !resultKind(runtime.getState())) { event.preventDefault(); runtime.cancel(); }
@@ -154,7 +188,11 @@ export function mountManagedRuntime({ window: win, bundle, trustedEventsOnly = t
   return { ok: true, runtime, destroy() {
     runtime.cancel();
     stopPoll();
-    unsubscribe(); stopPlacement(); bridge.destroy(); availability.destroy();
+    unsubscribe();
+    if (onUnexpectedRoute) for (const event of interactionEvents) root.removeEventListener(event, checkRoute, true);
+    for (const timer of availabilityTimers) win.clearTimeout(timer);
+    availabilityTimers.clear();
+    stopPlacement(); bridge.destroy(); availability.destroy();
     win.removeEventListener("popstate", routeChanged); win.removeEventListener("hashchange", routeChanged); doc.removeEventListener("keydown", escape);
     dialog.destroy(); overlay.hide();
   } } as const;

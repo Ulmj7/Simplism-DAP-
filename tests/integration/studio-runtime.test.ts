@@ -1,6 +1,6 @@
 /**
  * Studio COMPLETION S1/S2/S7 end to end on PostgreSQL through the REAL Gateway, executors, stores and HTTP routes: routing and runtime access on enrolment, the server-made runtime key (stable
- * until rotated, never in an audit record), history registration, ROUTING_LOCKED, counts and the overview, and the key-addressed runtime delivery through the real SECURITY DEFINER lookup
+ * until rotated, never in an audit record), history registration, ROUTING_LOCKED, counts and the overview, and the key-addressed runtime delivery through the tenant-scoped lookup
  * (exact Origin, disabled/rotated/not-live refusals, cross-tenant isolation, the rate limit). NEEDS the PostgreSQL of deploy/compose.yaml; every test uses tenants of its own.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -203,13 +203,27 @@ describe("independent runtime delivery over PostgreSQL (the real tenant-scoped r
   });
   it("refuses a missing or other Origin with 403 and no CORS header; the preflight answers the allowed origin only", async () => {
     const { t, key, guide } = await live();
-    for (const origin of [null, "http://evil.example", `${ORIGIN}/`, "HTTP://127.0.0.1:5187"]) {
+    for (const origin of [null, "http://other.example", "http://127.0.0.1:5188", "https://127.0.0.1:5187", `${ORIGIN}/`, "HTTP://127.0.0.1:5187"]) {
       const res = await t.runtime(`/api/runtime/${key}/guides/${guide}`, origin);
       expect(res.status, String(origin)).toBe(403);
       for (const name of Object.keys(res.headers)) expect(name.startsWith("access-control-"), name).toBe(false);
     }
     expect((await t.runtime(`/api/runtime/${key}/guides`, ORIGIN, "OPTIONS", { "access-control-request-method": "GET" })).status).toBe(204);
     expect((await t.runtime(`/api/runtime/${key}/guides`, "http://evil.example", "OPTIONS", { "access-control-request-method": "GET" })).status).toBe(403);
+  });
+  it("binds the SDK's application identifier to the key for list and bundle reads", async () => {
+    const { t, id, key, guide } = await live();
+    const other = await t.createApplication(t.config({ name: "Other application" }));
+    for (const resource of ["guides", `guides/${guide}`]) {
+      const path = `/api/runtime/${key}/${resource}`;
+      expect((await t.runtime(`${path}?applicationId=${id}`, ORIGIN)).status).toBe(200);
+      for (const query of [other, "invalid", `${id}&applicationId=${other}`]) {
+        const result = await t.runtime(`${path}?applicationId=${query}`, ORIGIN);
+        expect(result.status).toBe(404);
+        expect(result.body).toEqual({ kind: "not_found", message: "Not found." });
+        expect(result.headers["cache-control"]).toBe("no-store");
+      }
+    }
   });
   it("a disabled application, runtime access off, a rotated key and an unknown key are the same 404; re-enabling restores the same key", async () => {
     const { t, id, key, guide } = await live();

@@ -96,5 +96,9 @@ jobs:
         run: npm run test:authoring
       - name: Reference web build
         run: npm run build:web
+      - name: Runtime SDK and delivery tests
+        run: npm run test:runtime-sdk
+      - name: Embed and packaged Runtime SDK
+        run: npm run build:embed && npm run build:sdk && npm run verify:sdk-package
       - name: M1 gate (authoritative)
         run: npm run test:m1-gate

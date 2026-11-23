@@ -41,8 +41,9 @@ const config = fileURLToPath(new URL("../packages/browser-runtime/agent-browser.
 const embedScriptPath = fileURLToPath(new URL("../apps/reference-web/dist-embed/dap-embed.js", import.meta.url));
 const managed = process.argv.includes("--managed");
 const completion = process.argv.includes("--completion");
-const v1bPorts = completion || managed || process.argv.includes("--v1b-ports");
-const ports = completion ? [8795, 5186, 5187, 5188, 5189] : v1bPorts ? [8795, 5186, 5187] : [8794, 5184, 5185];
+const sdk = process.argv.includes("--runtime-sdk");
+const v1bPorts = completion || sdk || managed || process.argv.includes("--v1b-ports");
+const ports = sdk ? [8795, 5186, 5187, 5188] : completion ? [8795, 5186, 5187, 5188, 5189] : v1bPorts ? [8795, 5186, 5187] : [8794, 5184, 5185];
 export const hostOrigin = `http://127.0.0.1:${ports[0]}`;
 export const originA = `http://127.0.0.1:${ports[1]}`;
 export const standaloneOrigin = completion ? "http://127.0.0.1:5189" : undefined;
@@ -186,7 +187,7 @@ async function startHost() {
   const requestStartedAt = new WeakMap();
   app.addHook("onRequest", async (request) => { requestStartedAt.set(request, performance.now()); });
   app.addHook("onSend", async (request, reply, payload) => {
-    const captureResponse = request.url === "/api/studio/browser" || (completion
+    const captureResponse = request.url === "/api/studio/browser" || ((completion || sdk)
       && ["/api/admin/walkthroughs/", "/api/runtime/"].some(prefix => request.url.startsWith(prefix)));
     const response = captureResponse && typeof payload === "string" ? JSON.parse(payload) : undefined;
     requests.push({ method: request.method, path: request.url, role: request.headers["x-demo-role"],
@@ -196,7 +197,7 @@ async function startHost() {
   });
   registerAuthoringRoutes(app, { store, applications, catalog, targets, resolver, resolvePrincipal });
   registerApplicationRoutes(app, { applications, catalog, targets, resolver, resolvePrincipal });
-  if (completion) registerRuntimeRoutes(app, { applications, store, catalog, targets, resolver });
+  if (completion || sdk) registerRuntimeRoutes(app, { applications, store, catalog, targets, resolver });
   const execute = localCli(cli);
   registerStudioBrowser(app, {
     resolvePrincipal, applications, catalog, authoring: store, targets, resolver,
@@ -241,7 +242,7 @@ export async function browserCommand(session, ...args) {
   return cliJson(["--session", session, ...args]);
 }
 export async function launchOperator(url = originA + "/") {
-  assert.ok(url === originA + "/" || (completion && standaloneFixture && url === standaloneFixture.origin + "/"),
+  assert.ok((sdk && [originB + "/", `http://127.0.0.1:${ports[3]}/`].includes(url)) || url === originA + "/" || (completion && standaloneFixture && url === standaloneFixture.origin + "/"),
     "Launch only on an isolated acceptance fixture");
   const session = `studio-ui-${randomUUID()}`;
   assert.ok(!baseline.has(session), "Operator must have a fresh session");
@@ -261,9 +262,10 @@ async function finalManagedStep(name, operation) {
 export async function runStudioAcceptance(acceptance) {
   let failure;
   try {
-    await step(completion ? "0 start isolated host, Vite and fixtures B/C" : "0 start isolated host, Vite and fixture B", async () => {
+    await step(sdk ? "0 start isolated Runtime API" : completion ? "0 start isolated host, Vite and fixtures B/C" : "0 start isolated host, Vite and fixture B", async () => {
       for (const port of ports) assert.equal(await portOpen(port), false, `Port ${port} is already in use`);
       await startHost();
+      if (sdk) return `Chromium ${useHeaded ? "headed" : "headless"}`;
       fixture = await startFixtureApp({ port: ports[2], name: "Second application", ...((managed || completion) ? {
         embedScriptPath, dapOrigin: originA, extras: true,
       } : {}) });

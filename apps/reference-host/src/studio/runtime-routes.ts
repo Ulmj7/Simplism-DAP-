@@ -23,7 +23,7 @@ import type { WalkthroughStore } from "../authoring/store.js";
 import { MAX_PUBLISHED_PER_TENANT } from "../authoring/store.js";
 import { validateAuthoredDefinition } from "../authoring/validate.js";
 import type { ApplicationStore } from "./application-store.js";
-import { isRuntimeKey, tenantOfRuntimeKey } from "./applications.js";
+import { isApplicationId, isRuntimeKey, tenantOfRuntimeKey } from "./applications.js";
 import type { ApplicationRecord } from "./applications.js";
 import { buildGuideBundle } from "./guide-bundle.js";
 import { createRegistryResolver } from "./registry-resolver.js";
@@ -82,7 +82,7 @@ export function registerRuntimeRoutes(app: FastifyInstance, deps: RuntimeRouteDe
   const limits = deps.rateLimit ?? RUNTIME_RATE_LIMIT;
 
   const fail = (reply: FastifyReply, status: 403 | 404 | 429 | 503, message: string, kind: string, origin?: string): FastifyReply => {
-    reply.header("vary", "Origin");
+    reply.header("vary", "Origin").header("cache-control", "no-store");
     if (origin !== undefined) reply.header("access-control-allow-origin", origin);
     if (status === 429) reply.header("retry-after", String(Math.ceil(limits.windowMs / 1000)));
     return reply.code(status).type("application/json; charset=utf-8").send({ kind, message });
@@ -107,6 +107,9 @@ export function registerRuntimeRoutes(app: FastifyInstance, deps: RuntimeRouteDe
     if (application === null || !application.enabled || !application.runtimeAccess || application.runtimeKey !== key || application.registryId !== "studio-managed") { notFound(reply); return null; }
     const origin = request.headers.origin;
     if (typeof origin !== "string" || !application.allowedOrigins.includes(origin)) { fail(reply, 403, RUNTIME_MESSAGES.forbidden, "forbidden"); return null; }
+    // SDK requests bind the public key to the configured application. Legacy embed calls omit this query.
+    const expected = (request.query as { applicationId?: unknown } | undefined)?.applicationId;
+    if (expected !== undefined && (!isApplicationId(expected) || expected !== application.id)) { notFound(reply, origin); return null; }
     return { application, tenantId, origin };
   }
 
