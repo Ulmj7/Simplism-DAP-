@@ -140,7 +140,7 @@ export function registerRuntimeRoutes(app: FastifyInstance, deps: RuntimeRouteDe
     try {
       const guide = (await liveGuides(auth.tenantId, auth.application)).find((candidate) => candidate.definition.id === id);
       if (guide === undefined) return notFound(reply, auth.origin);
-      return ok(reply, auth.origin, buildGuideBundle({ definition: guide.definition, application: auth.application, resolved: guide.resolved, version: guide.version }));
+      return ok(reply, auth.origin, buildGuideBundle({ definition: guide.definition, application: auth.application, resolved: guide.resolved, version: guide.version, playbackOrigin: auth.origin }));
     } catch { return fail(reply, 503, RUNTIME_MESSAGES.unavailable, "unavailable", auth.origin); }
   });
 

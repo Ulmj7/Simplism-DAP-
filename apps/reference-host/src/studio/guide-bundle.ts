@@ -8,6 +8,7 @@
  *
  * `marker` is the `data-ai-id` the embed resolves in the page (equal to the target id until a repair re-records the target: the DAP id never changes, the marker does),
  * `checks` is the list of ACTIVE verification checks, each in the closed shape of its kind (see registry-checks.ts; empty for a built-in registry) and `postconditionNames` is exactly the `route.*` names plus the names of those checks, `routing` is the application's `hash` | `history`, and `pages` maps a page (a `/#/...` hash page or a pathname) to its route.
+ * The bundle origin is the primary application origin for a Studio launch, or the exact authorized playback origin for standalone delivery.
  * `version` is the live version of the guide. Public elements only; nothing of the tenant or of another application is ever in it.
  */
 import type { ValidationResult } from "../authoring/validate.js";
@@ -36,12 +37,12 @@ export interface GuideBundle {
   readonly version: number;
 }
 
-export function buildGuideBundle(input: { readonly definition: ValidDefinition; readonly application: ApplicationRecord; readonly resolved: ResolvedRegistry; readonly version?: number }): GuideBundle {
+export function buildGuideBundle(input: { readonly definition: ValidDefinition; readonly application: ApplicationRecord; readonly resolved: ResolvedRegistry; readonly version?: number; readonly playbackOrigin?: string }): GuideBundle {
   const { definition, application, resolved } = input;
   const { registry, pages } = resolved;
   return {
     definition,
-    application: { id: application.id, name: application.name, origin: application.origin },
+    application: { id: application.id, name: application.name, origin: input.playbackOrigin ?? application.origin },
     registry: {
       routes: registry.routes,
       elements: registry.elements.filter((element) => element.privacy === "public").map((element) => ({

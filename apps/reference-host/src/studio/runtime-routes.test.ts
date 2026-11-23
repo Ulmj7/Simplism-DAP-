@@ -148,6 +148,13 @@ describe("the guide bundle", () => {
     const res = await h.call(`/api/runtime/${await h.key(TENANT_A, APP_H)}/guides/${GUIDE_H}`, { origin: "http://127.0.0.1:5189" });
     expect(res.body.registry).toMatchObject({ routing: "history", pages: { "/users/123": "users123" }, routes: ["users123"] });
   });
+  it("binds the runtime bundle to the allowed origin requesting playback", async () => {
+    const h = await build();
+    const res = await h.call(`/api/runtime/${await h.key(TENANT_A, APP_A)}/guides/${GUIDE_A}`, { origin: ORIGIN_2 });
+    expect(res.status).toBe(200);
+    expect(res.headers["access-control-allow-origin"]).toBe(ORIGIN_2);
+    expect(res.body.application).toEqual({ id: APP_A, name: "Orders", origin: ORIGIN_2 });
+  });
   it("is byte-for-byte the maintainer bundle builder's output (one shared builder)", async () => {
     const { buildGuideBundle } = await import("./guide-bundle.js");
     const h = await build();
