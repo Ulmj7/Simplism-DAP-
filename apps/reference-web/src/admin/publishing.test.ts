@@ -18,7 +18,7 @@ const summary = {
 };
 const diagnostic = { code: "TARGET_BROKEN", message: "Check this target", stepIndex: 0, targetId: "profile.name" };
 const review = { ok: true, revision: 5, blockers: [], warnings: [diagnostic], summary };
-const version = { version: 1, publishedAt: "2026-11-20T00:00:00.000Z", publishedBy: "Maintainer", stepCount: 1, live: true };
+const version = { version: 1, publishedAt: "2026-11-20T00:00:00.000Z", publishedBy: "Maintainer", stepCount: 2, live: true };
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
 
 it("accepts review warnings on a publishable workflow and blockers on a non-publishable workflow", () => {
@@ -72,11 +72,13 @@ it("uses the exact version and review API, and keeps the returned revision and p
 it("rejects version details for a different workflow or wrong version and a publish reply without a version", async () => {
   const fetch = vi.fn().mockResolvedValueOnce(response({ ...version, definition: { ...definition, id: "wt-000000000002" } }))
     .mockResolvedValueOnce(response({ ...version, version: 2, definition }))
+    .mockResolvedValueOnce(response({ ...version, stepCount: 1, definition }))
     .mockResolvedValueOnce(response({ id, status: "published", applicationId: app, definition, revision: 2, liveVersion: 1, latestVersion: 1 }));
   const client = createAdminClient({ fetch });
   expect(await client.version(id, 0)).toEqual({ kind: "failed" });
   expect(await client.restore("../foreign", 1)).toEqual({ kind: "failed" });
   expect(fetch).not.toHaveBeenCalled();
+  expect(await client.version(id, 1)).toEqual({ kind: "failed" });
   expect(await client.version(id, 1)).toEqual({ kind: "failed" });
   expect(await client.version(id, 1)).toEqual({ kind: "failed" });
   expect(await client.setStatus(id, "published", 5)).toEqual({ kind: "failed" });

@@ -51,7 +51,7 @@ export function openPublishReview({ page, trigger, client, id, signal, applicati
     const result = await client.review(id);
     if (signal.aborted || !dialog.isConnected) return;
     status.textContent = "";
-    if (result.kind !== "ok" || (applicationId != null && result.value.summary.application.id !== applicationId)) {
+    if (result.kind !== "ok" || (result.value.ok && applicationId != null && result.value.summary.application.id !== applicationId)) {
       alert.textContent = result.kind === "ok" ? "The review belongs to a different application." : `Could not review this workflow. ${readError(result)}`;
       retry.hidden = false;
       return;

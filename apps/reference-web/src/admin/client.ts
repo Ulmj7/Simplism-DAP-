@@ -260,7 +260,7 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
       if (!object(value)) return null;
       const { definition: snapshot, ...metadata } = value;
       const parsed = parseVersion(metadata);
-      return parsed?.version === wanted && definition(snapshot) && snapshot.id === id && snapshot.steps.filter(step => step.kind === "guide").length === parsed.stepCount
+      return parsed?.version === wanted && definition(snapshot) && snapshot.id === id && snapshot.steps.length === parsed.stepCount
         ? { ...parsed, definition: snapshot } : null;
     }) : Promise.resolve(FAILED),
     revise: id => authoredId(id) ? request(`${ADMIN}/${id}/revise`, value => {

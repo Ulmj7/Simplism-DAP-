@@ -79,7 +79,7 @@ function fakeHost(seed: GuideRecord[] = []) {
     const history = versions.get(id) ?? [];
     if (action === "versions" && method === "GET") {
       const wanted = path.split("/")[6];
-      if (!wanted) return json({ versions: history.map(({ definition: snapshot, ...item }) => ({ ...item, live: item.version === stored.liveVersion, stepCount: snapshot.steps.filter(step => step.kind === "guide").length })) });
+      if (!wanted) return json({ versions: history.map(({ definition: snapshot, ...item }) => ({ ...item, live: item.version === stored.liveVersion, stepCount: snapshot.steps.length })) });
       const item = history.find(item => String(item.version) === wanted);
       return item ? json({ ...item, live: item.version === stored.liveVersion }) : json({}, 404);
     }
@@ -108,7 +108,7 @@ function fakeHost(seed: GuideRecord[] = []) {
       version = status === "published" ? (stored.latestVersion ?? 0) + 1 : undefined;
       if (version !== undefined) {
         versions.set(id, [...history, { version, definition: structuredClone(stored.definition), publishedAt: "2026-11-20T00:00:00.000Z",
-          publishedBy: "Demo maintainer", stepCount: stored.definition.steps.filter(step => step.kind === "guide").length, live: true }]);
+          publishedBy: "Demo maintainer", stepCount: stored.definition.steps.length, live: true }]);
       }
       result = { ...result, status, revision: (stored.revision ?? 1) + 1, liveVersion: version ?? null, latestVersion: version ?? stored.latestVersion ?? 0 };
     }
