@@ -117,6 +117,11 @@ describe("classifyManaged: what is listed and in which state", () => {
     "a secret-looking accessible name (%s) is hidden", (name) => {
       expect(only({ name, role: "textbox", id: "orders.thing" })).toEqual({ elements: [], hidden: 1, truncated: false });
     });
+  it.each(["", " ", "   ", "\t\n", "\u200b", "\u00a0\u200b\u2060", "\u3000"])("a blank accessible name (%j) is hidden, whatever the marker and the facts (defence in depth)", (name) => {
+    expect(only({ name, role: "button", id: "orders.thing" })).toEqual({ elements: [], hidden: 1, truncated: false });
+    const reg = registry({ targets: [target("orders.thing", "orders", "button")] });
+    expect(classifyManaged(input([{ name, role: "button", id: "orders.thing" }], undefined, reg))).toEqual({ elements: [], hidden: 1, truncated: false });
+  });
   it("a page that is not hash-routed is not registrable: other pathname, a query string, or an invalid URL", () => {
     for (const url of [`${ORIGIN}/orders`, `${ORIGIN}/?q=1#/orders`, "not a url"]) expect(only({ name: "Export", role: "button", id: "orders.exportButton" }, url), url).toEqual({ elements: [], hidden: 1, truncated: false });
   });

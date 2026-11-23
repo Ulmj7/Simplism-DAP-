@@ -78,6 +78,7 @@ export function suggestLabel(name: string, targetId: string): string {
   return cleaned !== "" ? cleaned : (targetId.split(".").at(-1) ?? "Target");
 }
 
+const isBlankName = (name: string): boolean => /^[\s\p{Z}\p{Cf}\p{Cc}]*$/u.test(name);
 const inBounds = (name: string, role: string): boolean => name.length <= MAX_NAME_CHARS && role.length <= MAX_ROLE_CHARS;
 
 /** The refs whose facts are worth reading: inspected controls with a registrable role and a valid marker. At most 64, document order. */
@@ -102,6 +103,7 @@ export interface ManagedInput {
 /** The decision for ONE control (also used to re-verify a registration against fresh facts): a candidate, or `null` for hidden. */
 export function classifyControl(input: ManagedInput, element: BrowserSnapshot["elements"][number]): ManagedCandidate | null {
   if (!REF_PATTERN.test(element.ref) || !inBounds(element.name, element.role)) return null;
+  if (isBlankName(element.name)) return null; // the adapter drops these already; never list or register a control without a visible name
   const targetRole = snapshotRoleToTargetRole(element.role);
   const marker = input.ids.get(element.ref);
   if (targetRole === null || !isTargetId(marker)) return null;
