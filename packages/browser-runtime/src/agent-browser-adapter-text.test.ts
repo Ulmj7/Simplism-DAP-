@@ -26,7 +26,6 @@ function harness(world: World, options: Partial<AgentBrowserAdapterOptions> = {}
   };
   const run = vi.fn<(args: readonly string[], timeout: number) => Promise<string>>(async args => {
     calls.push([...args]);
-    const at = (name: string) => args.indexOf(name);
     if (args.includes("snapshot")) {
       const refs = Object.fromEntries(world.controls.map(item => [item.key, { role: item.role, name: item.name }]));
       return reply({ origin: world.url, refs, snapshot: world.controls.map(item => `- ${item.role} "${item.name}" [ref=${item.key}]`).join("\n") || '- text "x" [ref=e999]' });
@@ -57,7 +56,6 @@ function harness(world: World, options: Partial<AgentBrowserAdapterOptions> = {}
     }
     if (args.includes("highlight")) return reply({ highlighted: args.at(-1) });
     if (args.includes("get") && args.includes("url")) return reply({ url: world.url });
-    void at;
     return reply({});
   });
   const runtime = createAgentBrowserAdapter({ labels: "all", routes: "any", routing: "history", origins: [origin], ...options }, run);
@@ -109,7 +107,7 @@ describe("status and alert regions with a marker", () => {
   it.each([
     ["no marker", { marker: null, text: "Saved" }], ["an invalid marker", { marker: "not a marker", text: "Saved" }], ["a hidden region", { marker: "a.b", text: "Saved", visible: false }],
     ["an empty region", { marker: "a.b", text: "   " }], ["a 121 character text", { marker: "a.b", text: "t".repeat(121) }], ["a control character", { marker: "a.b", text: "bad\u0000text" }],
-    ["a bidi override", { marker: "a.b", text: "bidi‮override" }], ["a vanished region", { marker: "a.b", text: "Saved", gone: true }],
+    ["a bidi override", { marker: "a.b", text: "bidi\u202eoverride" }], ["a vanished region", { marker: "a.b", text: "Saved", gone: true }],
   ])("drops %s", async (_label, region) => {
     const world = base(); world.statuses = [region as Region];
     expect((await started(world)).snapshot.elements.filter(element => element.role === "status")).toEqual([]);
@@ -163,7 +161,7 @@ describe("the synthetic ref works for ids, facts and highlight within its observ
     expect(sent.some(call => call.includes("enabled"))).toBe(false);
   });
   it("a changed text, a vanished region or a new region is drift: the old refs are refused", async () => {
-    for (const change of [(world: World) => { world.statuses[0]!.text = "Saved again"; }, (world: World) => { world.statuses[0]!.gone = true; }, (world: World) => { world.alerts.push({ marker: "a.alert", text: "Boom" }); }]) {
+    for (const change of [(world: World) => { world.statuses[0]!.text = "Saved again"; }, (world: World) => { world.statuses[0]!.gone = true; }, (world: World) => { world.statuses[0]!.marker = "profile.differentStatus"; }, (world: World) => { world.alerts.push({ marker: "a.alert", text: "Boom" }); }]) {
       const world = base();
       const { runtime, snapshot } = await started(world);
       change(world);
@@ -191,6 +189,16 @@ describe("the origin policy holds for every read", () => {
     const error = await h.runtime.snapshot().catch((thrown: unknown) => thrown as Error);
     expect(error).toMatchObject({ code: "DOMAIN_BLOCKED" });
     expect(JSON.stringify(error)).not.toContain("secret-canary");
+  });
+  it.each(["visible", "text"])("refuses a %s reply outside the enrolled origin", async operation => {
+    const world = base();
+    const h = harness(world);
+    await h.runtime.start({ url: world.url });
+    const original = h.run.getMockImplementation()!;
+    h.run.mockImplementation(async (args, timeout) => args.includes(operation)
+      ? reply({ origin: "http://127.0.0.1:5189/profile", visible: true, text: "Other fixture" })
+      : original(args, timeout));
+    await expect(h.runtime.snapshot()).rejects.toMatchObject({ code: "DOMAIN_BLOCKED" });
   });
   it("an unusable count reply is INVALID_BROWSER_OUTPUT", async () => {
     const world = base();

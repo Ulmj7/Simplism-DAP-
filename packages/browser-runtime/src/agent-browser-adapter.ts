@@ -106,7 +106,7 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
   let busy = false;
   // The origin the session was opened on; a trusted observation is only read there.
   let home = "";
-  let latest: { snapshot: BrowserSnapshot; revision: string; selectors: ReadonlyMap<ElementRef, string> } | undefined;
+  let latest: { snapshot: BrowserSnapshot; revision: string; selectors: ReadonlyMap<ElementRef, { selector: string; marker: string }> } | undefined;
   let highlightUntil = 0;
 
   const command = (args: readonly string[], failure: BrowserRuntimeErrorCode, timeout = commandTimeout) =>
@@ -154,7 +154,7 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
     const data = await command(["snapshot", "-i"], "SNAPSHOT_FAILED", budget());
     const url = approvedUrl(data.origin);
     const controls = normalizeSnapshot(data, labels);
-    const selectors = new Map<ElementRef, string>();
+    const selectors = new Map<ElementRef, { selector: string; marker: string }>();
     const elements = labels === "all" ? [...controls, ...await textElements(url, selectors, controls.length, budget)] : controls;
     let observation: string | undefined;
     if (trusted && url === home + trusted.route) {
@@ -164,20 +164,24 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
     }
     // Raw browser output stays local and is discarded. The digest is only for
     // equality, so typing can trigger a rescan without publishing form values.
-    const revision = createHash("sha256").update(JSON.stringify([url, data.snapshot, elements, observation])).digest("hex");
+    const revision = createHash("sha256").update(JSON.stringify([url, data.snapshot, elements, [...selectors], observation])).digest("hex");
     return { snapshot: Object.freeze({ url, elements: Object.freeze(elements), ...(observation === undefined ? {} : { observation }) }), revision, selectors };
   }
 
   // The marker-carrying status and alert regions of the page, in document order per kind (status first), with their synthetic refs.
-  async function textElements(url: string, selectors: Map<ElementRef, string>, taken: number, budget: () => number): Promise<BrowserElement[]> {
+  async function textElements(url: string, selectors: Map<ElementRef, { selector: string; marker: string }>, taken: number, budget: () => number): Promise<BrowserElement[]> {
     const found: BrowserElement[] = [];
     for (const { role, xpath } of textKinds) {
       const counted = await command(["get", "count", `xpath=${xpath}`], "SNAPSHOT_FAILED", budget());
       if (typeof counted.count !== "number" || !Number.isInteger(counted.count) || counted.count < 0 || counted.count > 100_000) throw new BrowserRuntimeError("INVALID_BROWSER_OUTPUT");
-      for (let index = 1; index <= counted.count && found.length < maxTextElements && taken + found.length < MAX_ALL_ELEMENTS; index += 1) {
+      for (let index = 1; index <= Math.min(counted.count, maxTextElements) && found.length < maxTextElements && taken + found.length < MAX_ALL_ELEMENTS; index += 1) {
         const selector = `xpath=(${xpath})[${index}]`;
         const read = async (args: readonly string[]): Promise<Record<string, unknown> | undefined> => {
-          try { return await command(args, "REF_NOT_FOUND", budget()); }
+          try {
+            const reply = await command(args, "REF_NOT_FOUND", budget());
+            if (approvedUrl(reply.origin) !== url) throw new BrowserRuntimeError("SNAPSHOT_FAILED");
+            return reply;
+          }
           catch (error) {
             // One region that vanished (or answered unusably) is only unknown; a timeout means the browser is unusable.
             if (!(error instanceof BrowserRuntimeError) || (error.code !== "REF_NOT_FOUND" && error.code !== "INVALID_BROWSER_OUTPUT")) throw error;
@@ -186,15 +190,15 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
         };
         const marker = await read(["get", "attr", selector, "data-ai-id"]);
         if (marker === undefined) continue;
-        if (approvedUrl(marker.origin) !== url) throw new BrowserRuntimeError("SNAPSHOT_FAILED");
-        if (semanticId(marker.value) === null) continue;
+        const id = semanticId(marker.value);
+        if (id === null) continue;
         const visible = await read(["is", "visible", selector]);
         if (visible?.visible !== true) continue;
         const reply = await read(["get", "text", selector]);
         const name = typeof reply?.text === "string" ? usableName(reply.text) : null;
         if (name === null) continue;
         const ref = `@e${textRefBase + found.length}` as ElementRef;
-        selectors.set(ref, selector);
+        selectors.set(ref, { selector, marker: id });
         found.push(Object.freeze({ ref, role, name }));
       }
     }
@@ -202,7 +206,7 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
   }
 
   // The command target of a ref of one observation: the CLI ref itself, or the selector of a status or alert region.
-  const targetOf = (ref: ElementRef, from: { readonly selectors: ReadonlyMap<ElementRef, string> }): string => from.selectors.get(ref) ?? ref;
+  const targetOf = (ref: ElementRef, from: { readonly selectors: ReadonlyMap<ElementRef, { selector: string; marker: string }> }): string => from.selectors.get(ref)?.selector ?? ref;
 
   // One fresh observation compared with the one `from` was taken from: refs are only valid while
   // the page is unchanged, so any drift invalidates them all.

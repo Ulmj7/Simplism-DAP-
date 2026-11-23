@@ -335,23 +335,20 @@ try {
     const reloaded = served() !== requestsBefore;
     // Status regions (SC-W3): no ref exists for them in the pinned CLI, so the adapter reads the marker-carrying ones by constant XPath queries. Empty until Save, listed after it, readable like any ref, drift after.
     await cliJson(handle.session, ["open", `${c.origin}/profile`]);
-    await sleep(300);
-    let t0;
     const beforeSave = await handle.adapter.snapshot();
     assert.equal((await cliJson(handle.session, ["click", '[data-ai-id="profile.save"]'])).success, true);
-    await sleep(300);
+    const drift = await handle.adapter.inspectSemanticIds(beforeSave).then(() => "accepted", error => error.code);
     const afterSave = await handle.adapter.snapshot();
     const savedStatus = afterSave.elements.find(element => element.role === "status");
     const savedIds = await handle.adapter.inspectSemanticIds(afterSave);
     const savedFacts = savedStatus ? await handle.adapter.inspectElementFacts([savedStatus.ref], afterSave) : new Map();
     let highlighted = false;
     try { await handle.adapter.highlight(savedStatus.ref, afterSave); highlighted = true; } catch { highlighted = false; }
-    const drift = await handle.adapter.inspectSemanticIds(beforeSave).then(() => "accepted", error => error.code);
     const statusOk = !beforeSave.elements.some(element => element.role === "status") && savedStatus?.name === "Saved" && /^@e9\d{8}$/u.test(savedStatus.ref) && savedIds.get(savedStatus.ref) === "profile.savedStatus"
       && savedFacts.get(savedStatus?.ref)?.dataAiPrivate === false && highlighted && drift === "REF_NOT_FOUND";
-    t0 = performance.now();
+    const snapshotStarted = performance.now();
     await handle.adapter.snapshot();
-    latency.snapshotWithStatusMs = ms(t0);
+    latency.snapshotWithStatusMs = ms(snapshotStarted);
     // A trailing slash and a query are not part of the page; a double slash is refused; the other port and host are refused.
     const outcomes = {};
     for (const [label, path] of [["trailing", "/profile/?a=1#b"], ["double", "//evil"], ["unicode", "/%C3%A9"], ["deep", "/users/123?x=y"]]) {
