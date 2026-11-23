@@ -14,7 +14,9 @@
 //   (vi)  every browser session this probe opened is closed and every process it started is gone
 //   (vii) Studio V1B managed modes (`labels: "all"`, `routes: "any"`): the controls of the page are exposed with bounded names only, element facts are
 //         read, any hash-routed page is accepted, and the origin policy holds exactly as before (a query, another port and another host stay refused)
-// Ports: ephemeral by default; set DAP_PROBE_PORT_A and DAP_PROBE_PORT_B to pin the two fixture applications (the V1B reviewer uses 5186 and 5187).
+// (viii) Studio completion S1: history routing (`routing: "history"`, only when DAP_PROBE_PORT_C is set): query and fragment of the observed URL are ignored and never returned, a trailing slash
+//   is removed, SPA navigation by pushState is observed as a page change, `//x` is refused, and the exact origin is still enforced.
+// Ports: ephemeral by default; set DAP_PROBE_PORT_A and DAP_PROBE_PORT_B to pin the two fixture applications (the V1B reviewer uses 5186 and 5187); DAP_PROBE_PORT_C pins the history-routed fixture C and turns on (viii).
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -26,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { BrowserRuntimeError, createAgentBrowserAdapter } from "../packages/browser-runtime/dist/index.js";
 import { fixtureB } from "../tests/fixtures/studio-app/registry.mjs";
+import { startHistoryApp } from "../tests/fixtures/studio-app/history-app.mjs";
 import { startFixtureApp } from "../tests/fixtures/studio-app/server.mjs";
 
 const run = promisify(execFile);
@@ -46,7 +49,8 @@ const labels = fixtureB.browser.labels.map(label => ({ ...label }));
 const blockedMessage = "The browser URL is outside the approved app origin.";
 const results = [];
 const latency = {};
-const expectedChecks = 8;
+// (viii) History routing runs only when fixture C has a pinned port (DAP_PROBE_PORT_C), so the default invocation keeps its eight checks.
+const expectedChecks = process.env.DAP_PROBE_PORT_C === undefined ? 8 : 9;
 const port = name => { const value = Number(process.env[`DAP_PROBE_PORT_${name}`] ?? 0); assert.ok(Number.isInteger(value) && value >= 0 && value <= 65_535, `DAP_PROBE_PORT_${name}`); return value; };
 const say = message => console.log(message);
 const record = (id, ok, detail) => { results.push({ id, ok, detail }); say(`${ok ? "PASS" : "FAIL"} ${id} ${detail}`); };
@@ -307,6 +311,43 @@ try {
     record("(vii) managed modes (all + any)", ok,
       `home ${JSON.stringify(homeNames)}; facts for ${refs.length} refs in ${latency.factsMs} ms (Order note: ${JSON.stringify(byName["Order note"])}); /#/anywhere-at-all: ${anywhere}; query: ${withQuery}; `
       + `redirect to B's origin refused: ${otherPort}`);
+    await handle.adapter.close();
+  }
+
+  // (viii) Studio completion S1: history routing ---------------------------------------------------------------
+  if (process.env.DAP_PROBE_PORT_C !== undefined) {
+    const c = await startHistoryApp({ name: "C", port: port("C") });
+    servers.push(c);
+    const handle = await trackedAdapter([c.origin], { labels: "all", routes: "any", routing: "history" });
+    latency.historyStartMs = await begin(handle, `${c.origin}/profile?variant=moved&token=canary-secret#frag-secret`);
+    const deep = await handle.adapter.snapshot();
+    const names = deep.elements.map(element => `${element.role}:${element.name}`);
+    const seen = [deep.url, await handle.adapter.getUrl()];
+    // SPA navigation: a click on a link pushes a new pathname without a reload.
+    const served = () => c.requestPaths().filter(path => path !== "/favicon.ico").length;
+    const requestsBefore = served();
+    assert.equal((await cliJson(handle.session, ["click", '[data-ai-id="nav.settings"]'])).success, true);
+    await sleep(300);
+    const settings = await handle.adapter.snapshot();
+    seen.push(settings.url);
+    const reloaded = served() !== requestsBefore;
+    // A trailing slash and a query are not part of the page; a double slash is refused; the other port and host are refused.
+    const outcomes = {};
+    for (const [label, path] of [["trailing", "/profile/?a=1#b"], ["double", "//evil"], ["unicode", "/%C3%A9"], ["deep", "/users/123?x=y"]]) {
+      await cliJson(handle.session, ["open", `${c.origin}${path}`]);
+      await sleep(300);
+      outcomes[label] = await handle.adapter.snapshot().then(snapshot => snapshot.url.slice(c.origin.length), error => error.code);
+      seen.push(outcomes[label]);
+    }
+    // The other spelling of the host: refused by the CLI allow-list (host level) and, if a redirect ever got there, by the adapter (exact origin); the page never moves.
+    const cliRefused = (await cliJson(handle.session, ["open", `http://localhost:${c.port}/profile`])).success === false;
+    await sleep(300);
+    const otherHost = await handle.adapter.snapshot().then(snapshot => (snapshot.url.endsWith("/users/123") ? "stayed" : "moved"), error => error.code);
+    const leaked = /canary-secret|frag-secret|variant|token/u.test(JSON.stringify([seen, names]));
+    const ok = deep.url === `${c.origin}/profile` && names.includes("textbox:Display name") && names.includes("button:Save") && settings.url === `${c.origin}/settings` && !reloaded
+      && outcomes.trailing === "/profile" && outcomes.double === "DOMAIN_BLOCKED" && outcomes.unicode === "DOMAIN_BLOCKED" && outcomes.deep === "/users/123" && cliRefused && otherHost === "stayed" && !leaked;
+    record("(viii) history routing", ok,
+      `deep link with query+fragment -> ${deep.url.slice(c.origin.length)}; SPA click -> ${settings.url.slice(c.origin.length)} (reloaded: ${reloaded}); ${JSON.stringify(outcomes)}; localhost spelling refused by the CLI: ${cliRefused} (page ${otherHost}); query/fragment ever returned: ${leaked}`);
     await handle.adapter.close();
   }
 
