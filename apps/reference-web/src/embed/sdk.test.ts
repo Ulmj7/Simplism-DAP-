@@ -5,6 +5,7 @@ import type { ManagedBundle } from "./protocol.js";
 
 const config = { applicationId: "app-000000000001", runtimeKey: "rk-test-runtime", apiOrigin: "https://runtime.example", stylesheetUrl: "/assets/simplism.css" };
 const listed = { id: "wt-000000000001", title: "Update profile", description: "Save the profile." };
+const secondGuide = { id: "wt-000000000002", title: "Update display name", description: "Save the new display name." };
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 const bundle = (): ManagedBundle => ({
   application: { id: config.applicationId, name: "Customer portal", origin: window.location.origin },
@@ -66,7 +67,20 @@ describe("public Simplism SDK lifecycle", () => {
     expect(document.querySelector("link")).toBe(existing);
     expect(unrelated.isConnected).toBe(true);
     await expect(runtime.start()).resolves.toEqual({ ok: false, code: "RUNTIME_DESTROYED" });
-    expect(createSimplism(config)).toMatchObject({ ok: true });
+    const replacement = createSimplism(config);
+    expect(replacement).toMatchObject({ ok: true });
+    if (!replacement.ok) throw new Error(replacement.code);
+    expect(replacement.value).not.toBe(runtime);
+    await expect(replacement.value.start()).resolves.toEqual({ ok: true, value: [listed] });
+  });
+
+  it("removes its own stylesheet on destroy", async () => {
+    const runtime = init(fetchMock());
+    await runtime.start();
+    const stylesheet = document.querySelector<HTMLLinkElement>('link[rel="stylesheet"]');
+    expect(stylesheet?.href).toBe(new URL(config.stylesheetUrl, window.location.href).href);
+    runtime.destroy();
+    expect(stylesheet?.isConnected).toBe(false);
   });
 
   it("announces loading before empty and restores focus when dismissed with Escape", async () => {
@@ -120,6 +134,31 @@ describe("public Simplism SDK lifecycle", () => {
     expect(target.isConnected).toBe(true);
   });
 
+  it.each(["API", "launcher"])("starts the second published guide from the %s", async (entry) => {
+    const target = document.createElement("button");
+    target.dataset.aiId = "profile.saveNow";
+    document.body.append(target);
+    const first = bundle();
+    const second = { ...first, definition: { ...first.definition, ...secondGuide } };
+    const fetcher = vi.fn<typeof fetch>(async url => {
+      if (String(url).includes(`/guides/${listed.id}?`)) return response(first);
+      if (String(url).includes(`/guides/${secondGuide.id}?`)) return response(second);
+      return response({ guides: [listed, secondGuide] });
+    });
+    const runtime = init(fetcher);
+    if (entry === "API") {
+      await expect(runtime.startGuide(secondGuide.id)).resolves.toEqual({ ok: true, value: undefined });
+    } else {
+      await expect(runtime.openLauncher()).resolves.toEqual({ ok: true, value: undefined });
+      const choice = panel()?.querySelector<HTMLButtonElement>(`[data-simplism-guide="${secondGuide.id}"]`);
+      expect(choice?.getAttribute("aria-label")).toBe(`Start guide: ${secondGuide.title}`);
+      choice?.click();
+    }
+    await vi.waitFor(() => expect(runtime.getRun()).toEqual({ status: "running", guideId: secondGuide.id }));
+    const bundleRequests = fetcher.mock.calls.map(([url]) => String(url)).filter(url => url.includes("/guides/"));
+    expect(bundleRequests).toEqual([`${config.apiOrigin}/api/runtime/${config.runtimeKey}/guides/${secondGuide.id}?applicationId=${config.applicationId}`]);
+  });
+
   it("refuses a mismatched bundle and never mounts its targets", async () => {
     const value = bundle();
     const runtime = init(fetchMock({ ...value, application: { ...value.application, id: "app-000000000002" } }));
@@ -152,6 +191,7 @@ describe("public Simplism SDK lifecycle", () => {
     const starting = runtime.startGuide(listed.id);
     await Promise.resolve();
     runtime.stopGuide();
+    expect(signals[1]?.aborted).toBe(true);
     await expect(starting).resolves.toEqual({ ok: false, code: "GUIDE_STOPPED" });
     const refreshing = runtime.listGuides();
     runtime.destroy();

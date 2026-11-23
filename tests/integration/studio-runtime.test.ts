@@ -201,6 +201,24 @@ describe("independent runtime delivery over PostgreSQL (the real tenant-scoped r
     expect((await t.call("GET", `/api/walkthroughs/published/${guide}/bundle`, "user")).body).toEqual(item.body);
     for (const word of [t.tenant, "perm.", "tenant", "runtimeKey", "allowedOrigins"]) expect(item.raw, word).not.toContain(word);
   });
+  it("serves the requested bundle for each of two published guides in the same application", async () => {
+    const { t, id, key, guide } = await live();
+    const second = await t.publish(id, managedDef(undefined, undefined, { title: "Review an order" }));
+    const path = `/api/runtime/${key}/guides`;
+    const query = `?applicationId=${id}`;
+    const list = await t.runtime(path + query, ORIGIN);
+    expect(list.status).toBe(200);
+    const guides = list.body.guides as { id: string; title: string }[];
+    expect(guides).toHaveLength(2);
+    expect(guides).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: guide, title: "Submit an order" }),
+      expect.objectContaining({ id: second, title: "Review an order" }),
+    ]));
+    for (const { id: guideId, title } of guides) {
+      const item = await t.runtime(`${path}/${guideId}${query}`, ORIGIN);
+      expect(item).toMatchObject({ status: 200, body: { definition: { id: guideId, title } } });
+    }
+  });
   it("refuses a missing or other Origin with 403 and no CORS header; the preflight answers the allowed origin only", async () => {
     const { t, key, guide } = await live();
     for (const origin of [null, "http://other.example", "http://127.0.0.1:5188", "https://127.0.0.1:5187", `${ORIGIN}/`, "HTTP://127.0.0.1:5187"]) {
