@@ -49,7 +49,7 @@ assert.ok(databasePort && /^[1-9][0-9]{0,4}$/u.test(databasePort) && Number(data
   && !["5432", "8787"].includes(databasePort), "Set DAP_ACCEPTANCE_DB_PORT to the isolated acceptance database port");
 const database = URL.parse(databaseUrl ?? "");
 assert.ok(database && database.protocol === "postgresql:" && database.hostname === "127.0.0.1" && database.port === databasePort
-  && database.username === "dap_app" && database.pathname === "/dap" && (!managed || databasePort === "54362"), "Use the isolated acceptance database as dap_app");
+  && database.username === "dap_app" && database.pathname === "/dap" && !database.search && !database.hash && (!managed || databasePort === "54362"), "Use the isolated acceptance database as dap_app");
 await access(cli);
 
 export const elapsed = started => Math.round(performance.now() - started);

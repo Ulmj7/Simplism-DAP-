@@ -309,7 +309,7 @@ await runStudioAcceptance(async () => {
     assert.ok(refIds.includes("profile.nameInput")); assert.ok(targetIds.every(id => !refIds.includes(id)));
     await fill("Title", "Reference isolation"); await fill("Description", "Open the profile."); await fill("Completion message", "Done.");
     await select("Semantic target", "nav.profile"); await fill("Instruction", "Open the profile."); await select("Interaction", "click");
-    await select("Application", appB); await waitText("Select an available target.");
+    await select("Application", appB); await waitOption("editor-target", "orders.submit"); await waitText("Select an available target.");
     const bIds = await options("editor-target"); assert.ok(targetIds.every(id => bIds.includes(id))); assert.ok(!bIds.includes("nav.profile"));
     await select("Application", appA); await waitOption("editor-target", "nav.profile");
     await click("Save draft"); await wait("#editor-application-fixed");
@@ -345,11 +345,15 @@ await runStudioAcceptance(async () => {
     async function widthProof(kind, selector) {
       for (const width of widths) {
         await uiCmd("set", "viewport", String(width), "900");
-        const result = await read(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); return { viewport: document.documentElement.clientWidth,
+        const result = await read(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); return { viewport: window.innerWidth, client: document.documentElement.clientWidth,
           scroll: document.documentElement.scrollWidth, box: node.clientWidth, content: node.scrollWidth }; })()`);
         assert.equal(result.viewport, width);
-        assert.ok(result.scroll <= result.viewport && result.content <= result.box, JSON.stringify(result));
-        console.log(`WIDTH ${width} ${kind} PASS viewport=${result.viewport} scroll=${result.scroll}`);
+        assert.ok(result.scroll <= result.client && result.content <= result.box, JSON.stringify(result));
+        if (kind === "registration" && width <= 375) {
+          assert.ok(await read(`(() => { const row = document.querySelector(${JSON.stringify(selector)}); const marker = [...row.querySelectorAll("p")].find(p => p.textContent.includes(${JSON.stringify(longId)}));
+            const range = document.createRange(); range.selectNodeContents(marker); return range.getClientRects().length > 1; })()`), "Long marker must wrap at narrow widths");
+        }
+        console.log(`WIDTH ${width} ${kind} PASS viewport=${result.viewport} client=${result.client} scroll=${result.scroll}`);
       }
     }
     await widthProof("registration", 'li[data-status="registrable"]');
