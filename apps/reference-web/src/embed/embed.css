@@ -17,3 +17,30 @@
 @media (prefers-reduced-motion: reduce) {
   .dap-guide-card, .dap-guide-ring, .dap-result { transition: none; animation: none; }
 }
+
+/* Standalone delivery (Studio completion S8): a small launcher and a panel listing the guides. Colors, spacing and type come from the scoped tokens of tokens.css; nothing is positioned inline. */
+.dap-launcher { position: fixed; right: var(--space-4); bottom: var(--space-4); z-index: calc(var(--guide-z) - 10); display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-2); max-width: calc(var(--full) - var(--space-8)); font-family: var(--font-ui); font-size: var(--type-body); line-height: var(--line-body); color: var(--dap-ink); box-sizing: border-box; }
+.dap-launcher[hidden], .dap-launcher-panel[hidden] { display: none; }
+.dap-launcher-button, .dap-launcher-panel button {
+  min-height: var(--touch);
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  background: var(--dap-bg);
+  color: var(--dap-ink);
+  border: var(--border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.dap-launcher-button { background: var(--dap-accent); color: var(--dap-surface); border-color: var(--dap-accent); box-shadow: var(--shadow-panel); }
+.dap-launcher-panel { box-sizing: border-box; width: var(--dialog-width); max-width: var(--full); max-height: calc(100dvh - var(--space-16)); overflow: auto; padding: var(--space-6); border: var(--border); border-radius: var(--radius-card); background: var(--dap-surface); color: var(--dap-ink); box-shadow: var(--shadow-panel); font-family: var(--font-ui); overflow-wrap: anywhere; }
+.dap-launcher-panel h2 { margin: var(--zero) var(--zero) var(--space-3); font-size: var(--type-card); font-family: var(--font-display); font-weight: var(--weight-medium); }
+.dap-launcher-panel ul { list-style: none; margin: var(--zero); padding: var(--zero); display: grid; gap: var(--space-3); }
+.dap-launcher-panel li { padding: var(--space-3); border: var(--border); border-radius: var(--radius-control); display: grid; gap: var(--space-1); }
+.dap-launcher-panel li p { margin: var(--zero); color: var(--dap-text-muted); font-size: var(--type-small); }
+.dap-launcher-panel li button { justify-self: start; background: var(--dap-accent); color: var(--dap-surface); border-color: var(--dap-accent); }
+.dap-launcher-panel .dap-launcher-close { margin-top: var(--space-3); }
+.dap-launcher-button:focus-visible, .dap-launcher-panel button:focus-visible, .dap-launcher-panel h2:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
+.dap-launcher .dap-live { margin: var(--zero); max-width: var(--full); padding: var(--space-2) var(--space-3); border: var(--border); border-radius: var(--radius-control); background: var(--dap-surface); font-size: var(--type-small); overflow-wrap: anywhere; }
+.dap-launcher .dap-live:empty { display: none; }
+@media (max-width: 767px) { .dap-launcher-panel { width: var(--full); padding: var(--space-4); } }
+@media (prefers-reduced-motion: reduce) { .dap-launcher, .dap-launcher-panel { transition: none; animation: none; } }

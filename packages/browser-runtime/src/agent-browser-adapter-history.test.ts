@@ -74,8 +74,8 @@ describe('routing: "history" normalises the observed URL to origin + pathname', 
 
 describe('routing: "history" refuses what is not a static pathname on the enrolled origin', () => {
   const bad: readonly (readonly [string, string])[] = [
-    ["a double slash at the start", "//evil"], ["a double slash inside", "/a//b"], ["a trailing double slash", "/a//"], ["only slashes", "//"], ["a percent escape", "/a%2fb"], ["an encoded query char", "/a%3fb"], ["a percent-escaped backslash", "/a%5cb"], ["a non-ASCII path", "/é"], ["a unicode lookalike of a slash", "/a∕b"], ["a fullwidth full stop", "/a．b"], ["a zero-width space", "/a​b"],
-    ["a bidi override", "/a‮b"], ["a semicolon", "/a;b"], ["an ampersand", "/a&b"], ["an equals sign", "/a=b"], ["a colon", "/a:b"], ["an at sign", "/a@b"], ["a space (escaped by the URL parser)", "/a b"],
+    ["a double slash at the start", "//evil"], ["a double slash inside", "/a//b"], ["a trailing double slash", "/a//"], ["only slashes", "//"], ["a percent escape", "/a%2fb"], ["an encoded query char", "/a%3fb"], ["a percent-escaped backslash", "/a%5cb"], ["a non-ASCII path", "/é"], ["a unicode lookalike of a slash", "/a∕b"], ["a fullwidth full stop", "/a．b"], ["a zero-width space", "/a\u200bb"],
+    ["a bidi override", "/a\u202eb"], ["a semicolon", "/a;b"], ["an ampersand", "/a&b"], ["an equals sign", "/a=b"], ["a colon", "/a:b"], ["an at sign", "/a@b"], ["a space (escaped by the URL parser)", "/a b"],
     ["a path of 201 characters", "/" + "a".repeat(200)], ["a path of 5000 characters", "/" + "a".repeat(5000)], ["a path of 201 characters with a trailing slash", "/" + "a".repeat(200) + "/"],
   ];
   it.each(bad)("blocks %s on every read path and as a start URL (query and fragment never rescue it)", async (_name, path) => {

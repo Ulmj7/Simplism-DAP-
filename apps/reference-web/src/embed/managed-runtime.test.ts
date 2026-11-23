@@ -106,7 +106,7 @@ it("ignores foreign origins and sources, then completes the real deterministic r
     event.preventDefault(); input.hidden = false; history.replaceState(null, "", "/#/orders"); window.dispatchEvent(new Event("hashchange"));
   });
   const { postMessage, send, statuses } = harness();
-  installEmbed(window, dapOrigin, "/* scoped test style */", false);
+  installEmbed(window, { dapOrigin, scriptSrc: `${dapOrigin}/dap-embed.js`, trustedEventsOnly: false });
   expect(postMessage).toHaveBeenCalledExactlyOnceWith(readyMessage, dapOrigin);
   const command = runMessage(make());
   send(command, "https://wrong.test");
@@ -124,16 +124,18 @@ it("ignores foreign origins and sources, then completes the real deterministic r
   expect(document.querySelector("dialog")?.textContent).toContain("Order walkthrough complete.");
   window.dispatchEvent(new Event("pagehide"));
   expect(document.querySelector("dialog")).toBeNull();
-  expect(document.head.textContent).not.toContain("scoped test style");
+  // The stylesheet is an external link (never an injected style element) and leaves with the embed.
+  expect(document.head.querySelector("style")).toBeNull();
+  expect(document.head.querySelector("link[data-dap-embed]")).toBeNull();
 });
 
 it("stays inert without an opener or with invalid configuration and cancels an active run on pagehide", () => {
   window.opener = null;
-  expect(() => installEmbed(window, dapOrigin, "")).not.toThrow();
+  expect(() => installEmbed(window, { dapOrigin })).not.toThrow();
   const { send, statuses, postMessage } = harness();
-  installEmbed(window, dapOrigin + "/", "");
+  installEmbed(window, { dapOrigin: dapOrigin + "/" });
   expect(postMessage).not.toHaveBeenCalled();
-  installEmbed(window, dapOrigin, "");
+  installEmbed(window, { dapOrigin });
   send(runMessage(make()));
   window.dispatchEvent(new Event("pagehide"));
   expect(statuses().at(-1)).toBe("CANCELLED");
@@ -142,7 +144,7 @@ it("stays inert without an opener or with invalid configuration and cancels an a
 
 it("refuses a definition that does not validate against the actual registry", () => {
   const { send, postMessage } = harness();
-  installEmbed(window, dapOrigin, "");
+  installEmbed(window, { dapOrigin });
   const bundle = make();
   send(runMessage({ ...bundle, registry: { ...bundle.registry, elements: [] } }));
   expect(postMessage).toHaveBeenLastCalledWith(statusMessage({ status: "refused", reason: "invalid_bundle" }), dapOrigin);
