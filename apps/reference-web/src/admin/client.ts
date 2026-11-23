@@ -4,8 +4,8 @@ import { MAX_DESCRIPTION as MAX_TEXT, MAX_LABEL as MAX_TITLE } from "@dap/walkth
 import type { WalkthroughDef } from "@dap/walkthrough";
 import { readReply } from "../help/client.js";
 import type { FetchLike } from "../help/client.js";
-import { parseApplication, parseApplicationList, parseApplicationRegistry } from "./applications.js";
-import type { ApplicationInput, ApplicationList, ApplicationRegistry, ApplicationView } from "./applications.js";
+import { parseApplication, parseApplicationList, parseApplicationRegistry, parseOverview } from "./applications.js";
+import type { ApplicationInput, ApplicationList, ApplicationOverview, ApplicationRegistry, ApplicationView } from "./applications.js";
 import { checkBody, parseCheckList, parseCheckView } from "./checks.js";
 import type { CheckInput, CheckView } from "./checks.js";
 import { parseTargetDetail, parseTargetList, parseTargetView } from "./targets.js";
@@ -22,7 +22,7 @@ import type { StudioCommand, StudioReply } from "./studio-client.js";
 
 /** `applicationId` is null only for a legacy draft written before applications existed; it is assigned on its first save. */
 export interface GuideRecord { id: string; status: GuideStatus; applicationId: string | null; definition: WalkthroughDef }
-export type ApplicationFailureCode = "APPLICATION_NOT_FOUND" | "APPLICATION_DISABLED" | "APPLICATION_MISMATCH" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED";
+export type ApplicationFailureCode = "APPLICATION_NOT_FOUND" | "APPLICATION_DISABLED" | "APPLICATION_MISMATCH" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED" | "ROUTING_LOCKED";
 /** `browser-error` carries the host's closed `{error: CODE}`; only a 422 INVALID_TARGET adds `issues` (at most 20 fixed phrases of at most 200 characters). */
 export type AdminResult<T> = { kind: "ok"; value: T } | { kind: "denied" | "failed" | "oversize" | "published" | "limit" | "not-found" } | { kind: "invalid"; issues: readonly string[] }
   | { kind: "browser-error"; code: string; issues?: readonly string[] } | { kind: "application"; code: ApplicationFailureCode };
@@ -56,6 +56,9 @@ export interface AdminClient {
   updateApplication(id: string, input: ApplicationInput): Promise<AdminResult<ApplicationView>>;
   setApplicationEnabled(id: string, enabled: boolean): Promise<AdminResult<ApplicationView>>;
   applicationRegistry(id: string): Promise<AdminResult<ApplicationRegistry>>;
+  overview(id: string): Promise<AdminResult<ApplicationOverview>>;
+  /** Regenerates the runtime key of a Studio-managed application (the old key stops working at once). */
+  rotateRuntimeKey(id: string): Promise<AdminResult<ApplicationView>>;
   targets(applicationId: string): Promise<AdminResult<TargetList>>;
   setTargetStatus(applicationId: string, targetId: string, status: "active" | "disabled"): Promise<AdminResult<TargetView>>;
   /** `GET …/targets/:targetId`: the target with its usage and its change history. */
@@ -145,7 +148,7 @@ const ADMIN = "/api/admin/walkthroughs";
 const APPLICATIONS = "/api/admin/applications";
 const FAILED = { kind: "failed" } as const;
 // 404 and 409 can name an application problem in a closed `{kind, code, message?}` body. The message is never used.
-const APPLICATION_CODES: readonly ApplicationFailureCode[] = ["APPLICATION_NOT_FOUND", "APPLICATION_DISABLED", "APPLICATION_MISMATCH", "TARGET_NOT_FOUND", "REGISTRY_NOT_MANAGED"];
+const APPLICATION_CODES: readonly ApplicationFailureCode[] = ["APPLICATION_NOT_FOUND", "APPLICATION_DISABLED", "APPLICATION_MISMATCH", "TARGET_NOT_FOUND", "REGISTRY_NOT_MANAGED", "ROUTING_LOCKED"];
 function applicationFailure(raw: string | null): ApplicationFailureCode | null {
   try {
     const body: unknown = raw === null ? null : JSON.parse(raw);
@@ -153,8 +156,8 @@ function applicationFailure(raw: string | null): ApplicationFailureCode | null {
       ? APPLICATION_CODES.find(code => code === body.code) ?? null : null;
   } catch { return null; }
 }
-// Exactly the five configuration fields, in a fixed order, whatever the caller passed.
-const applicationBody = ({ name, origin, allowedOrigins, environment, registryId }: ApplicationInput): Bag => ({ name, origin, allowedOrigins: [...allowedOrigins], environment, registryId });
+// Exactly the seven configuration fields, in a fixed order, whatever the caller passed.
+const applicationBody = ({ name, origin, allowedOrigins, environment, registryId, routing, runtimeAccess }: ApplicationInput): Bag => ({ name, origin, allowedOrigins: [...allowedOrigins], environment, registryId, routing, runtimeAccess });
 export function createAdminClient(options: { fetch?: FetchLike | undefined; role?: DemoRole | undefined; timeoutMs?: number }): AdminClient {
   async function request<T>(url: string, guard: (value: unknown) => T | null, method = "GET", payload?: Bag): Promise<AdminResult<T>> {
     const fetcher = options.fetch;
@@ -225,6 +228,8 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
       ? request(`${APPLICATIONS}/${id}`, value => parseApplication(value, id), "PUT", applicationBody(input)) : Promise.resolve(FAILED),
     setApplicationEnabled: (id, enabled) => applicationId(id)
       ? request(`${APPLICATIONS}/${id}/status`, value => { const parsed = parseApplication(value, id); return parsed?.enabled === enabled ? parsed : null; }, "POST", { enabled }) : Promise.resolve(FAILED),
+    overview: id => applicationId(id) ? request(`${APPLICATIONS}/${id}/overview`, value => parseOverview(value, id)) : Promise.resolve(FAILED),
+    rotateRuntimeKey: id => applicationId(id) ? request(`${APPLICATIONS}/${id}/runtime-key`, value => parseApplication(value, id), "POST", {}) : Promise.resolve(FAILED),
     applicationRegistry: id => applicationId(id) ? request(`${APPLICATIONS}/${id}/registry`, parseApplicationRegistry) : Promise.resolve(FAILED),
     targets: id => applicationId(id) ? request(`${APPLICATIONS}/${id}/targets`, parseTargetList) : Promise.resolve(FAILED),
     // Exactly {status}: a target has no other editable field and no delete.

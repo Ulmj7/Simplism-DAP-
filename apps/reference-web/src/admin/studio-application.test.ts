@@ -101,16 +101,17 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
     }
     if (path === "/api/admin/applications" && method === "GET") return json({ applications: [...apps.values()], registries });
     if (path === "/api/admin/applications" && method === "POST") {
-      const input = body as unknown as Omit<App, "id" | "enabled" | "updatedAt" | "routing" | "runtimeAccess" | "runtimeKey" | "counts">;
+      const input = body as unknown as Omit<App, "id" | "enabled" | "updatedAt" | "runtimeKey" | "counts" | "source">;
       if (input.name === "") return json({ kind: "invalid", message: "Invalid application", issues: ["name: <b>must not be empty</b>", "origin: must be https"] }, 422);
-      const created = { ...input, source: input.registryId === "studio-managed" ? "studio-managed" as const : "built-in" as const, id: `app-${String(apps.size + 100).padStart(12, "0")}`, enabled: true, updatedAt: stamp, routing: "hash" as const, runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 } };
+      const created = { ...input, source: input.registryId === "studio-managed" ? "studio-managed" as const : "built-in" as const, id: `app-${String(apps.size + 100).padStart(12, "0")}`, enabled: true, updatedAt: stamp, routing: input.routing, runtimeAccess: input.runtimeAccess, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 } };
       apps.set(created.id, created); return json(created, 201);
     }
-    const application = /^\/api\/admin\/applications\/(app-[a-f0-9]{12})(\/status|\/registry)?$/u.exec(path);
+    const application = /^\/api\/admin\/applications\/(app-[a-f0-9]{12})(\/status|\/registry|\/overview)?$/u.exec(path);
     if (application) {
       const target = apps.get(application[1]!);
       if (!target) return json({ kind: "not_found", message: "x", code: "APPLICATION_NOT_FOUND" }, 404);
       if (application[2] === "/registry") return json(registryReply[target.id]);
+      if (application[2] === "/overview") { const n = target.counts.targets; return json({ application: target, targets: { total: n, active: n, disabled: 0, healthy: 0, unverified: n, broken: 0 }, workflows: { draft: target.counts.drafts, published: target.counts.published } }); }
       if (application[2] === "/status") { target.enabled = (body as { enabled: boolean }).enabled; return json(target); }
       if (method === "PUT") { Object.assign(target, body); return json(target); }
       return json(target);
@@ -173,7 +174,8 @@ function fill(root: ParentNode, id: string, value: string, event = "input") {
 const click = async (root: ParentNode, name: string) => { button(root, name).click(); await turn(); };
 const navigate = async (route: "dashboard" | "walkthroughs" | "applications" | "editor" | "analytics") => { mounted?.current()?.router.navigate(route); await turn(); };
 const options = (root: ParentNode, id: string) => [...control<HTMLSelectElement>(root, `[id="${id}"]`).options].map(item => item.value);
-const rowFor = (root: ParentNode, name: string) => [...root.querySelectorAll("tbody tr")].find(row => row.firstElementChild?.textContent === name)!;
+// The first cell is the name followed by its Enabled/Disabled badge.
+const rowFor = (root: ParentNode, name: string) => [...root.querySelectorAll("tbody tr")].find(row => [name, `${name} ${p.enabledLabel}`, `${name} ${p.disabledLabel}`].includes(row.firstElementChild?.textContent ?? ""))!;
 const notice = (root: ParentNode) => root.querySelector('[role="status"]')?.textContent;
 
 // ---------------------------------------------------------------------------------------------------------------- Application Manager
@@ -197,15 +199,25 @@ it("lists every application with its origins, environment, registry label and st
   expect(root.querySelector("h1")?.textContent).toBe(c.applications);
   const row = rowFor(root, "<img src=x onerror=bad()>");
   expect([...row.querySelectorAll("td")].map(cell => cell.textContent)).toEqual([
-    "<img src=x onerror=bad()>", "http://127.0.0.1:5199", "http://127.0.0.1:5199\nhttp://localhost:5199", "development", "Fixture application B", p.disabledLabel,
-    "View registryEditEnableUse for authoring",
+    `<img src=x onerror=bad()> ${p.disabledLabel}`, "development", "hash", "Built-in", "0", "0", "0", "OverviewEditEnableOpen Studio",
   ]);
   expect(root.querySelector("img")).toBeNull();
-  expect(rowFor(root, "Reference application").textContent).toContain("Reference application" + "http://127.0.0.1:5173");
+  expect(rowFor(root, "Reference application").textContent).toContain("Reference application");
   expect(rowFor(root, "Reference application").textContent).toContain(p.enabledLabel);
   expect(root.textContent).toContain("Loopback addresses are allowed for development and test");
   expect(root.textContent).toContain("any other address must use https");
   expect(root.textContent).toContain("Only development and test are available in this release.");
+});
+
+it("the overview shows the origins as text, the allowed origins and the actions that lead to Targets and Workflows", async () => {
+  const hostile = { ...app(OFF, "<img src=x onerror=bad()>", 5199, "fixture-b", false), allowedOrigins: ["http://127.0.0.1:5199", "http://localhost:5199"] };
+  const { root } = await setup("applications", fakeHost({ apps: [app(REF, "Reference application", 5173, "reference"), hostile] }));
+  await click(root, "Overview: <img src=x onerror=bad()>");
+  const grid = control(root, ".overview-grid");
+  expect([...grid.querySelectorAll("dt")].map(item => item.textContent)).toEqual(["Application", "Status", "Environment", "Origin", "Allowed origins", "Routing", "Registry", "Targets", "Draft workflows", "Published workflows", "Runtime delivery"]);
+  expect(grid.textContent).toContain("http://127.0.0.1:5199");
+  expect(grid.textContent).toContain("http://localhost:5199");
+  expect(root.querySelector("img")).toBeNull();
 });
 
 it("offers only development and test and the registries the host lists", async () => {
@@ -216,7 +228,7 @@ it("offers only development and test and the registries the host lists", async (
   expect(root.querySelector("#application-allowed-help")?.textContent).toBe(p.allowedHelp);
 });
 
-it("enrolls an application with exactly the five configuration fields and refreshes the list", async () => {
+it("enrolls an application with exactly the seven configuration fields and refreshes the list", async () => {
   const { root, host } = await setup("applications");
   fill(root, "application-name", "  Orders test app ");
   fill(root, "application-origin", " http://127.0.0.1:5190 ");
@@ -227,8 +239,8 @@ it("enrolls an application with exactly the five configuration fields and refres
   control<HTMLFormElement>(root, "form").requestSubmit(); await turn();
   const [create] = host.writes();
   expect(create).toMatchObject({ method: "POST", path: "/api/admin/applications" });
-  expect(Object.keys(create!.body!)).toEqual(["name", "origin", "allowedOrigins", "environment", "registryId"]);
-  expect(create!.body).toEqual({ name: "Orders test app", origin: "http://127.0.0.1:5190", allowedOrigins: ["http://127.0.0.1:5190", "http://localhost:5190"], environment: "test", registryId: "fixture-b" });
+  expect(Object.keys(create!.body!)).toEqual(["name", "origin", "allowedOrigins", "environment", "registryId", "routing", "runtimeAccess"]);
+  expect(create!.body).toEqual({ name: "Orders test app", origin: "http://127.0.0.1:5190", allowedOrigins: ["http://127.0.0.1:5190", "http://localhost:5190"], environment: "test", registryId: "fixture-b", routing: "hash", runtimeAccess: false });
   expect(notice(root)).toBe(p.saved);
   expect(rowFor(root, "Orders test app").textContent).toContain("test");
   expect(control<HTMLInputElement>(root, "#application-name").value).toBe("");
@@ -273,29 +285,29 @@ it("edits an application with the full body and cancels an edit without writing"
   fill(root, "application-allowed", "http://127.0.0.1:5185\nhttp://localhost:5185");
   control<HTMLFormElement>(root, "form").requestSubmit(); await turn();
   expect(host.writes()).toEqual([{ method: "PUT", path: `/api/admin/applications/${ORD}`, body: {
-    name: "Orders application v2", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185", "http://localhost:5185"], environment: "development", registryId: "fixture-b",
+    name: "Orders application v2", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185", "http://localhost:5185"], environment: "development", registryId: "fixture-b", routing: "hash", runtimeAccess: false,
   } }]);
-  expect(Object.keys(host.writes()[0]!.body!)).toEqual(["name", "origin", "allowedOrigins", "environment", "registryId"]);
+  expect(Object.keys(host.writes()[0]!.body!)).toEqual(["name", "origin", "allowedOrigins", "environment", "registryId", "routing", "runtimeAccess"]);
   expect(rowFor(root, "Orders application v2")).toBeDefined();
   expect(root.querySelector("form h2")?.textContent).toBe(p.createTitle);
 });
 
-it("enables and disables an application, and offers Use for authoring only while it is enabled", async () => {
+it("enables and disables an application, and offers Open Studio only while it is enabled", async () => {
   const { root, host } = await setup("applications");
-  expect(button(root, "Use for authoring: Orders application").disabled).toBe(false);
+  expect(button(root, "Open Studio: Orders application").disabled).toBe(false);
   await click(root, "Disable: Orders application");
   expect(host.writes()).toEqual([{ method: "POST", path: `/api/admin/applications/${ORD}/status`, body: { enabled: false } }]);
   expect(rowFor(root, "Orders application").textContent).toContain(p.disabledLabel);
-  expect(button(root, "Use for authoring: Orders application").disabled).toBe(true);
+  expect(button(root, "Open Studio: Orders application").disabled).toBe(true);
   expect(button(root, "Enable: Orders application")).toBeDefined();
   await click(root, "Enable: Orders application");
   expect(host.writes()[1]!.body).toEqual({ enabled: true });
-  expect(button(root, "Use for authoring: Orders application").disabled).toBe(false);
+  expect(button(root, "Open Studio: Orders application").disabled).toBe(false);
 });
 
-it("Use for authoring opens a new draft in the editor with that application already chosen", async () => {
+it("Open Studio opens a new draft in the editor with that application already chosen", async () => {
   const { root, host } = await setup("applications");
-  await click(root, "Use for authoring: Orders application");
+  await click(root, "Open Studio: Orders application");
   expect(root.querySelector("h1")?.textContent).toBe(c.editor);
   expect(control<HTMLSelectElement>(root, "#editor-application").value).toBe(ORD);
   expect(options(root, "editor-target")).toContain("orders.submit");
@@ -761,27 +773,33 @@ it("registers, refreshes the editor registry, and saves only the durable target 
   expect(JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage), location.href])).not.toMatch(/@e\d/);
 });
 
-it("shows managed routes and target references and confirms a referenced disable before sending the status", async () => {
+it("Manage Targets opens the Targets page for that application; a referenced disable is confirmed before the status is sent", async () => {
   let status = "active";
   const host = fakeHost({ apps: [managed] });
   const path = `/api/admin/applications/${ORD}/targets`;
-  host.overrides.set(`GET ${path}`, () => json({ targets: [{ ...managedTarget, status }],
-    routes: [{ route: "orders", page: "/#/orders" }], limits: { maxTargets: 200, maxRoutes: 20 } }));
+  const stored = () => ({ ...managedTarget, status });
+  host.overrides.set(`GET ${path}`, () => json({ targets: [stored()], routes: [{ route: "orders", page: "/#/orders" }], limits: { maxTargets: 200, maxRoutes: 20 } }));
+  host.overrides.set(`GET ${path}/orders.submit`, () => json({ ...stored(), usage: { drafts: [{ id: "wt-000000000001", title: "Orders tour" }, { id: "wt-000000000002", title: "Second draft" }], published: [{ id: "wt-000000000003", title: "Live tour", version: 1 }] }, changes: [] }));
+  host.overrides.set(`GET /api/admin/applications/${ORD}/overview`, () => json({ application: { ...managed, counts: { targets: 1, drafts: 0, published: 0 } }, targets: { total: 1, active: 1, disabled: 0, healthy: 0, unverified: 1, broken: 0 }, workflows: { draft: 0, published: 0 } }));
   host.overrides.set(`POST ${path}/orders.submit/status`, () => {
     status = String(host.writes().at(-1)?.body?.status);
-    return json({ ...managedTarget, status });
+    return json(stored());
   });
   const { root } = await setup("applications", host);
-  await click(root, "View registry: Managed orders");
-  expect(root.textContent).toContain("orders · /#/orders");
+  await click(root, "Overview: Managed orders");
+  await click(root, "Manage Targets: Managed orders");
+  expect(root.querySelector("h1")?.textContent).toBe("Targets");
+  expect(control<HTMLSelectElement>(root, "#targets-application").value).toBe(ORD);
   expect(root.textContent).toContain("2 drafts, 1 published");
+  await click(root, "Details: orders.submit");
   await click(root, "Disable orders.submit");
   const confirm = control(root, "dialog[open]");
-  expect(confirm.textContent).toContain("2 drafts and 1 published walkthroughs");
+  expect(confirm.textContent).toContain("2 drafts and 1 published workflows");
   expect(host.writes()).toEqual([]);
   expect(document.activeElement?.textContent).toBe(c.cancel);
   await click(confirm, "Disable target");
   expect(host.writes().at(-1)?.body).toEqual({ status: "disabled" });
+  await click(root, "Details: orders.submit");
   await click(root, "Enable orders.submit");
   expect(host.writes().at(-1)?.body).toEqual({ status: "active" });
 });

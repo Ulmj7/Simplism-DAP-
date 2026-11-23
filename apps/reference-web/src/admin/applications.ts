@@ -13,19 +13,23 @@ export const MANAGED_REGISTRY_ID = "studio-managed";
 export type RegistrySource = "built-in" | "studio-managed";
 export const sourceOf = (registryId: string): RegistrySource => (registryId === MANAGED_REGISTRY_ID ? "studio-managed" : "built-in");
 
+export type ApplicationRouting = "hash" | "history";
 export interface ApplicationInput {
   readonly name: string;
   readonly origin: string;
   readonly allowedOrigins: readonly string[];
   readonly environment: ApplicationEnvironment;
   readonly registryId: string;
+  /** How pages are addressed (`hash`: `/#/orders`; `history`: pathnames). Cannot change once the application has registered routes. */
+  readonly routing: ApplicationRouting;
+  /** Whether the application's published guides may be delivered to its own pages through the runtime key. */
+  readonly runtimeAccess: boolean;
 }
-export type ApplicationRouting = "hash" | "history";
 export interface ApplicationCounts { readonly targets: number; readonly drafts: number; readonly published: number }
 export interface ApplicationView extends ApplicationInput {
   readonly id: string; readonly enabled: boolean; readonly updatedAt: string; readonly source: RegistrySource;
-  /** Studio completion S1/S2/S7: how pages are addressed, runtime delivery access and its public key (`rk-` + tenant + `-` + random), and the overview counts. */
-  readonly routing: ApplicationRouting; readonly runtimeAccess: boolean; readonly runtimeKey: string | null; readonly counts: ApplicationCounts;
+  /** Studio completion S2/S7: the public runtime key (opaque; present once runtime access was switched on) and the counts of the overview. */
+  readonly runtimeKey: string | null; readonly counts: ApplicationCounts;
 }
 export interface RegistryChoice { readonly id: string; readonly label: string; readonly source: RegistrySource }
 export interface ApplicationList { readonly applications: readonly ApplicationView[]; readonly registries: readonly RegistryChoice[] }
@@ -53,7 +57,8 @@ function origins(value: unknown, origin: string): value is string[] {
     && new Set(value as string[]).size === value.length && (value as string[]).includes(origin);
 }
 
-const RUNTIME_KEY = /^rk-[a-f0-9]{32}-[a-f0-9]{32}$/;
+/** The runtime key is an OPAQUE public identifier `rk-…` (at most 80 URL-safe characters): its inside is the host's business and is never parsed here. */
+export const RUNTIME_KEY = /^rk-[A-Za-z0-9_-]{1,77}$/;
 const MAX_COUNT = 1_000_000;
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_COUNT;
 function parseCounts(value: unknown): ApplicationCounts | null {
@@ -68,7 +73,9 @@ export function parseApplication(value: unknown, id?: string): ApplicationView |
     || !origins(allowedOrigins, origin) || !environment(value.environment) || typeof registryId !== "string" || !REGISTRY_ID.test(registryId) || !sourceValue(value.source, registryId)
     || typeof value.enabled !== "boolean" || !text(updatedAt, LIMITS.updatedAt) || !Number.isFinite(Date.parse(updatedAt))) return null;
   const { routing, runtimeAccess, runtimeKey } = value;
-  if ((routing !== "hash" && routing !== "history") || typeof runtimeAccess !== "boolean" || !(runtimeKey === null || (typeof runtimeKey === "string" && runtimeKey.length <= 80 && RUNTIME_KEY.test(runtimeKey)))) return null;
+  if ((routing !== "hash" && routing !== "history") || typeof runtimeAccess !== "boolean" || !(runtimeKey === null || (typeof runtimeKey === "string" && RUNTIME_KEY.test(runtimeKey)))
+    // Only a Studio-managed application is delivered: a built-in one is hash-routed and has neither access nor a key.
+    || (value.source === "built-in" && (routing !== "hash" || runtimeAccess || runtimeKey !== null))) return null;
   const counts = parseCounts(value.counts);
   if (counts === null) return null;
   return { id: value.id, name, origin, allowedOrigins: [...allowedOrigins], environment: value.environment, registryId, enabled: value.enabled, updatedAt, source: value.source, routing, runtimeAccess, runtimeKey, counts };
@@ -129,4 +136,24 @@ export function parseApplicationRegistry(value: unknown): ApplicationRegistry | 
     const registry = createSemanticRegistry({ routes: value.routes as string[], elements });
     return { routes: registry.routes, elements: registry.list(), postconditionNames: names as string[], previewable: value.previewable, source: value.source, pages, previewMode: value.previewMode, registry };
   } catch { return null; }
+}
+
+/** `GET …/overview` (S2): the application, how many targets are in which state and health, and how many workflows are drafts or published. */
+export interface ApplicationOverview {
+  readonly application: ApplicationView;
+  readonly targets: { readonly total: number; readonly active: number; readonly disabled: number; readonly healthy: number; readonly unverified: number; readonly broken: number };
+  readonly workflows: { readonly draft: number; readonly published: number };
+}
+export function parseOverview(value: unknown, id?: string): ApplicationOverview | null {
+  if (!object(value) || !exact(value, ["application", "targets", "workflows"])) return null;
+  const application = parseApplication(value.application, id);
+  const { targets, workflows } = value;
+  if (!application || !object(targets) || !exact(targets, ["total", "active", "disabled", "healthy", "unverified", "broken"]) || !object(workflows) || !exact(workflows, ["draft", "published"])) return null;
+  const numbers = [targets.total, targets.active, targets.disabled, targets.healthy, targets.unverified, targets.broken, workflows.draft, workflows.published];
+  if (!numbers.every(count)) return null;
+  const { total, active, disabled, healthy, unverified, broken } = targets as Record<string, number>;
+  // The two splits of the targets each add up to the total, and the overview agrees with the application's own counts.
+  if (active! + disabled! !== total || healthy! + unverified! + broken! !== total || total !== application.counts.targets
+    || workflows.draft !== application.counts.drafts || workflows.published !== application.counts.published) return null;
+  return { application, targets: { total: total!, active: active!, disabled: disabled!, healthy: healthy!, unverified: unverified!, broken: broken! }, workflows: { draft: workflows.draft as number, published: workflows.published as number } };
 }

@@ -340,14 +340,21 @@ describe("the ApplicationView parser accepts the Studio completion fields (S2) a
   const KEY = `rk-${"1".repeat(32)}-${"a".repeat(32)}`;
   const view = (patch: Record<string, unknown> = {}) => ({ ...application, ...patch });
   it("parses routing, runtimeAccess, runtimeKey and counts", () => {
-    expect(parseApplication(view({ routing: "history", runtimeAccess: true, runtimeKey: KEY, counts: { targets: 3, drafts: 2, published: 1 } }))).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: KEY, counts: { targets: 3, drafts: 2, published: 1 } });
+    expect(parseApplication(view({ source: "studio-managed", registryId: "studio-managed", routing: "history", runtimeAccess: true, runtimeKey: KEY, counts: { targets: 3, drafts: 2, published: 1 } }))).toMatchObject({ routing: "history", runtimeAccess: true, runtimeKey: KEY, counts: { targets: 3, drafts: 2, published: 1 } });
     expect(parseApplication(view())).toMatchObject({ routing: "hash", runtimeAccess: false, runtimeKey: null, counts: { targets: 0, drafts: 0, published: 0 } });
+  });
+  it("treats the key as an opaque rk-… string (A1): any URL-safe body up to 80 characters", () => {
+    for (const key of [`rk-${"a".repeat(77)}`, "rk-a", `rk-${"A".repeat(32)}-${"B".repeat(32)}`, "rk-Tenant_1-part-2"]) expect(parseApplication(view({ source: "studio-managed", registryId: "studio-managed", runtimeAccess: true, runtimeKey: key }))?.runtimeKey).toBe(key);
+  });
+  it("a built-in application is hash-routed with no runtime access and no key", () => {
+    for (const patch of [{ routing: "history" }, { runtimeAccess: true }, { runtimeKey: KEY }]) expect(parseApplication(view(patch))).toBeNull();
   });
   it.each([
     ["a missing field", (v: Record<string, unknown>) => { delete v.routing; }], ["a missing counts", (v: Record<string, unknown>) => { delete v.counts; }], ["an unknown extra field", (v: Record<string, unknown>) => { v.extra = 1; }],
     ["an unknown routing", (v: Record<string, unknown>) => { v.routing = "path"; }], ["a non-boolean runtimeAccess", (v: Record<string, unknown>) => { v.runtimeAccess = "yes"; }],
-    ["a key of the old shape", (v: Record<string, unknown>) => { v.runtimeKey = `rk-${"a".repeat(32)}`; }], ["an upper-case key", (v: Record<string, unknown>) => { v.runtimeKey = KEY.toUpperCase(); }],
-    ["a key over 80 characters", (v: Record<string, unknown>) => { v.runtimeKey = `${KEY}${"a".repeat(20)}`; }], ["an undefined key", (v: Record<string, unknown>) => { v.runtimeKey = undefined; }],
+    ["a key without the rk- prefix", (v: Record<string, unknown>) => { v.runtimeKey = KEY.slice(3); }], ["a key with a slash", (v: Record<string, unknown>) => { v.runtimeKey = "rk-a/b"; }],
+    ["a key with a space", (v: Record<string, unknown>) => { v.runtimeKey = "rk-a b"; }], ["an empty key body", (v: Record<string, unknown>) => { v.runtimeKey = "rk-"; }],
+    ["a key over 80 characters", (v: Record<string, unknown>) => { v.runtimeKey = `rk-${"a".repeat(78)}`; }], ["an undefined key", (v: Record<string, unknown>) => { v.runtimeKey = undefined; }],
     ["a negative count", (v: Record<string, unknown>) => { v.counts = { targets: -1, drafts: 0, published: 0 }; }], ["a fractional count", (v: Record<string, unknown>) => { v.counts = { targets: 1.5, drafts: 0, published: 0 }; }],
     ["a count over a million", (v: Record<string, unknown>) => { v.counts = { targets: 1_000_001, drafts: 0, published: 0 }; }], ["counts with an extra key", (v: Record<string, unknown>) => { v.counts = { targets: 0, drafts: 0, published: 0, x: 1 }; }],
     ["counts as an array", (v: Record<string, unknown>) => { v.counts = [0, 0, 0]; }], ["a string count", (v: Record<string, unknown>) => { v.counts = { targets: "1", drafts: 0, published: 0 }; }],

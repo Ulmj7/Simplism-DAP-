@@ -52,6 +52,7 @@ export const copy = {
     TARGET_NOT_FOUND: "That target is no longer available.",
     REGISTRY_NOT_MANAGED: "This application uses a built-in registry.",
     APPLICATION_MISMATCH: "This walkthrough belongs to a different application and cannot be moved.",
+    ROUTING_LOCKED: "Routing cannot change once this application has registered routes.",
    },
    limit: "You can enroll at most 20 applications.",
    page: {
