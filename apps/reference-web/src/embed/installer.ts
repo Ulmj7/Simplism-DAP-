@@ -8,6 +8,8 @@ export interface InstallOptions {
   readonly dapOrigin?: unknown;
   /** `data-dap-key`: the runtime key of standalone delivery. */
   readonly key?: unknown;
+  /** `data-dap-api`: optional normalized http(s) origin of the DAP API for a customer who self-hosts the two embed files; absent = the script's own origin. Present but invalid = inert. */
+  readonly api?: unknown;
   /** The script's own URL: the API origin of standalone delivery and the home of `dap-embed.css`. */
   readonly scriptSrc?: string | undefined;
   readonly trustedEventsOnly?: boolean;
@@ -39,14 +41,15 @@ function linkStylesheet(win: Window, scriptSrc: string | undefined): { readonly 
 }
 
 export function installEmbed(win: Window, options: InstallOptions = {}) {
-  const { dapOrigin, key, scriptSrc, trustedEventsOnly = true } = options;
+  const { dapOrigin, key, api, scriptSrc, trustedEventsOnly = true } = options;
   const opener: Window | null = win.opener;
   const handshake = opener !== null && normalizedOrigin(dapOrigin);
   // Studio's own window (Preview) always wins: a page that also carries a key does not get a launcher on top of a Preview run.
   if (!handshake) {
-    if (typeof key === "string" && scriptSrc !== undefined) {
+    const apiGiven = api !== undefined && api !== null;
+    if (typeof key === "string" && scriptSrc !== undefined && (!apiGiven || normalizedOrigin(api))) {
       const sheet = linkStylesheet(win, scriptSrc);
-      const standalone = installStandalone({ window: win, key, scriptSrc, trustedEventsOnly, stylesheet: sheet.ready, removeStylesheet: sheet.remove, ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
+      const standalone = installStandalone({ window: win, key, scriptSrc, ...(apiGiven ? { apiOrigin: api as string } : {}), trustedEventsOnly, stylesheet: sheet.ready, removeStylesheet: sheet.remove, ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
       if (!standalone.ok) sheet.remove();
     }
     return;

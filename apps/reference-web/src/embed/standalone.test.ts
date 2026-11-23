@@ -123,6 +123,30 @@ describe("standalone launcher", () => {
   });
 });
 
+describe("data-dap-api (self-hosted embed files)", () => {
+  it("fetches from the named API origin while the stylesheet stays next to the script", async () => {
+    const fetcher = vi.fn(async () => json(guides)) as unknown as typeof fetch;
+    await install(fetcher, { scriptSrc: "https://customer.example/assets/dap-embed.js", api });
+    expect((fetcher as unknown as { mock: { calls: [string][] } }).mock.calls[0]![0]).toBe(`${api}/api/runtime/${KEY}/guides`);
+    expect(document.head.querySelector("link[data-dap-embed]")?.getAttribute("href")).toBe("https://customer.example/assets/dap-embed.css");
+    expect(trigger()).not.toBeNull();
+  });
+  it.each(["http://127.0.0.1:5186/", "http://127.0.0.1:5186/api", "ftp://x.example", "javascript:alert(1)", "http://user@x.example", "HTTP://X.EXAMPLE", "x.example", "", 5, {}])(
+    "an invalid data-dap-api %j leaves the embed inert: no request, no launcher, no link", async value => {
+      const fetcher = vi.fn();
+      await install(fetcher as unknown as typeof fetch, { api: value });
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(launcher()).toBeNull();
+      expect(document.head.querySelector("link[data-dap-embed]")).toBeNull();
+      expect(Object.hasOwn(window, "DapEmbed")).toBe(false);
+    });
+  it("an absent or null attribute means the script's own origin", async () => {
+    const fetcher = vi.fn(async () => json(guides)) as unknown as typeof fetch;
+    await install(fetcher, { api: null });
+    expect((fetcher as unknown as { mock: { calls: [string][] } }).mock.calls[0]![0]).toBe(`${api}/api/runtime/${KEY}/guides`);
+  });
+});
+
 describe("standalone is inert", () => {
   const nothing = () => { expect(launcher()).toBeNull(); expect(Object.hasOwn(window, "DapEmbed")).toBe(false); };
   it.each([

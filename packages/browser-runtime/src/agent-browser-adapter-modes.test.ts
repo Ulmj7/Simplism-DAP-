@@ -66,7 +66,7 @@ describe('labels: "all"', () => {
   it("drops what is not an operable, enabled control with a usable name", () => {
     const longest = "n".repeat(120);
     const items: Item[] = [
-      { key: "e1", role: "heading", name: "Orders" }, { key: "e2", role: "option", name: "Choice" }, { key: "e3", role: "img", name: "Logo" },
+      { key: "e1", role: "navigation", name: "Main" }, { key: "e2", role: "option", name: "Choice" }, { key: "e3", role: "img", name: "Logo" },
       { key: "e4", role: "button" }, { key: "e5", role: "button", name: "   " }, { key: "e6", role: "button", name: "n".repeat(121) },
       { key: "e7", role: "button", name: "line\nbreak" }, { key: "e8", role: "button", name: "bidi\u202eoverride" }, { key: "e9", role: "button", name: "nul\u0000" },
       { key: "e10", role: "button", name: "Disabled", flags: "disabled" }, { key: "e11", role: "textbox", name: "Read only", flags: "readonly" },
@@ -74,6 +74,26 @@ describe('labels: "all"', () => {
       { key: "e15", role: "searchbox", name: "Find" }, { key: "e16", role: "r".repeat(41), name: "Odd role" },
     ];
     expect(normalizeSnapshot(page(items), "all").map(element => element.ref)).toEqual(["@e12", "@e13", "@e14", "@e15"]);
+  });
+
+  it("also exposes named headings, status and alert text in document order (their name is their text, at most 120 characters), never in explicit-label mode", () => {
+    const items: Item[] = [
+      { key: "e1", role: "heading", name: "Orders", flags: "level=1" }, { key: "e2", role: "link", name: "Orders" }, { key: "e3", role: "status", name: "Saved" }, { key: "e4", role: "alert", name: "Could not save" },
+      { key: "e5", role: "heading", name: "h".repeat(121) }, { key: "e6", role: "heading" }, { key: "e7", role: "status", name: "   " }, { key: "e8", role: "alert", name: "bidi\u202eoverride" },
+      { key: "e9", role: "heading", name: "h".repeat(120) }, { key: "e10", role: "paragraph", name: "Plain text" }, { key: "e11", role: "StaticText", name: "Saved" }, { key: "e12", role: "alert", name: "No newline\nallowed" },
+    ];
+    expect(normalizeSnapshot(page(items), "all")).toEqual([
+      { ref: "@e1", role: "heading", name: "Orders" }, { ref: "@e2", role: "link", name: "Orders" }, { ref: "@e3", role: "status", name: "Saved" }, { ref: "@e4", role: "alert", name: "Could not save" },
+      { ref: "@e9", role: "heading", name: "h".repeat(120) },
+    ]);
+    const labels = [{ role: "link", name: "Orders" }];
+    expect(normalizeSnapshot(page(items), labels)).toEqual([{ ref: "@e2", role: "link", name: "Orders" }]);
+    expect(normalizeSnapshot(page(items), [{ role: "heading", name: "Orders" }, { role: "status", name: "Saved" }])).toEqual([{ ref: "@e1", role: "heading", name: "Orders" }, { ref: "@e3", role: "status", name: "Saved" }]);
+  });
+
+  it("shares the 512 cap between controls and text elements", () => {
+    const mixed = Array.from({ length: MAX_ALL_ELEMENTS + 10 }, (_, index) => ({ key: `e${index + 1}`, role: index % 2 === 0 ? "heading" : "button", name: `Item ${index + 1}` }));
+    expect(normalizeSnapshot(page(mixed), "all")).toHaveLength(MAX_ALL_ELEMENTS);
   });
 
   it("keeps at most 512 elements and still refuses unusable output", () => {

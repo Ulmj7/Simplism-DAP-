@@ -26,6 +26,8 @@ export interface StandaloneOptions {
   readonly key: string;
   /** The script's own URL: its origin is the API origin. */
   readonly scriptSrc: string;
+  /** The DAP API origin when it is not the script's own (`data-dap-api`, already validated by the installer; checked again here). */
+  readonly apiOrigin?: string;
   readonly fetch?: typeof fetch;
   readonly trustedEventsOnly?: boolean;
   /** Resolves when the stylesheet has loaded (or failed): the launcher is not shown before. */
@@ -61,11 +63,11 @@ export function parseGuideList(value: unknown): readonly GuideSummary[] | null {
   } catch { return null; }
 }
 
-export function installStandalone({ window: win, key, scriptSrc, fetch: fetcher = win.fetch.bind(win), trustedEventsOnly = true, stylesheet, removeStylesheet }: StandaloneOptions): { readonly ok: boolean; destroy(): void } {
+export function installStandalone({ window: win, key, scriptSrc, fetch: fetcher = win.fetch.bind(win), trustedEventsOnly = true, stylesheet, removeStylesheet, apiOrigin: given }: StandaloneOptions): { readonly ok: boolean; destroy(): void } {
   const inert = { ok: false, destroy() {} } as const;
   let base: URL;
   try { base = new URL(scriptSrc); } catch { return inert; }
-  const apiOrigin = base.origin;
+  const apiOrigin = given ?? base.origin;
   if (!RUNTIME_KEY.test(key) || !normalizedOrigin(apiOrigin) || Object.hasOwn(win, "DapEmbed")) return inert;
   const doc = win.document;
   const root = `${apiOrigin}/api/runtime/${encodeURIComponent(key)}/guides`;

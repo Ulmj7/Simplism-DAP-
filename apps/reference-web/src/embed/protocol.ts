@@ -84,7 +84,7 @@ function step(value: unknown): value is WalkthroughDef["steps"][number] {
 const element = (item: unknown): item is EmbeddedElement => shape(item, ["id", "route", "role", "label", "description", "operations", "privacy"], ["marker"])
   && targetIdOf(item.id) && routeKey(item.route) && isPlainText(item.label, MAX_TITLE) && isPlainText(item.description, MAX_TEXT)
   && item.privacy === "public" && array(item.operations, LIMITS.operations, (value): value is string => typeof value === "string")
-  && (managedOperations(item.role, item.operations) || (item.role === "text" && (item.operations as readonly string[]).length === 1 && (item.operations as readonly string[])[0] === "highlight"))
+  && (managedOperations(item.role, item.operations) || ((item.role === "text" || item.role === "heading") && (item.operations as readonly string[]).length === 1 && (item.operations as readonly string[])[0] === "highlight"))
   && optional(item, "marker", targetIdOf);
 
 /** One check, as a closed shape per kind. The name is the deterministic `check.v<10 hex>` of the host; the expected value is short plain data. */

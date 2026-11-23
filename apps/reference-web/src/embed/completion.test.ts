@@ -337,6 +337,7 @@ describe("closed-shape parsing of the additive bundle fields", () => {
     ["a duplicate marker", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, elements: b.registry.elements.map(item => (item.id === "profile.save" ? { ...item, marker: "profile.nameField" } : item)) } })],
     ["a marker that is not a valid id", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, elements: b.registry.elements.map(item => (item.id === "profile.save" ? { ...item, marker: "x y" } : item)) } })],
     ["a duplicate element id", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, elements: [...b.registry.elements, b.registry.elements[0]] } })],
+    ["a heading element with a click operation", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, elements: b.registry.elements.map(item => (item.role === "text" ? { ...item, role: "heading", operations: ["highlight", "click"] } : item)) } })],
     ["a text element with a click operation", (b: ManagedBundle) => ({ ...b, registry: { ...b.registry, elements: b.registry.elements.map(item => (item.role === "text" ? { ...item, operations: ["highlight", "click"] } : item)) } })],
     ["a version of 0", (b: ManagedBundle) => ({ ...b, version: 0 })],
     ["a non-integer version", (b: ManagedBundle) => ({ ...b, version: 1.5 })],
@@ -346,6 +347,11 @@ describe("closed-shape parsing of the additive bundle fields", () => {
     const bundle = make();
     const result = mountManagedRuntime({ window, bundle: { ...bundle, definition: { ...bundle.definition, steps: [{ ...bundle.definition.steps[0]!, verify: name("ffff") } as never, ...bundle.definition.steps.slice(1)] } }, onStatus: () => undefined });
     expect(result.ok).toBe(false);
+  });
+  it("accepts a heading target with highlight only, like text", () => {
+    const bundle = make();
+    const heading = { ...bundle, registry: { ...bundle.registry, elements: bundle.registry.elements.map(item => (item.role === "text" ? { ...item, role: "heading" as const } : item)) } };
+    expect(parseBundle(heading).ok).toBe(true);
   });
   it.each(["/", "/a", "/a/b.c-d_e~f", "/users/123"])("history page %s is valid", page => { expect(historyPageOf(page)).toBe(true); });
   it.each(["", "a", "/a/", "//", "/a//b", "/a?b", "/a#b", "/é", "/a%2fb", "/a b", "/" + "a".repeat(200)])("history page %j is not valid", page => { expect(historyPageOf(page)).toBe(false); });

@@ -15,17 +15,22 @@ export const MAX_NAME_CHARS = 120;
 export const MAX_ROLE_CHARS = 40;
 /** In "all" mode at most this many elements leave the adapter, in document order (the host shows far fewer). */
 export const MAX_ALL_ELEMENTS = 512;
-// The roles of controls a person can operate. `snapshot -i` also lists headings and options as context; those are never exposed in "all" mode.
+// The roles of controls a person can operate. `snapshot -i` also lists headings and options as context; options and the rest are never exposed in "all" mode.
 const INTERACTIVE_ROLES: ReadonlySet<string> = new Set([
   "button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "combobox", "listbox", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
 ]);
+// Non-operable TEXT elements, exposed in "all" mode only (never with explicit labels): their name is the element's text, bounded like every name (a longer one is dropped, never truncated). They can only
+// be the subject of a read-only target (`highlight`) or of a verification check, and, like every element of "all" mode, they leave the HOST only when the host's own marker and privacy gate passes (the
+// host forwards a candidate only when it carries a valid data-ai-id marker and its role maps to a registrable one). NOTE (pinned CLI 0.43, verified in Chromium): `snapshot -i` gives headings a ref
+// but never gives `status` or `alert` elements one, so those two roles reach this list only if a CLI version ever assigns them a ref.
+const TEXT_ROLES: ReadonlySet<string> = new Set(["status", "alert", "heading"]);
 /** Control characters, line and paragraph separators and bidirectional overrides: not part of any name that is shown to a maintainer. */
 const UNSAFE_NAME = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u;
 
 // Keep only explicitly approved static labels. Free-form accessibility names, hints,
 // text, form values and titles can contain secrets even on a known application.
 // "all" (a Studio-managed application, whose targets are not known in advance) keeps the role and the bounded accessible name of every operable, enabled
-// control, in document order: still never a value, a hint or any text of the page. The HOST decides which of them leave it (only those carrying a valid marker).
+// control and of every named heading/status/alert, in document order: still never a value, a hint or any text of the page. The HOST decides which of them leave it (only those carrying a valid marker).
 export function normalizeSnapshot(data: Record<string, unknown>, labels: readonly ApprovedLabel[] | "all"): readonly BrowserElement[] {
   if (typeof data.snapshot !== "string" || !isRecord(data.refs)) throw new BrowserRuntimeError("INVALID_BROWSER_OUTPUT");
   const rows = new Map<string, boolean>();
@@ -46,7 +51,7 @@ export function normalizeSnapshot(data: Record<string, unknown>, labels: readonl
     if (rows.get(key) !== false) continue;
     if (labels === "all") {
       const { role, name } = value;
-      if (typeof name === "string" && INTERACTIVE_ROLES.has(role) && role.length <= MAX_ROLE_CHARS && name.trim().length > 0 && name.length <= MAX_NAME_CHARS && !UNSAFE_NAME.test(name)) {
+      if (typeof name === "string" && (INTERACTIVE_ROLES.has(role) || TEXT_ROLES.has(role)) && role.length <= MAX_ROLE_CHARS && name.trim().length > 0 && name.length <= MAX_NAME_CHARS && !UNSAFE_NAME.test(name)) {
         operable.set(key, Object.freeze({ ref: `@${key}` as ElementRef, role, name }));
       }
       continue;

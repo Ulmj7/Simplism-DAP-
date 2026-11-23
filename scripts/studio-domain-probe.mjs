@@ -306,7 +306,9 @@ try {
     await cliJson(handle.session, ["open", `${a.origin}/#/leave-origin`]);
     const { seen, last } = await watch(handle.adapter, redirectDelayMs + 6000);
     const otherPort = refusal(last) && seen.every(url => new URL(url).origin === a.origin);
-    const ok = JSON.stringify(homeNames) === JSON.stringify(["link:Orders", "link:Admin"]) && homeIds.get(home.elements[0].ref) === "nav.orders" && homeIds.get(home.elements[1].ref) === null
+    // Named headings are exposed too (document order, text elements); only the two links are operable controls.
+    const controls = home.elements.filter(element => element.role !== "heading");
+    const ok = JSON.stringify(homeNames) === JSON.stringify(["heading:Fixture application A", "heading:Home", "link:Orders", "link:Admin"]) && homeIds.get(controls[0].ref) === "nav.orders" && homeIds.get(controls[1].ref) === null
       && factsOk && anywhere === `${a.origin}/#/anywhere-at-all` && withQuery === "DOMAIN_BLOCKED" && otherPort;
     record("(vii) managed modes (all + any)", ok,
       `home ${JSON.stringify(homeNames)}; facts for ${refs.length} refs in ${latency.factsMs} ms (Order note: ${JSON.stringify(byName["Order note"])}); /#/anywhere-at-all: ${anywhere}; query: ${withQuery}; `
