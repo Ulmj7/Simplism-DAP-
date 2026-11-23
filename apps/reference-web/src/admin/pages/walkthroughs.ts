@@ -69,14 +69,14 @@ export function walkthroughsPage(options: AdminPageOptions) {
         try { return createWalkthroughCatalog(data?.registry ?? registry, data?.postconditionNames ?? POSTCONDITION_NAMES, [loaded.value.definition]).get(row.id) ?? null; }
         catch { notice.textContent = c.previewFailed; return null; }
       };
-      async function setStatus(wanted: GuideStatus) {
+      async function setStatus(wanted: GuideStatus, expectedRevision?: number) {
         busy = true; notice.textContent = c.saving;
-        const changed = await client.setStatus(row.id, wanted);
+        const changed = await client.setStatus(row.id, wanted, expectedRevision);
         busy = false;
         if (changed.kind === "ok") {
           if (wanted === "published" && getEditSession()?.id === row.id) setEditSession();
           refresh(!signal.aborted);
-        } else if (!signal.aborted) notice.textContent = writeError(changed);
+        } else if (!signal.aborted) notice.textContent = changed.kind === "conflict" && wanted === "published" ? c.publishConflict : writeError(changed);
       }
       if (row.status === "draft") action(c.edit, () => { requestEdit(row.id); navigate("editor"); });
       action(c.preview, () => {
@@ -95,7 +95,7 @@ export function walkthroughsPage(options: AdminPageOptions) {
         navigate("editor");
       };
       if (row.status === "draft") action(c.publish, trigger => {
-        openPublishReview({ page, trigger, client, id: row.id, signal, applicationId: row.applicationId, submit: () => { void setStatus("published"); } });
+        openPublishReview({ page, trigger, client, id: row.id, signal, applicationId: row.applicationId, submit: revision => { void setStatus("published", revision); } });
       });
       if (row.status !== "builtIn") action("Version history", trigger => {
         openVersions({ page, trigger, client, id: row.id, signal, hasDraft: row.status === "draft",

@@ -17,7 +17,7 @@ import { LIMITS, applicationIdOf, normalizedOrigin, targetIdOf } from "./wire.js
 export type DemoRole = "user" | "maintainer";
 export type GuideStatus = "draft" | "published";
 export interface GuideSummary { id: string; title: string; description: string }
-export interface AuthoredSummary extends GuideSummary { status: GuideStatus; stepCount: number; updatedAt: string; applicationId: string | null; liveVersion?: number | null; latestVersion?: number }
+export interface AuthoredSummary extends GuideSummary { status: GuideStatus; stepCount: number; updatedAt: string; applicationId: string | null; revision?: number; liveVersion?: number | null; latestVersion?: number }
 export interface GuideList { authored: readonly AuthoredSummary[]; builtIn: readonly GuideSummary[] }
 import { parseStudioError, parseStudioReply, studioPath } from "./studio-client.js";
 import type { StudioCommand, StudioReply } from "./studio-client.js";
@@ -57,7 +57,7 @@ export interface AdminClient {
   get(id: string): Promise<AdminResult<GuideRecord>>;
   create(applicationId: string, definition: WalkthroughDef): Promise<AdminResult<GuideRecord>>;
   update(id: string, applicationId: string, definition: WalkthroughDef, expectedRevision?: number): Promise<AdminResult<GuideRecord>>;
-  setStatus(id: string, status: GuideStatus): Promise<AdminResult<GuideRecord>>;
+  setStatus(id: string, status: GuideStatus, expectedRevision?: number): Promise<AdminResult<GuideRecord>>;
   review(id: string): Promise<AdminResult<PublishReview>>;
   versions(id: string): Promise<AdminResult<readonly GuideVersion[]>>;
   version(id: string, version: number): Promise<AdminResult<GuideVersion & { definition: WalkthroughDef }>>;
@@ -96,8 +96,8 @@ const applicationId = applicationIdOf;
 const summary = (value: Bag) => text(value.id, 64) && text(value.title, MAX_TITLE) && text(value.description, MAX_TEXT);
 const builtIn = (value: unknown): value is GuideSummary => object(value) && summary(value) && only(value, ["id", "title", "description"]);
 const authored = (value: unknown): value is AuthoredSummary => object(value) && summary(value) && authoredId(value.id)
-  && only(value, ["id", "title", "description", "status", "stepCount", "updatedAt", "applicationId", "liveVersion", "latestVersion"]) && status(value.status)
-  && versionFields(value)
+  && only(value, ["id", "title", "description", "status", "stepCount", "updatedAt", "applicationId", "revision", "liveVersion", "latestVersion"]) && status(value.status)
+  && versionFields(value) && (value.revision === undefined || versionNumber(value.revision))
   && (value.applicationId === null || applicationId(value.applicationId))
   && typeof value.stepCount === "number" && Number.isInteger(value.stepCount) && value.stepCount >= 1 && value.stepCount <= 24
   && text(value.updatedAt, 32) && Number.isFinite(Date.parse(value.updatedAt));
@@ -252,15 +252,15 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
       ? request(ADMIN, value => record(value, undefined, "draft"), "POST", { applicationId: owner, definition: { title, description, start, steps } }) : Promise.resolve(FAILED),
     update: (id, owner, def, expectedRevision) => authoredId(id) && id === def.id && applicationId(owner) && (expectedRevision === undefined || versionNumber(expectedRevision))
       ? request(`${ADMIN}/${id}`, value => record(value, id, "draft"), "PUT", { applicationId: owner, definition: def, ...(expectedRevision === undefined ? {} : { expectedRevision }) }) : Promise.resolve(FAILED),
-    setStatus: (id, wanted) => authoredId(id)
-      ? request(`${ADMIN}/${id}/status`, value => record(value, id, wanted, wanted === "published"), "POST", { status: wanted }) : Promise.resolve(FAILED),
+    setStatus: (id, wanted, expectedRevision) => authoredId(id) && (wanted === "published" ? versionNumber(expectedRevision) : expectedRevision === undefined)
+      ? request(`${ADMIN}/${id}/status`, value => record(value, id, wanted, wanted === "published"), "POST", { status: wanted, ...(expectedRevision === undefined ? {} : { expectedRevision }) }) : Promise.resolve(FAILED),
     review: id => authoredId(id) ? request(`${ADMIN}/${id}/review`, parsePublishReview, "POST", {}) : Promise.resolve(FAILED),
     versions: id => authoredId(id) ? request(`${ADMIN}/${id}/versions`, parseVersions) : Promise.resolve(FAILED),
     version: (id, wanted) => authoredId(id) && versionNumber(wanted) ? request(`${ADMIN}/${id}/versions/${wanted}`, value => {
       if (!object(value)) return null;
       const { definition: snapshot, ...metadata } = value;
       const parsed = parseVersion(metadata);
-      return parsed?.version === wanted && definition(snapshot) && snapshot.id === id && snapshot.steps.length === parsed.stepCount
+      return parsed?.version === wanted && definition(snapshot) && snapshot.id === id && snapshot.steps.filter(step => step.kind === "guide").length === parsed.stepCount
         ? { ...parsed, definition: snapshot } : null;
     }) : Promise.resolve(FAILED),
     revise: id => authoredId(id) ? request(`${ADMIN}/${id}/revise`, value => {
@@ -295,7 +295,7 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
       return applicationId(id) && body !== null ? request(`${APPLICATIONS}/${id}/checks`, value => {
         const parsed = parseCheckView(value);
         // The reply is the check that was asked for, nothing else.
-        return parsed !== null && parsed.kind === input.kind && parsed.targetId === (input.targetId ?? null) && parsed.route === (input.route ?? null) && parsed.attribute === (input.attribute ?? null) && parsed.expected === (input.expected ?? null) && parsed.status === "active" ? parsed : null;
+        return parsed !== null && parsed.kind === input.kind && parsed.targetId === (input.targetId ?? null) && parsed.route === (input.route ?? null) && parsed.attribute === (input.attribute ?? null) && parsed.expected === (input.expected ?? null) ? parsed : null;
       }, "POST", body) : Promise.resolve(FAILED);
     },
     setCheckStatus: (id, name, wanted) => applicationId(id) && /^check\.v[0-9a-f]{10}$/u.test(name) && (wanted === "active" || wanted === "disabled")

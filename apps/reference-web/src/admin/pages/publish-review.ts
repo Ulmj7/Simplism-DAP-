@@ -30,7 +30,7 @@ function summary({ application, title, steps, targets, verification, currentVers
 
 export function openPublishReview({ page, trigger, client, id, signal, applicationId, submit }: {
   readonly page: HTMLElement; readonly trigger: HTMLButtonElement; readonly client: AdminClient; readonly id: string; readonly signal: AbortSignal;
-  readonly applicationId?: string | null | undefined; readonly submit: () => void;
+  readonly applicationId?: string | null | undefined; readonly submit: (revision: number) => void;
 }): void {
   if (signal.aborted || page.querySelector("dialog[open]")) return;
   const dialog = h("dialog", { class: "dap-result publish-review", "aria-labelledby": "publish-review-title", "aria-describedby": "publish-review-description", "aria-modal": "true" }) as HTMLDialogElement;
@@ -40,7 +40,9 @@ export function openPublishReview({ page, trigger, client, id, signal, applicati
   const retry = button("Retry review");
   const cancel = button(c.cancel);
   const publish = button(c.publish, true);
+  let reviewedRevision: number | undefined;
   async function load() {
+    reviewedRevision = undefined;
     status.textContent = "Validating the saved workflow…";
     alert.textContent = "";
     content.replaceChildren();
@@ -56,6 +58,7 @@ export function openPublishReview({ page, trigger, client, id, signal, applicati
     }
     const review = result.value;
     content.append(summary(review.summary), issues("Blockers", review.blockers), issues("Warnings", review.warnings));
+    if (review.ok) reviewedRevision = review.revision;
     publish.disabled = !review.ok;
     if (review.ok) status.textContent = "Review complete. Confirm Publish when you are ready.";
     else alert.textContent = "Resolve the blockers before publishing.";
@@ -71,7 +74,7 @@ export function openPublishReview({ page, trigger, client, id, signal, applicati
   }
   cancel.addEventListener("click", () => close());
   retry.addEventListener("click", () => { cancel.focus(); void load(); });
-  publish.addEventListener("click", () => { if (!publish.disabled && !signal.aborted && close()) submit(); });
+  publish.addEventListener("click", () => { if (reviewedRevision !== undefined && !publish.disabled && !signal.aborted && close()) submit(reviewedRevision); });
   dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
   dialog.addEventListener("keydown", event => {
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }

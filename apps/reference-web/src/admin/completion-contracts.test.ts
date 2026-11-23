@@ -234,3 +234,21 @@ describe("client calls (S3/S4)", () => {
     expect(await client.studio!({ ...command, confirm: true })).toEqual({ kind: "browser-error", code: "REPAIR_INCOMPATIBLE", issues: ["Step 2 of Draft one no longer validates."] });
   });
 });
+
+it("reads a managed registry with its checks and all 120 postconditions, keeping the built-in shape unchanged", async () => {
+  const { parseApplicationRegistry } = await import("./applications.js");
+  const routes = Array.from({ length: 20 }, (_, index) => `route${index}`);
+  const checks = Array.from({ length: 100 }, (_, index) => ({
+    name: `check.v${index.toString(16).padStart(10, "0")}`, kind: "route.equals", route: routes[index % routes.length],
+    targetId: null, attribute: null, expected: null, status: "active", references: { drafts: 0, published: 0 },
+  }));
+  const names = [...routes.map(route => `route.${route}`), ...checks.map(item => item.name)];
+  const managed = { routes, elements: [], postconditionNames: names, source: "studio-managed", previewMode: "application-window", previewable: true,
+    pages: Object.fromEntries(routes.map(route => [`/#/${route}`, route])), checks };
+  const parsed = parseApplicationRegistry(managed);
+  expect(parsed?.checks).toEqual(checks);
+  expect(parsed?.postconditionNames).toEqual(names);
+  expect(parseApplicationRegistry({ ...managed, postconditionNames: [...names, "check.vfffffffffe"] })).toBeNull();
+  expect(parseApplicationRegistry({ routes: ["home"], elements: [], postconditionNames: ["route.home"], source: "built-in",
+    previewMode: "in-app", previewable: true, pages: { "/": "home" } })?.checks).toEqual([]);
+});

@@ -79,12 +79,12 @@ function fakeHost(seed: GuideRecord[] = []) {
     const history = versions.get(id) ?? [];
     if (action === "versions" && method === "GET") {
       const wanted = path.split("/")[6];
-      if (!wanted) return json({ versions: history.map(({ definition: snapshot, ...item }) => ({ ...item, live: item.version === stored.liveVersion, stepCount: snapshot.steps.length })) });
+      if (!wanted) return json({ versions: history.map(({ definition: snapshot, ...item }) => ({ ...item, live: item.version === stored.liveVersion, stepCount: snapshot.steps.filter(step => step.kind === "guide").length })) });
       const item = history.find(item => String(item.version) === wanted);
       return item ? json({ ...item, live: item.version === stored.liveVersion }) : json({}, 404);
     }
     if (action === "review" && method === "POST") return json({
-      ok: true, blockers: [], warnings: [],
+      ok: true, revision: stored.revision ?? 1, blockers: [], warnings: [],
       summary: { application: { id: appId, name: referenceApplication.name }, title: stored.definition.title, steps: stored.definition.steps.length,
         targets: { healthy: 0, unverified: 1, broken: 0, disabled: 0 }, verification: { steps: 1, withVerify: 0 },
         currentVersion: stored.liveVersion ?? null, nextVersion: (stored.latestVersion ?? 0) + 1 },
@@ -103,11 +103,12 @@ function fakeHost(seed: GuideRecord[] = []) {
       if (!snapshot) return json({}, 404);
       result = { ...result, definition: structuredClone(snapshot.definition), status: "draft", revision: (stored.revision ?? 1) + 1 };
     } else {
-      const { status } = body as { status: GuideStatus };
+      const { status, expectedRevision } = body as { status: GuideStatus; expectedRevision?: number };
+      if (status === "published" && expectedRevision !== (stored.revision ?? 1)) return json({ kind: "conflict", code: "REVISION_CONFLICT", currentRevision: stored.revision ?? 1 }, 409);
       version = status === "published" ? (stored.latestVersion ?? 0) + 1 : undefined;
       if (version !== undefined) {
         versions.set(id, [...history, { version, definition: structuredClone(stored.definition), publishedAt: "2026-11-20T00:00:00.000Z",
-          publishedBy: "Demo maintainer", stepCount: stored.definition.steps.length, live: true }]);
+          publishedBy: "Demo maintainer", stepCount: stored.definition.steps.filter(step => step.kind === "guide").length, live: true }]);
       }
       result = { ...result, status, revision: (stored.revision ?? 1) + 1, liveVersion: version ?? null, latestVersion: version ?? stored.latestVersion ?? 0 };
     }
@@ -502,7 +503,7 @@ it("shows review loading and retry, blocks publication, and renders warnings as 
   finish(json({}, 503)); await turn();
   expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("Could not review");
   expect(button(dialog, "Retry review").hidden).toBe(false);
-  host.overrides.set(`POST ${path}`, () => json({ ok: false, blockers: [{ code: "TARGET_DISABLED", message: "Target disabled." }], warnings: [], summary }));
+  host.overrides.set(`POST ${path}`, () => json({ ok: false, revision: 1, blockers: [{ code: "TARGET_DISABLED", message: "Target disabled." }], warnings: [], summary }));
   button(dialog, "Retry review").click(); await turn();
   expect(dialog.textContent).toContain("Target disabled.");
   expect(button(dialog, c.publish).disabled).toBe(true);
@@ -511,7 +512,7 @@ it("shows review loading and retry, blocks publication, and renders warnings as 
   button(dialog, c.cancel).click();
   expect(document.activeElement).toBe(trigger);
   host.overrides.set(`POST ${path}`, () => json({
-    ok: true, blockers: [], warnings: [{ code: "TARGET_BROKEN", message: "<strong>Repair it</strong>", stepIndex: 1, targetId: "settings.securityPanel" }], summary,
+    ok: true, revision: 1, blockers: [], warnings: [{ code: "TARGET_BROKEN", message: "<strong>Repair it</strong>", stepIndex: 1, targetId: "settings.securityPanel" }], summary,
   }));
   trigger.click(); await turn();
   const warning = control(root, "dialog");
@@ -591,4 +592,26 @@ it("announces a version-history read failure, retries, and shows the empty state
   host.overrides.delete(path);
   button(panel, "Retry versions").click(); await turn();
   expect(panel.querySelector('[role="status"]')?.textContent).toContain("No versions have been published yet.");
+});
+
+it.each(["walkthroughs", "editor"] as const)("requires a fresh publish review after a stale confirmation from %s", async route => {
+  const record = { ...guide(savedId, "draft", authored(savedId, "Reviewed workflow")), revision: 2, liveVersion: null, latestVersion: 0 };
+  const host = fakeHost([record]);
+  if (route === "editor") requestEdit(savedId);
+  const { root } = await setup(route, host);
+  const name = route === "editor" ? c.publish : "Publish: Reviewed workflow";
+  const confirm = async () => { button(root, name).click(); await turn(); return control(root, "dialog[open]"); };
+  const stale = await confirm();
+  host.rows.set(savedId, { ...record, revision: 3, definition: authored(savedId, "Changed elsewhere") });
+  button(stale, c.publish).click(); await turn();
+  expect(root.textContent).toContain(c.publishConflict);
+  expect(root.querySelector("dialog[open]")).toBeNull();
+  expect(host.versions.get(savedId)).toBeUndefined();
+  expect(host.writes().at(-1)?.body).toEqual({ status: "published", expectedRevision: 2 });
+  const fresh = await confirm();
+  expect(fresh.textContent).toContain("Changed elsewhere");
+  button(fresh, c.publish).click(); await turn();
+  expect(host.writes().at(-1)?.body).toEqual({ status: "published", expectedRevision: 3 });
+  expect(host.versions.get(savedId)?.[0]?.definition.title).toBe("Changed elsewhere");
+  expect(host.requests.filter(item => item.path.endsWith("/review"))).toHaveLength(2);
 });

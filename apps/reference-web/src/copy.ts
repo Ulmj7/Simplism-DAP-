@@ -26,6 +26,7 @@ export const copy = {
   loading: "Loading…", readFailed: "Walkthroughs could not be loaded. Please try again.", search: "Search walkthroughs", empty: "No walkthroughs match your search.",
   newGuide: "New walkthrough", title: "Title", description: "Description", steps: "Steps", status: "Status", updated: "Updated", actions: "Actions",
   builtIn: "Built-in", draft: "Draft", published: "Published", edit: "Edit", preview: "Preview", publish: "Publish", unpublish: "Unpublish", cancel: "Cancel",
+  publishConflict: "The draft changed after review. Review it again before publishing.",
   publishTitle: "Publish this walkthrough?", publishMessage: "Published walkthroughs become available to users.",
   listBack: "Back to walkthroughs", add: "Add step", remove: "Remove", up: "Move up", down: "Move down", step: "Step",
   target: "Semantic target", wait: "Interaction", text: "Instruction", verify: "Check after this step", completion: "Completion message", none: "None",

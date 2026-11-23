@@ -8,10 +8,11 @@ export interface ReviewIssue {
 }
 export interface PublishReview {
   readonly ok: boolean;
+  readonly revision: number;
   readonly blockers: readonly ReviewIssue[];
   readonly warnings: readonly ReviewIssue[];
   readonly summary: {
-    readonly application: { readonly id: string; readonly name: string };
+    readonly application: { readonly id: string | null; readonly name: string };
     readonly title: string;
     readonly steps: number;
     readonly targets: { readonly healthy: number; readonly unverified: number; readonly broken: number; readonly disabled: number };
@@ -44,12 +45,12 @@ export const liveVersion = (value: unknown): value is number | null => value ===
 export const latestVersion = (value: unknown): value is number => count(value, LIMITS.revision);
 
 export function parsePublishReview(value: unknown): PublishReview | null {
-  if (!record(value) || !exact(value, ["ok", "blockers", "warnings", "summary"]) || typeof value.ok !== "boolean"
+  if (!record(value) || !exact(value, ["ok", "revision", "blockers", "warnings", "summary"]) || typeof value.ok !== "boolean" || !versionNumber(value.revision)
     || !issueList(value.blockers) || !issueList(value.warnings) || value.ok !== (value.blockers.length === 0)) return null;
   const { summary } = value;
   if (!record(summary) || !exact(summary, ["application", "title", "steps", "targets", "verification", "currentVersion", "nextVersion"])) return null;
   const { application, title, steps, targets, verification, currentVersion, nextVersion } = summary;
-  if (!record(application) || !exact(application, ["id", "name"]) || !applicationIdOf(application.id) || !bounded(application.name, LIMITS.applicationName)
+  if (!record(application) || !exact(application, ["id", "name"]) || !(application.id === null || applicationIdOf(application.id)) || !bounded(application.name, LIMITS.applicationName)
     || typeof title !== "string" || title.length > LIMITS.label || (value.ok && title.trim() === "") || !count(steps, MAX_STEPS) || (value.ok && steps === 0)
     || !record(targets) || !exact(targets, ["healthy", "unverified", "broken", "disabled"])
     || !count(targets.healthy, LIMITS.targets) || !count(targets.unverified, LIMITS.targets)
@@ -58,7 +59,7 @@ export function parsePublishReview(value: unknown): PublishReview | null {
     || !liveVersion(currentVersion) || !versionNumber(nextVersion) || (currentVersion !== null && currentVersion >= nextVersion)
     || [...value.blockers, ...value.warnings].some(item => item.stepIndex !== undefined && item.stepIndex >= steps)) return null;
   return {
-    ok: value.ok, blockers: value.blockers, warnings: value.warnings,
+    ok: value.ok, revision: value.revision, blockers: value.blockers, warnings: value.warnings,
     summary: {
       application: { id: application.id, name: application.name }, title, steps,
       targets: { healthy: targets.healthy, unverified: targets.unverified, broken: targets.broken, disabled: targets.disabled },

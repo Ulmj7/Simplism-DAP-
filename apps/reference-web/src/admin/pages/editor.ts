@@ -304,7 +304,14 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
           return;
         }
         const created = result.value;
-        if (!checks.some(item => item.name === created.name)) checks = [...checks, created];
+        checks = [...checks.filter(item => item.name !== created.name), created];
+        if (created.status === "disabled") {
+          postconditions = postconditions.filter(name => name !== created.name);
+          alert.textContent = "This verification check is disabled. Enable it before using it in a workflow.";
+          update();
+          set.focus();
+          return;
+        }
         if (!postconditions.includes(created.name)) postconditions = [...postconditions, created.name];
         step.verify = created.name;
         renderInspector(); changed(); focusCondition();
@@ -680,15 +687,15 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   publish.addEventListener("click", () => {
     const id = session.id;
     if (!canEdit() || publish.disabled || id === undefined || session.dirty || !update().ok) return;
-    openPublishReview({ page, trigger: publish, client, id, signal, applicationId: session.applicationId, submit() {
+    openPublishReview({ page, trigger: publish, client, id, signal, applicationId: session.applicationId, submit(revision) {
       if (!canEdit() || session.dirty || !update().ok) return;
       setBusy(true); notice.textContent = c.saving;
-      void client.setStatus(id, "published").then(result => {
+      void client.setStatus(id, "published", revision).then(result => {
         if (result.kind === "ok") {
           if (getEditSession() === session) setEditSession();
           if (!signal.aborted) navigate("walkthroughs");
           refresh(!signal.aborted);
-        } else if (!signal.aborted) { setBusy(false); notice.textContent = writeError(result); publish.focus(); }
+        } else if (!signal.aborted) { setBusy(false); notice.textContent = result.kind === "conflict" ? c.publishConflict : writeError(result); publish.focus(); }
       });
     } });
   });

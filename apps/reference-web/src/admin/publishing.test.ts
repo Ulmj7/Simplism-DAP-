@@ -17,8 +17,8 @@ const summary = {
   verification: { steps: 1, withVerify: 1 }, currentVersion: 1, nextVersion: 2,
 };
 const diagnostic = { code: "TARGET_BROKEN", message: "Check this target", stepIndex: 0, targetId: "profile.name" };
-const review = { ok: true, blockers: [], warnings: [diagnostic], summary };
-const version = { version: 1, publishedAt: "2026-11-20T00:00:00.000Z", publishedBy: "Maintainer", stepCount: 2, live: true };
+const review = { ok: true, revision: 5, blockers: [], warnings: [diagnostic], summary };
+const version = { version: 1, publishedAt: "2026-11-20T00:00:00.000Z", publishedBy: "Maintainer", stepCount: 1, live: true };
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
 
 it("accepts review warnings on a publishable workflow and blockers on a non-publishable workflow", () => {
@@ -30,6 +30,8 @@ it("accepts review warnings on a publishable workflow and blockers on a non-publ
 it.each([
   { ...review, blockers: [diagnostic] },
   { ...review, ok: false },
+  { ...review, revision: 0 },
+  { ...review, revision: undefined },
   { ...review, warnings: [{ ...diagnostic, stepIndex: 2 }] },
   { ...review, warnings: [{ ...diagnostic, extra: "anything" }] },
   { ...review, warnings: [{ ...diagnostic, message: "x".repeat(201) }] },
@@ -60,10 +62,10 @@ it("uses the exact version and review API, and keeps the returned revision and p
   expect(await client.version(id, 1)).toEqual({ kind: "ok", value: { ...version, definition } });
   expect(await client.revise(id)).toEqual({ kind: "ok", value: saved });
   expect(await client.restore(id, 1)).toEqual({ kind: "ok", value: saved });
-  expect(await client.setStatus(id, "published")).toMatchObject({ kind: "ok", value: { version: 2, revision: 6 } });
+  expect(await client.setStatus(id, "published", 5)).toMatchObject({ kind: "ok", value: { version: 2, revision: 6 } });
   expect(fetch.mock.calls.map(([url, init]) => [url, init.method, init.body])).toEqual([
     [`${path}/review`, "POST", "{}"], [`${path}/versions`, "GET", undefined], [`${path}/versions/1`, "GET", undefined],
-    [`${path}/revise`, "POST", "{}"], [`${path}/restore`, "POST", '{"version":1}'], [`${path}/status`, "POST", '{"status":"published"}'],
+    [`${path}/revise`, "POST", "{}"], [`${path}/restore`, "POST", '{"version":1}'], [`${path}/status`, "POST", '{"status":"published","expectedRevision":5}'],
   ]);
 });
 
@@ -77,7 +79,7 @@ it("rejects version details for a different workflow or wrong version and a publ
   expect(fetch).not.toHaveBeenCalled();
   expect(await client.version(id, 1)).toEqual({ kind: "failed" });
   expect(await client.version(id, 1)).toEqual({ kind: "failed" });
-  expect(await client.setStatus(id, "published")).toEqual({ kind: "failed" });
+  expect(await client.setStatus(id, "published", 5)).toEqual({ kind: "failed" });
 });
 
 it("compares metadata, target/verification changes and step order by identity", () => {

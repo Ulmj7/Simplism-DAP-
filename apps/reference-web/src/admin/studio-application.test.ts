@@ -132,7 +132,7 @@ function fakeHost(seed: { apps?: App[]; guides?: GuideRecord[] } = {}) {
       const stored = rows.get(review[1]!);
       const owner = stored?.applicationId ? apps.get(stored.applicationId) : undefined;
       if (!stored || !owner) return json({}, 404);
-      return json({ ok: owner.enabled, blockers: owner.enabled ? [] : [{ code: "APPLICATION_DISABLED", message: c.application.failures.APPLICATION_DISABLED }], warnings: [],
+      return json({ ok: owner.enabled, revision: stored.revision ?? 1, blockers: owner.enabled ? [] : [{ code: "APPLICATION_DISABLED", message: c.application.failures.APPLICATION_DISABLED }], warnings: [],
         summary: { application: { id: owner.id, name: owner.name }, title: stored.definition.title, steps: stored.definition.steps.length,
           targets: { healthy: 0, unverified: 1, broken: 0, disabled: 0 }, verification: { steps: 1, withVerify: 0 }, currentVersion: null, nextVersion: 1 },
       });
@@ -1051,4 +1051,20 @@ it("keeps step and verification controls in keyboard order in the responsive edi
   expect(editor).toMatch(/@media \(max-width: 899px\) \{\s*\.editor-panes-studio \{ grid-template-columns: minmax\(var\(--zero\), 1fr\)/u);
   expect(editor.slice(editor.indexOf("Editor core (S9)"))).not.toMatch(/\b(?:width|min-width|max-width)\s*:\s*\d+px/u);
   expect(editor).toContain(".editor-panes[hidden] { display: none; }");
+});
+
+it("announces an existing disabled check without binding it or changing its status", async () => {
+  const { host, endpoint } = managedEditor();
+  const path = `${endpoint}/checks`;
+  const disabled = { name: "check.v0000000001", kind: "route.equals", targetId: null, route: "orders", attribute: null, expected: null, status: "disabled", references: { drafts: 0, published: 0 } };
+  host.overrides.set(`POST ${path}`, () => json(disabled));
+  const { root } = await setup("editor", host);
+  fill(root, "editor-verification-condition", "route", "change");
+  fill(root, "editor-verification-route", "orders", "change");
+  await click(root, "Set verification");
+  expect(control(root, '#editor-verification-alert[role="alert"]').textContent).toContain("This verification check is disabled.");
+  expect(control(root, "#editor-verification-words").textContent).toBe("No verification.");
+  expect(host.writes()).toEqual([{ path, method: "POST", body: { kind: "route.equals", route: "orders" } }]);
+  await click(root, c.save);
+  expect(host.rows.get(savedId)?.definition.steps[1]).not.toHaveProperty("verify");
 });
