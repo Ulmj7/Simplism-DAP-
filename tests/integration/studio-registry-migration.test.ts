@@ -254,3 +254,24 @@ describe("the migration file", () => {
     expect((await app.query("SELECT conname FROM pg_constraint WHERE conrelid='public.studio_applications'::regclass AND contype='u'")).rows).toEqual([{ conname: "studio_applications_registry_key" }]);
   });
 });
+
+describe("migration 075 registry array values", () => {
+  it("rejects duplicate operations and origins on direct inserts as dap_app", async () => {
+    const { tenant, id } = await ready();
+    await expect(target(tenant, id, { operations: ["highlight", "highlight"] }))
+      .rejects.toMatchObject({ code: "23514", constraint: "studio_registry_targets_distinct_operations" });
+    await expect(asTenant(app, tenant, (q) => q(INSERT_APP.replace("ARRAY['http://localhost:5184']", "ARRAY['http://localhost:5184','http://localhost:5184']"),
+      [tenant, newApp(), "studio-managed"])))
+      .rejects.toMatchObject({ code: "23514", constraint: "studio_applications_distinct_origins" });
+  });
+
+  it("can be reapplied twice and preserves a valid target's stored operations", async () => {
+    const { tenant, id } = await ready();
+    await target(tenant, id, { operations: ["click", "highlight"] });
+    const sql = await readFile(new URL("../../db/migrations/075_studio_registry_operations.sql", import.meta.url), "utf8");
+    await owner.query(sql);
+    await owner.query(sql);
+    expect((await asTenant(app, tenant, (q) => q("SELECT operations FROM public.studio_registry_targets WHERE application_id=$1", [id]))).rows)
+      .toEqual([{ operations: ["click", "highlight"] }]);
+  });
+});
