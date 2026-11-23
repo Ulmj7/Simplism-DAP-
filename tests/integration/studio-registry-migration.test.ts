@@ -247,13 +247,13 @@ describe("the migration file", () => {
     await owner.query(sql);
     expect(await snapshot()).toEqual(before);
     expect((await app.query("SELECT count(*)::int AS n FROM pg_policies WHERE tablename IN ('studio_registry_routes','studio_registry_targets')")).rows).toEqual([{ n: 2 }]);
-    expect((await app.query("SELECT count(*)::int AS n FROM pg_trigger WHERE tgrelid IN ('public.studio_registry_routes'::regclass,'public.studio_registry_targets'::regclass) AND NOT tgisinternal")).rows).toEqual([{ n: 4 }]);
+    expect((await app.query("SELECT count(*)::int AS n FROM pg_trigger WHERE tgrelid IN ('public.studio_registry_routes'::regclass,'public.studio_registry_targets'::regclass) AND NOT tgisinternal")).rows).toEqual([{ n: 5 }]); // + the page-grammar trigger of migration 076
     await assertStateAcl(app, "studio_registry_targets", ["SELECT", "INSERT", "UPDATE"]);
     await assertStateAcl(app, "studio_registry_routes", ["SELECT", "INSERT"]);
     await expect(app.query(sql)).rejects.toThrow(/requires dap_owner/);
   });
-  it("adds only the UNIQUE key to studio_applications (072 and 073 are otherwise untouched)", async () => {
-    expect((await app.query("SELECT conname FROM pg_constraint WHERE conrelid='public.studio_applications'::regclass AND contype='u'")).rows).toEqual([{ conname: "studio_applications_registry_key" }]);
+  it("adds only the UNIQUE keys of 074 and 076 to studio_applications (072 and 073 are otherwise untouched)", async () => {
+    expect((await app.query("SELECT conname FROM pg_constraint WHERE conrelid='public.studio_applications'::regclass AND contype='u' ORDER BY conname")).rows).toEqual([{ conname: "studio_applications_registry_key" }, { conname: "studio_applications_runtime_key_key" }]); // the second is migration 076's
   });
 });
 

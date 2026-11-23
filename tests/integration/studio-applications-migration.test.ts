@@ -54,10 +54,14 @@ describe("migration 072: studio_applications", () => {
       { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO" },
       { column_name: "updated_by", data_type: "text", is_nullable: "NO" },
       { column_name: "updated_at", data_type: "timestamp with time zone", is_nullable: "NO" },
+      // migration 076 (Studio completion): routing, runtime access and the runtime key
+      { column_name: "routing", data_type: "text", is_nullable: "NO" },
+      { column_name: "runtime_access", data_type: "boolean", is_nullable: "NO" },
+      { column_name: "runtime_key", data_type: "text", is_nullable: "YES" },
     ]);
     expect((await app.query("SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='public.studio_applications'::regclass AND contype='p'")).rows).toEqual([{ definition: "PRIMARY KEY (tenant_id, application_id)" }]);
     expect((await app.query("SELECT indexname FROM pg_indexes WHERE schemaname='public' AND tablename='studio_applications' ORDER BY indexname")).rows).toEqual([
-      { indexname: "studio_applications_pkey" }, { indexname: "studio_applications_registry_key" }, { indexname: "studio_applications_tenant_updated_idx" },
+      { indexname: "studio_applications_pkey" }, { indexname: "studio_applications_registry_key" }, { indexname: "studio_applications_runtime_key_key" }, { indexname: "studio_applications_tenant_updated_idx" },
     ]);
     expect((await app.query("SELECT column_default FROM information_schema.columns WHERE table_name='studio_applications' AND column_name='enabled'")).rows).toEqual([{ column_default: "true" }]);
   });
@@ -111,7 +115,7 @@ describe("migration 072: studio_applications", () => {
     await owner.query(sql);
     await owner.query(sql);
     expect((await app.query("SELECT relacl::text AS acl, relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid='public.studio_applications'::regclass")).rows).toEqual(before);
-    expect((await app.query("SELECT count(*)::int AS n FROM pg_policies WHERE tablename='studio_applications'")).rows).toEqual([{ n: 1 }]);
+    expect((await app.query("SELECT count(*)::int AS n FROM pg_policies WHERE tablename='studio_applications'")).rows).toEqual([{ n: 2 }]); // tenant_isolation (072) + the dap_owner-only runtime_lookup (076)
     await assertStateAcl(app, "studio_applications", ["SELECT", "INSERT", "UPDATE"]);
     await expect(app.query(sql)).rejects.toThrow(/requires dap_owner/);
   });
