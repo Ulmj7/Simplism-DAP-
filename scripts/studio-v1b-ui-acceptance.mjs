@@ -210,6 +210,13 @@ await runStudioAcceptance(async () => {
     assert.deepEqual((await candidates()).map(row => row.name).sort(), ["Order note", "Submit order"]);
     const visible = await read('document.querySelector(".studio-workspace").textContent');
     assert.doesNotMatch(visible, /orders\.secret|orders\.private|admin\.reset|Private action|Password|Reset|Cancel/u);
+    // A marker carried by more than one control identifies none of them: neither twin is listed, both are only counted, and their names appear nowhere.
+    assert.doesNotMatch(visible, /Twin|orders\.twin/u);
+    assert.doesNotMatch(JSON.stringify(refreshed), /Twin|orders\.twin/u);
+    await evaluate(browse, `document.querySelectorAll('${marker("orders.twin")}').forEach(node => node.remove())`);
+    const untwinned = await inspect(originB + "/#/orders");
+    assert.equal(untwinned.hidden, refreshed.hidden - 2);
+    assert.deepEqual((await candidates()).map(row => row.name).sort(), ["Order note", "Submit order"]);
     const fields = await openRegistration("Order note", "orders.note");
     assert.deepEqual(fields.operations, ["highlight", "input", "focus"]);
     await fill("Description", "Enter the order note.");
@@ -222,21 +229,22 @@ await runStudioAcceptance(async () => {
     if (process.argv.includes("--ordinary")) {
       await register("Submit order", "orders.submit");
     } else {
-      // Deliberately create two live refs for one durable ID to exercise the duplicate race while the second confirmation remains open.
-      await evaluate(browse, `(() => { const original = document.querySelector('${marker("orders.submit")}'); const copy = original.cloneNode(true);
-        copy.id = "duplicate-submit"; copy.textContent = "Second submit control"; original.after(copy); return true; })()`);
-      const duplicate = await inspect(originB + "/#/orders");
-      await openRegistration("Second submit control", "orders.submit");
+      // Another maintainer's host registers the same durable ID while this confirmation is open: the write happens outside this Studio session, with exactly the columns the real store writes.
+      await openRegistration("Submit order", "orders.submit");
       await fill("Description", "Submit the current order.");
-      const original = duplicate.elements.find(item => item.name === "Submit order");
-      assert.equal(original.status, "registrable");
-      const start = performance.now();
-      await request("POST", studio, 200, { action: "register", applicationId: appB, sessionId: last("connect").response.sessionId, ref: original.ref,
-        targetId: "orders.submit", route: "orders", label: "Submit order", description: "Submit the current order.", operations: ["highlight", "click"], privacy: "public" });
-      metrics.register.push(elapsed(start));
+      await query(async client => {
+        const { rows: [peer] } = await client.query("SELECT created_by FROM public.studio_registry_targets WHERE application_id = $1 AND target_id = 'orders.note'", [appB]);
+        assert.ok(peer?.created_by);
+        await client.query(`INSERT INTO public.studio_registry_targets (tenant_id, application_id, target_id, route, role, label, description, operations, privacy, status, created_by, updated_by)
+          VALUES (current_setting('app.tenant_id')::uuid, $1, 'orders.submit', 'orders', 'button', 'Submit order', 'Written by another maintainer.', ARRAY['highlight', 'click']::text[], 'public', 'active', $2, $2)`, [appB, peer.created_by]);
+      });
       await click("Register target"); await alert("A target with this ID is already registered");
+      assert.equal(last("register").status, 409);
       assert.equal(last("register").response.error, "TARGET_EXISTS");
-      await evaluate(browse, 'document.querySelector("#duplicate-submit").remove()');
+      const written = await query(async client => (await client.query("SELECT description, created_by, updated_by FROM public.studio_registry_targets WHERE application_id = $1 AND target_id = 'orders.submit'", [appB])).rows);
+      assert.equal(written.length, 1);
+      assert.equal(written[0].description, "Written by another maintainer.");
+      assert.equal(written[0].updated_by, written[0].created_by);
     }
     await inspect(originB + "/#/orders");
   });
