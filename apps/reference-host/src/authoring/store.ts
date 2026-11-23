@@ -21,7 +21,22 @@ export interface Scope {
   /** The safe actor id from the trusted context (`call.security.userId`). */
   readonly actor: string;
 }
-export interface StoredSummary {
+export interface RevisionState {
+  readonly revision: number;
+  readonly liveVersion: number | null;
+  readonly latestVersion: number;
+}
+export interface VersionSummary {
+  readonly version: number;
+  readonly publishedAt: string;
+  readonly publishedBy: string;
+  readonly stepCount: number;
+  readonly live: boolean;
+}
+export interface StoredVersion extends VersionSummary { readonly definition: unknown }
+export type RevisionConflict = { readonly currentRevision: number };
+export type OnWrite = (row: StoredWalkthrough) => void;
+export interface StoredSummary extends Partial<RevisionState> {
   readonly id: string;
   readonly title: string;
   readonly description: string;
@@ -31,7 +46,7 @@ export interface StoredSummary {
   /** The application this guide belongs to; `null` for a guide written before Studio, which the host treats as the built-in `reference` application. */
   readonly applicationId: string | null;
 }
-export interface StoredWalkthrough {
+export interface StoredWalkthrough extends Partial<RevisionState> {
   readonly id: string;
   readonly status: WalkthroughStatus;
   /** The application this guide belongs to (`null` = legacy, resolved as `reference`). Assigned once, never changed. */
@@ -77,12 +92,15 @@ export interface WalkthroughStore {
    * assigned ONCE: a legacy row without one takes it on its first save, a row that already has one keeps it, and a save naming a different application changes nothing
    * and answers `application_mismatch`.
    */
-  saveDraft(scope: Scope, id: string, definition: WalkthroughDef, applicationId: string, guard?: SaveGuard): Promise<SaveOutcome>;
+  saveDraft(scope: Scope, id: string, definition: WalkthroughDef, applicationId: string, guard?: SaveGuard, expectedRevision?: number, committed?: OnWrite): Promise<SaveOutcome | RevisionConflict>;
   /**
    * Publish: locks the row, runs `isValid` on the STORED definition and the row's application id as read UNDER THE LOCK (re-validation against the application's current
    * registry data), enforces the cap of 50 published per tenant, then sets the status. Unpublish (`draft`) restores editability and never calls `isValid`. Never creates a row.
    */
-  setStatus(scope: Scope, id: string, status: WalkthroughStatus, isValid: PublishCheck): Promise<StatusOutcome>;
+  setStatus(scope: Scope, id: string, status: WalkthroughStatus, isValid: PublishCheck, expectedRevision?: number, committed?: OnWrite): Promise<StatusOutcome | RevisionConflict>;
+  listVersions?(tenantId: string, id: string): Promise<readonly VersionSummary[] | null>;
+  getVersion?(tenantId: string, id: string, version: number): Promise<StoredVersion | null>;
+  editFromVersion?(scope: Scope, id: string, version: number | null, committed?: OnWrite): Promise<"changed" | "not_found" | "not_published" | "id_refused">;
   /** The tenant's published guides, oldest first, at most 50. The definitions are untrusted JSON: re-validate each. */
   listPublished(tenantId: string): Promise<readonly StoredWalkthrough[]>;
 }

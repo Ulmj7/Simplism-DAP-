@@ -110,15 +110,15 @@ export function registerRuntimeRoutes(app: FastifyInstance, deps: RuntimeRouteDe
     return { application, tenantId, origin };
   }
 
-  /** The application's live guides: published heads of THIS application that still validate against its CURRENT registry. */
+  /** The application's live guides: published snapshots of THIS application that still validate against its CURRENT registry. */
   async function liveGuides(tenantId: string, application: ApplicationRecord) {
     const resolved = await resolver.resolve(tenantId, application);
     if (resolved === undefined) return [];
-    const guides: { readonly definition: Parameters<typeof buildGuideBundle>[0]["definition"]; readonly resolved: typeof resolved }[] = [];
+    const guides: { readonly definition: Parameters<typeof buildGuideBundle>[0]["definition"]; readonly resolved: typeof resolved; readonly version: number }[] = [];
     for (const row of await store.listPublished(tenantId)) {
       if (row.applicationId !== application.id) continue;
       const checked = validateAuthoredDefinition(row.id, row.definition, resolved.registry);
-      if (checked.ok) guides.push({ definition: checked.definition, resolved });
+      if (checked.ok) guides.push({ definition: checked.definition, resolved, version: row.liveVersion ?? 1 });
     }
     return guides.slice(0, MAX_PUBLISHED_PER_TENANT);
   }
@@ -140,7 +140,7 @@ export function registerRuntimeRoutes(app: FastifyInstance, deps: RuntimeRouteDe
     try {
       const guide = (await liveGuides(auth.tenantId, auth.application)).find((candidate) => candidate.definition.id === id);
       if (guide === undefined) return notFound(reply, auth.origin);
-      return ok(reply, auth.origin, buildGuideBundle({ definition: guide.definition, application: auth.application, resolved: guide.resolved }));
+      return ok(reply, auth.origin, buildGuideBundle({ definition: guide.definition, application: auth.application, resolved: guide.resolved, version: guide.version }));
     } catch { return fail(reply, 503, RUNTIME_MESSAGES.unavailable, "unavailable", auth.origin); }
   });
 

@@ -11,8 +11,8 @@ export interface LockedApplication { readonly enabled: boolean; readonly registr
 export const lockApplicationShared = (client: TenantClient, tenantId: string, applicationId: string) =>
   lockApplication(client, tenantId, applicationId, "FOR SHARE");
 
-/** A repair changes the registry validators see. Hold off workflow writes until the compatibility check commits. */
-export const lockApplicationForRepair = (client: TenantClient, tenantId: string, applicationId: string) =>
+/** Serialize publish and repair with registry writes and other working-copy mutations while validating the current registry. */
+export const lockApplicationForRegistryChange = (client: TenantClient, tenantId: string, applicationId: string) =>
   lockApplication(client, tenantId, applicationId, "FOR NO KEY UPDATE");
 
 async function lockApplication(client: TenantClient, tenantId: string, applicationId: string, lock: "FOR SHARE" | "FOR NO KEY UPDATE"): Promise<LockedApplication | null> {

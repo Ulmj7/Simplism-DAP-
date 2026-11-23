@@ -8,7 +8,7 @@
  *
  * `marker` is the `data-ai-id` the embed resolves in the page (equal to the target id until a repair re-records the target: the DAP id never changes, the marker does),
  * `checks` is the list of ACTIVE verification checks, each in the closed shape of its kind (see registry-checks.ts; empty for a built-in registry) and `postconditionNames` is exactly the `route.*` names plus the names of those checks, `routing` is the application's `hash` | `history`, and `pages` maps a page (a `/#/...` hash page or a pathname) to its route.
- * `version` is the live version of the guide (always 1 for now). Public elements only; nothing of the tenant or of another application is ever in it.
+ * `version` is the live version of the guide. Public elements only; nothing of the tenant or of another application is ever in it.
  */
 import type { ValidationResult } from "../authoring/validate.js";
 import type { ApplicationRecord } from "./applications.js";

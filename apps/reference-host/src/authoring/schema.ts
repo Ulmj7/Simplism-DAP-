@@ -62,9 +62,15 @@ const statusSchema = z.string().max(9).pipe(z.enum(STATUSES));
 /** The application a draft belongs to: the generated shape (`app-` + 12 hex, 16 characters). Whether it exists, is enabled and belongs to the caller's tenant is the executor's job. */
 export const applicationIdSchema = z.string().max(16).regex(APPLICATION_ID);
 /** `saveWalkthroughDraft` input. */
-export const saveInputSchema = z.strictObject({ walkthroughId: walkthroughIdSchema, applicationId: applicationIdSchema, definition: definitionSchema });
+export const isRevision = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 1_000_000;
+export const saveInputSchema = z.strictObject({ walkthroughId: walkthroughIdSchema, applicationId: applicationIdSchema, definition: definitionSchema, expectedRevision: smallInt });
 /** `setWalkthroughStatus` input. */
-export const statusInputSchema = z.strictObject({ walkthroughId: walkthroughIdSchema, status: statusSchema });
+export const statusInputSchema = z.strictObject({ walkthroughId: walkthroughIdSchema, status: statusSchema, expectedRevision: smallInt.min(1).optional() });
 
 export type SaveInput = z.infer<typeof saveInputSchema>;
 export type StatusInput = z.infer<typeof statusInputSchema>;
+
+export const reviseInputSchema = z.strictObject({ walkthroughId: walkthroughIdSchema });
+export const restoreInputSchema = z.strictObject({ walkthroughId: walkthroughIdSchema, version: smallInt.min(1) });
+export type ReviseInput = z.infer<typeof reviseInputSchema>;
+export type RestoreInput = z.infer<typeof restoreInputSchema>;

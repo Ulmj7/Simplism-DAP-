@@ -17,7 +17,9 @@ const ACTOR = (actor: unknown): actor is string => typeof actor === "string" && 
 const COLUMNS = `a.application_id, a.name, a.origin, a.allowed_origins, a.environment, a.registry_id, a.routing, a.runtime_access, a.runtime_key, a.enabled, a.created_at, a.updated_at,
   (SELECT count(*)::int FROM public.studio_registry_targets t WHERE t.tenant_id = a.tenant_id AND t.application_id = a.application_id) AS target_count,
   (SELECT count(*)::int FROM public.walkthrough_definitions d WHERE d.tenant_id = a.tenant_id AND d.application_id = a.application_id AND d.status = 'draft') AS draft_count,
-  (SELECT count(*)::int FROM public.walkthrough_definitions d WHERE d.tenant_id = a.tenant_id AND d.application_id = a.application_id AND d.status = 'published') AS published_count`;
+  (SELECT count(*)::int FROM public.walkthrough_definitions d JOIN public.walkthrough_versions v
+    ON v.tenant_id = d.tenant_id AND v.walkthrough_id = d.walkthrough_id AND v.version = d.live_version
+    WHERE v.tenant_id = a.tenant_id AND v.application_id = a.application_id) AS published_count`;
 const constraintOf = (error: unknown): string | undefined => (typeof error === "object" && error !== null ? (error as { constraint?: string }).constraint : undefined);
 
 function toRecord(row: Record<string, unknown>): ApplicationRecord {

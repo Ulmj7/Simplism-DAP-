@@ -31,7 +31,7 @@ export type RegisterOutcome =
   | { readonly kind: "created"; readonly route: { readonly route: string; readonly page: string; readonly created: boolean } }
   | { readonly kind: "application_not_found" | "application_disabled" | "registry_not_managed" | "target_exists" | "route_mismatch" | "registry_full" | "id_refused" | "page_refused" };
 export type HealthOutcome = "changed" | "unchanged" | "target_not_found" | "application_not_found" | "registry_not_managed" | "id_refused";
-/** One stored workflow that names a target: a draft or a published head (the version snapshots join with the versioning order; `version` is 1 until then, `null` for a draft). */
+/** One stored workflow that names a target: a draft or the live published snapshot (`version` is null for a draft). */
 export interface DefinitionUsing { readonly id: string; readonly title: string; readonly status: "draft" | "published"; readonly version: number | null; readonly definition: unknown }
 /** The five fields a repair can change, as stored (the change history records exactly these). */
 export interface RepairFields { readonly marker: string; readonly role: string; readonly operations: readonly string[]; readonly label: string; readonly description: string }

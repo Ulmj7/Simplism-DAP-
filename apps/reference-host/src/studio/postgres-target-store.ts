@@ -7,7 +7,7 @@ import { withTenant } from "../authoring/tenant-tx.js";
 import type { TenantClient, TenantPool } from "../authoring/tenant-tx.js";
 import type { TrustedRegistryData } from "../authoring/trusted-registry.js";
 import { STUDIO_MANAGED_REGISTRY_ID, isApplicationId } from "./applications.js";
-import { lockApplicationForRepair, lockApplicationShared } from "./application-lock.js";
+import { lockApplicationForRegistryChange, lockApplicationShared } from "./application-lock.js";
 import { isPageFor, isTargetId } from "./registry-targets.js";
 import { VALUE_CHECK_ROLES, isCheckName } from "./registry-checks.js";
 import type { CheckKind, CheckAttribute, CheckRecord, CheckStatus, CheckView } from "./registry-checks.js";
@@ -33,17 +33,28 @@ function toRecord(row: Record<string, unknown>): TargetRecord {
   });
 }
 
+/** The current draft and the live snapshot are independent. Older snapshots are history only. */
+const workflows = `
+  SELECT d.walkthrough_id, d.status, d.definition, d.updated_at, NULL::int AS version
+    FROM public.walkthrough_definitions d WHERE d.tenant_id = $1::uuid AND d.application_id = $2 AND d.status = 'draft'
+  UNION ALL
+  SELECT v.walkthrough_id, 'published', v.definition, v.published_at, v.version
+    FROM public.walkthrough_definitions d JOIN public.walkthrough_versions v
+      ON v.tenant_id = d.tenant_id AND v.walkthrough_id = d.walkthrough_id AND v.version = d.live_version
+    WHERE v.tenant_id = $1::uuid AND v.application_id = $2`;
+const workflowSteps = "jsonb_array_elements(CASE WHEN jsonb_typeof(d.definition->'steps') = 'array' THEN d.definition->'steps' ELSE '[]'::jsonb END)";
+
 /** How many of the application's stored definitions name each target id, split by status. Counts definitions, not steps. */
 async function referenceCounts(client: TenantClient, tenantId: string, applicationId: string): Promise<ReadonlyMap<string, { drafts: number; published: number }>> {
   const { rows } = await client.query(
     `SELECT s.target AS target_id,
             count(DISTINCT d.walkthrough_id) FILTER (WHERE d.status = 'draft')::int AS drafts,
             count(DISTINCT d.walkthrough_id) FILTER (WHERE d.status = 'published')::int AS published
-       FROM public.walkthrough_definitions d
+       FROM (${workflows}) d
        CROSS JOIN LATERAL (SELECT step->>'target' AS target
-                             FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.definition->'steps') = 'array' THEN d.definition->'steps' ELSE '[]'::jsonb END) AS step
+                             FROM ${workflowSteps} AS step
                             WHERE jsonb_typeof(step) = 'object') s
-      WHERE d.tenant_id = $1::uuid AND d.application_id = $2 AND s.target IS NOT NULL
+      WHERE s.target IS NOT NULL
       GROUP BY s.target`, [tenantId, applicationId]);
   return new Map(rows.map((row) => [String(row.target_id), { drafts: Number(row.drafts), published: Number(row.published) }] as const));
 }
@@ -61,11 +72,11 @@ async function checkReferenceCounts(client: TenantClient, tenantId: string, appl
     `SELECT s.verify AS name,
             count(DISTINCT d.walkthrough_id) FILTER (WHERE d.status = 'draft')::int AS drafts,
             count(DISTINCT d.walkthrough_id) FILTER (WHERE d.status = 'published')::int AS published
-       FROM public.walkthrough_definitions d
+       FROM (${workflows}) d
        CROSS JOIN LATERAL (SELECT step->>'verify' AS verify
-                             FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.definition->'steps') = 'array' THEN d.definition->'steps' ELSE '[]'::jsonb END) AS step
+                             FROM ${workflowSteps} AS step
                             WHERE jsonb_typeof(step) = 'object') s
-      WHERE d.tenant_id = $1::uuid AND d.application_id = $2 AND s.verify LIKE 'check.v%'
+      WHERE s.verify LIKE 'check.v%'
       GROUP BY s.verify`, [tenantId, applicationId]);
   return new Map(rows.map((row) => [String(row.name), { drafts: Number(row.drafts), published: Number(row.published) }] as const));
 }
@@ -98,18 +109,20 @@ const fieldsOf = (value: unknown): RepairFields => {
   return Object.freeze({ marker: String(bag.marker), role: String(bag.role), operations: Object.freeze(Array.isArray(bag.operations) ? bag.operations.map(String) : []), label: String(bag.label), description: String(bag.description) });
 };
 
-/** The tenant's stored workflows of one application that name the target in a step: drafts and published heads (the single place to extend for version snapshots). */
+/** The tenant's stored workflows of one application that name the target in a step: drafts and live publication snapshots. */
 async function readDefinitionsUsing(client: TenantClient, tenantId: string, applicationId: string, targetId: string): Promise<readonly DefinitionUsing[]> {
   const { rows } = await client.query(
-    `SELECT d.walkthrough_id, d.status, d.definition FROM public.walkthrough_definitions d
-      WHERE d.tenant_id = $1::uuid AND d.application_id = $2
-        AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.definition->'steps') = 'array' THEN d.definition->'steps' ELSE '[]'::jsonb END) AS step
-                     WHERE jsonb_typeof(step) = 'object' AND step->>'target' = $3)
+    `SELECT d.walkthrough_id, d.status, d.definition, d.version FROM (${workflows}) d
+      WHERE EXISTS (SELECT 1 FROM ${workflowSteps} AS step
+          WHERE jsonb_typeof(step) = 'object' AND (step->>'target' = $3 OR EXISTS (
+            SELECT 1 FROM public.studio_registry_checks c
+              WHERE c.tenant_id = $1::uuid AND c.application_id = $2 AND c.target_id = $3
+                AND c.name = step->>'verify')))
       ORDER BY d.updated_at DESC, d.walkthrough_id`, [tenantId, applicationId, targetId]);
   return Object.freeze(rows.map((row): DefinitionUsing => {
     const definition = row.definition as Record<string, unknown> | null;
     const title = typeof definition?.title === "string" ? definition.title : String(row.walkthrough_id);
-    return Object.freeze({ id: String(row.walkthrough_id), title, status: row.status === "published" ? "published" as const : "draft" as const, version: row.status === "published" ? 1 : null, definition: row.definition });
+    return Object.freeze({ id: String(row.walkthrough_id), title, status: row.status === "published" ? "published" as const : "draft" as const, version: row.version === null ? null : Number(row.version), definition: row.definition });
   }));
 }
 
@@ -290,7 +303,7 @@ export function createPostgresTargetStore(pool: TenantPool): TargetStore {
       if (!isApplicationId(applicationId) || !ACTOR(scope.actor) || !isTargetId(targetId) || !isTargetId(value.marker)) return { kind: "id_refused" };
       try {
         return await withTenant(pool, scope.tenantId, async (client): Promise<RepairOutcome> => {
-          const application = await lockApplicationForRepair(client, scope.tenantId, applicationId);
+          const application = await lockApplicationForRegistryChange(client, scope.tenantId, applicationId);
           if (application === null) return { kind: "application_not_found" };
           if (!application.enabled) return { kind: "application_disabled" };
           if (application.registryId !== STUDIO_MANAGED_REGISTRY_ID) return { kind: "registry_not_managed" };
