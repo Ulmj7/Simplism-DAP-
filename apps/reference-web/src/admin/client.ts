@@ -1,3 +1,5 @@
+import { latestVersion, liveVersion, parsePublishReview, parseVersion, parseVersions, versionNumber } from "./publishing.js";
+import type { GuideVersion, PublishReview } from "./publishing.js";
 import { parseBundle } from "../embed/protocol.js";
 import type { ManagedBundle } from "../embed/protocol.js";
 import { MAX_DESCRIPTION as MAX_TEXT, MAX_LABEL as MAX_TITLE } from "@dap/walkthrough";
@@ -15,7 +17,7 @@ import { LIMITS, applicationIdOf, normalizedOrigin, targetIdOf } from "./wire.js
 export type DemoRole = "user" | "maintainer";
 export type GuideStatus = "draft" | "published";
 export interface GuideSummary { id: string; title: string; description: string }
-export interface AuthoredSummary extends GuideSummary { status: GuideStatus; stepCount: number; updatedAt: string; applicationId: string | null }
+export interface AuthoredSummary extends GuideSummary { status: GuideStatus; stepCount: number; updatedAt: string; applicationId: string | null; liveVersion?: number | null; latestVersion?: number }
 export interface GuideList { authored: readonly AuthoredSummary[]; builtIn: readonly GuideSummary[] }
 import { parseStudioError, parseStudioReply, studioPath } from "./studio-client.js";
 import type { StudioCommand, StudioReply } from "./studio-client.js";
@@ -24,7 +26,7 @@ import type { StudioCommand, StudioReply } from "./studio-client.js";
 export interface GuideRecord {
   id: string; status: GuideStatus; applicationId: string | null; definition: WalkthroughDef;
   /** Optimistic concurrency (S5): the revision of the working copy, the version users run (null = none) and the newest version. Absent from a host that predates versions. */
-  revision?: number; liveVersion?: number | null; latestVersion?: number;
+  revision?: number; liveVersion?: number | null; latestVersion?: number; version?: number;
 }
 export type ApplicationFailureCode = "APPLICATION_NOT_FOUND" | "APPLICATION_DISABLED" | "APPLICATION_MISMATCH" | "TARGET_NOT_FOUND" | "REGISTRY_NOT_MANAGED" | "ROUTING_LOCKED";
 /** `browser-error` carries the host's closed `{error: CODE}`; only a 422 INVALID_TARGET adds `issues` (at most 20 fixed phrases of at most 200 characters). */
@@ -56,6 +58,11 @@ export interface AdminClient {
   create(applicationId: string, definition: WalkthroughDef): Promise<AdminResult<GuideRecord>>;
   update(id: string, applicationId: string, definition: WalkthroughDef, expectedRevision?: number): Promise<AdminResult<GuideRecord>>;
   setStatus(id: string, status: GuideStatus): Promise<AdminResult<GuideRecord>>;
+  review(id: string): Promise<AdminResult<PublishReview>>;
+  versions(id: string): Promise<AdminResult<readonly GuideVersion[]>>;
+  version(id: string, version: number): Promise<AdminResult<GuideVersion & { definition: WalkthroughDef }>>;
+  revise(id: string): Promise<AdminResult<GuideRecord>>;
+  restore(id: string, version: number): Promise<AdminResult<GuideRecord>>;
   applications(): Promise<AdminResult<ApplicationList>>;
   application(id: string): Promise<AdminResult<ApplicationView>>;
   createApplication(input: ApplicationInput): Promise<AdminResult<ApplicationView>>;
@@ -89,7 +96,8 @@ const applicationId = applicationIdOf;
 const summary = (value: Bag) => text(value.id, 64) && text(value.title, MAX_TITLE) && text(value.description, MAX_TEXT);
 const builtIn = (value: unknown): value is GuideSummary => object(value) && summary(value) && only(value, ["id", "title", "description"]);
 const authored = (value: unknown): value is AuthoredSummary => object(value) && summary(value) && authoredId(value.id)
-  && only(value, ["id", "title", "description", "status", "stepCount", "updatedAt", "applicationId"]) && status(value.status)
+  && only(value, ["id", "title", "description", "status", "stepCount", "updatedAt", "applicationId", "liveVersion", "latestVersion"]) && status(value.status)
+  && versionFields(value)
   && (value.applicationId === null || applicationId(value.applicationId))
   && typeof value.stepCount === "number" && Number.isInteger(value.stepCount) && value.stepCount >= 1 && value.stepCount <= 24
   && text(value.updatedAt, 32) && Number.isFinite(Date.parse(value.updatedAt));
@@ -110,15 +118,19 @@ function step(value: unknown): boolean {
 }
 const definition = (value: unknown): value is WalkthroughDef => object(value) && only(value, ["id", "title", "description", "start", "steps"])
   && summary(value) && authoredId(value.id) && text(value.start, 64) && Array.isArray(value.steps) && value.steps.length > 0 && value.steps.length <= 24 && value.steps.every(step);
-const versionNumber = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= 1_000_000;
-const record = (value: unknown, id?: string, wanted?: GuideStatus): GuideRecord | null => object(value) && only(value, ["id", "status", "applicationId", "definition", "revision", "liveVersion", "latestVersion"])
+const versionFields = (value: Bag) => (value.liveVersion === undefined || liveVersion(value.liveVersion))
+  && (value.latestVersion === undefined || latestVersion(value.latestVersion))
+  && (typeof value.liveVersion !== "number" || typeof value.latestVersion !== "number" || value.liveVersion <= value.latestVersion);
+const record = (value: unknown, id?: string, wanted?: GuideStatus, publishing = false): GuideRecord | null => object(value) && only(value, ["id", "status", "applicationId", "definition", "revision", "liveVersion", "latestVersion", ...(publishing ? ["version"] : [])])
   && status(value.status) && (wanted === undefined || value.status === wanted) && (value.applicationId === null || applicationId(value.applicationId)) && definition(value.definition)
   && value.id === value.definition.id && (id === undefined || id === value.id)
-  && (value.revision === undefined || versionNumber(value.revision)) && (value.liveVersion === undefined || value.liveVersion === null || versionNumber(value.liveVersion))
-  && (value.latestVersion === undefined || (typeof value.latestVersion === "number" && Number.isSafeInteger(value.latestVersion) && value.latestVersion >= 0 && value.latestVersion <= 1_000_000))
+  && (value.revision === undefined || versionNumber(value.revision))
+  && (value.liveVersion === undefined || liveVersion(value.liveVersion)) && (value.latestVersion === undefined || latestVersion(value.latestVersion)) && versionFields(value)
+  && (!publishing || (versionNumber(value.version) && value.version === value.liveVersion && value.version === value.latestVersion && versionNumber(value.revision)))
   ? { id: value.definition.id, status: value.status, applicationId: value.applicationId, definition: value.definition,
     ...(value.revision === undefined ? {} : { revision: value.revision }), ...(value.liveVersion === undefined ? {} : { liveVersion: value.liveVersion }),
-    ...(value.latestVersion === undefined ? {} : { latestVersion: value.latestVersion }) } : null;
+    ...(value.latestVersion === undefined ? {} : { latestVersion: value.latestVersion }),
+    ...(publishing ? { version: value.version as number } : {}) } : null;
 const externalGuide = (value: unknown): value is ExternalGuide => object(value) && only(value, ["id", "title", "description", "application"]) && Object.keys(value).length === 4
   && authoredId(value.id) && text(value.title, MAX_TITLE) && text(value.description, MAX_TEXT) && object(value.application)
   && only(value.application, ["id", "name", "origin"]) && Object.keys(value.application).length === 3
@@ -241,7 +253,24 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
     update: (id, owner, def, expectedRevision) => authoredId(id) && id === def.id && applicationId(owner) && (expectedRevision === undefined || versionNumber(expectedRevision))
       ? request(`${ADMIN}/${id}`, value => record(value, id, "draft"), "PUT", { applicationId: owner, definition: def, ...(expectedRevision === undefined ? {} : { expectedRevision }) }) : Promise.resolve(FAILED),
     setStatus: (id, wanted) => authoredId(id)
-      ? request(`${ADMIN}/${id}/status`, value => record(value, id, wanted), "POST", { status: wanted }) : Promise.resolve(FAILED),
+      ? request(`${ADMIN}/${id}/status`, value => record(value, id, wanted, wanted === "published"), "POST", { status: wanted }) : Promise.resolve(FAILED),
+    review: id => authoredId(id) ? request(`${ADMIN}/${id}/review`, parsePublishReview, "POST", {}) : Promise.resolve(FAILED),
+    versions: id => authoredId(id) ? request(`${ADMIN}/${id}/versions`, parseVersions) : Promise.resolve(FAILED),
+    version: (id, wanted) => authoredId(id) && versionNumber(wanted) ? request(`${ADMIN}/${id}/versions/${wanted}`, value => {
+      if (!object(value)) return null;
+      const { definition: snapshot, ...metadata } = value;
+      const parsed = parseVersion(metadata);
+      return parsed?.version === wanted && definition(snapshot) && snapshot.id === id && snapshot.steps.length === parsed.stepCount
+        ? { ...parsed, definition: snapshot } : null;
+    }) : Promise.resolve(FAILED),
+    revise: id => authoredId(id) ? request(`${ADMIN}/${id}/revise`, value => {
+      const parsed = record(value, id, "draft");
+      return parsed?.revision !== undefined && typeof parsed.liveVersion === "number" && parsed.latestVersion !== undefined ? parsed : null;
+    }, "POST", {}) : Promise.resolve(FAILED),
+    restore: (id, wanted) => authoredId(id) && versionNumber(wanted) ? request(`${ADMIN}/${id}/restore`, value => {
+      const parsed = record(value, id, "draft");
+      return parsed?.revision !== undefined && parsed.liveVersion !== undefined && (parsed.latestVersion ?? 0) >= wanted ? parsed : null;
+    }, "POST", { version: wanted }) : Promise.resolve(FAILED),
     applications: () => request(APPLICATIONS, parseApplicationList),
     application: id => applicationId(id) ? request(`${APPLICATIONS}/${id}`, value => parseApplication(value, id)) : Promise.resolve(FAILED),
     createApplication: input => request(APPLICATIONS, value => parseApplication(value), "POST", applicationBody(input)),
