@@ -74,13 +74,7 @@ it("authors, previews, publishes and measures two real runs through the Gateway 
     const headers = Object.fromEntries(new Headers(init.headers).entries());
     const reply = await transport.inject({ method, url: path, headers, ...(body ? { payload: body } : {}) });
     requests.push({ method, path, body, status: reply.statusCode });
-    // V1B-HOST SHIM (until the Studio web UI of Track W parses the V1B contract): the closed-shape parsers of the V1A editor refuse the fields V1B adds to the READ replies
-    // (`external` on the published list; `source` on applications and registry choices; `source`, `pages` and `previewMode` on the registry read). The shim removes exactly those
-    // fields so the REAL editor, runtime, Gateway and PostgreSQL are still exercised end to end. Delete it when the web parsers accept them.
-    const V1B_FIELDS = new Set(["external", "source", "pages", "previewMode"]);
-    const strip = reply.statusCode < 300 && reply.body !== "" && method === "GET" && (path === "/api/walkthroughs/published" || path === "/api/admin/applications" || /^\/api\/admin\/applications\/app-[a-f0-9]{12}\/registry$/u.test(path));
-    const text = strip ? JSON.stringify(JSON.parse(reply.body), (key, value: unknown) => (V1B_FIELDS.has(key) ? undefined : value)) : reply.body;
-    return new Response(text === "" ? null : text, { status: reply.statusCode });
+    return new Response(reply.body === "" ? null : reply.body, { status: reply.statusCode });
   };
   const inject = (method: "GET" | "POST" | "PUT", url: string, body?: unknown, role = "user") => transport.inject({ method, url,
     headers: { "x-demo-role": role, ...(body === undefined ? {} : { "content-type": "application/json" }) },
