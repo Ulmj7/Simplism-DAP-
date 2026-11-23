@@ -66,6 +66,9 @@ function shell({ name, variant, embedTag }) {
 }
 
 const appScript = `(function () {
+  // Diagnostics for the Content-Security-Policy proofs: this script is loaded before any embed, so every later violation of the page's policy is recorded here (names only).
+  window.cspViolations = [];
+  document.addEventListener("securitypolicyviolation", function (event) { window.cspViolations.push(event.violatedDirective + " " + event.blockedURI); });
   var pages = ["/", "/profile", "/settings"];
   var titles = { "/": "Home", "/profile": "Profile", "/settings": "Settings" };
   function current() {

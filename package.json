@@ -37,6 +37,7 @@
     "acceptance:studio-v1-host": "tsc -b && node scripts/studio-v1-host-acceptance.mjs",
     "acceptance:studio-v1b-ui": "tsc -b && npm run build:embed && node scripts/studio-v1b-ui-acceptance.mjs --managed",
     "acceptance:studio-v1-ui": "tsc -b && node scripts/studio-browser-smoke.mjs",
+    "smoke:studio-embed-standalone": "tsc -b && npm run build:embed && node scripts/studio-embed-standalone-smoke.mjs",
     "build:embed": "vite build --config apps/reference-web/vite.config.ts --mode embed",
     "acceptance:studio-v1b-host": "tsc -b && npm run build:embed && node scripts/studio-v1b-host-acceptance.mjs --managed"
   },
