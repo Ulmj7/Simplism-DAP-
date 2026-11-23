@@ -10,12 +10,15 @@
  * `checks` is the list of verification checks (empty for now), `routing` is the application's `hash` | `history`, and `pages` maps a page (a `/#/...` hash page or a pathname) to its route.
  * `version` is the live version of the guide (always 1 for now). Public elements only; nothing of the tenant or of another application is ever in it.
  */
-import type { WalkthroughDef } from "@dap/walkthrough/authoring";
+import type { ValidationResult } from "../authoring/validate.js";
 import type { ApplicationRecord } from "./applications.js";
 import type { ResolvedRegistry } from "./registry-resolver.js";
 
+/** The validated definition type (the host may import the walkthrough validator package only inside src/authoring: the type comes through its re-export). */
+type ValidDefinition = Extract<ValidationResult, { readonly ok: true }>["definition"];
+
 export interface GuideBundle {
-  readonly definition: WalkthroughDef;
+  readonly definition: ValidDefinition;
   readonly application: { readonly id: string; readonly name: string; readonly origin: string };
   readonly registry: {
     readonly routes: readonly string[];
@@ -31,7 +34,7 @@ export interface GuideBundle {
   readonly version: number;
 }
 
-export function buildGuideBundle(input: { readonly definition: WalkthroughDef; readonly application: ApplicationRecord; readonly resolved: ResolvedRegistry; readonly version?: number }): GuideBundle {
+export function buildGuideBundle(input: { readonly definition: ValidDefinition; readonly application: ApplicationRecord; readonly resolved: ResolvedRegistry; readonly version?: number }): GuideBundle {
   const { definition, application, resolved } = input;
   const { registry, pages } = resolved;
   return {
