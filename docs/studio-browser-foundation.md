@@ -1,6 +1,6 @@
 # DAP Studio and the browser foundation
 
-This page documents the browser foundation and its provenance. [Studio V1A](studio-v1.md) describes the current application-aware host.
+This page documents the browser foundation and its provenance. [Studio V1B](studio-v1.md) describes the current application-aware host.
 
 The foundation added a live browser workspace to the reference-web editor. The editor owned draft authoring. Save and publication used the Feature 004 store, validator, maintainer permissions and Policy Gateway. Preview ran the deterministic engine against the draft from the first step, and the runtime loaded published definitions and verified their postconditions.
 
@@ -62,17 +62,17 @@ vendor/agent-browser/cli/target/release/agent-browser doctor
 
 The native build uses the vendor Cargo lockfile and writes to the ignored `cli/target/` directory. The Linux proof built with `rust:1-bookworm` in Docker and used the resulting host executable. Vendor edits are unnecessary for this milestone.
 
-Follow the [Feature 004 quickstart](../specs/004-authoring-analytics/quickstart.md) to configure PostgreSQL, the maintainer demo session and authoring permissions. Enroll the application with its primary origin, allowed origins and registry before connecting the browser. See [Studio V1A](studio-v1.md) for enrollment and the manual registry picker fallback.
+Follow the [Feature 004 quickstart](../specs/004-authoring-analytics/quickstart.md) to configure PostgreSQL, the maintainer demo session and authoring permissions. Enroll the application with its primary origin, allowed origins and registry before connecting the browser. See [Studio V1B](studio-v1.md) for enrollment and the manual registry picker fallback.
 
 ## Browser and workspace boundaries
 
 The maintainer-only Studio API binds one Chrome session per host to the principal, tenant, actor, enrolled application and opaque session ID. The selected registry supplies approved pages and accessibility labels. Enrollment supplies the allowed origins. The vendored CLI allowlist operates at the hostname level. The adapter reads the accessibility snapshot locally and checks the exact origin and supported route before returning filtered candidates. Highlight and Use re-check the current observation against the selected application's registry. Saved steps carry registry IDs.
 
-Disconnect, five minutes of inactivity and host shutdown trigger session cleanup. Removing, disabling or changing the browser policy of an application triggers cleanup on the next inspection command. See [Studio V1A](studio-v1.md#browser-session-and-inspection) for the current inspector and session behavior.
+Disconnect, five minutes of inactivity and host shutdown trigger session cleanup. Removing, disabling or changing the browser policy of an application triggers cleanup on the next inspection command. See [Studio V1B](studio-v1.md#browser-session-and-inspection) for the current inspector and session behavior.
 
 ## Verification
 
-Run `npm run test:studio` for the focused suite. Both acceptance commands passed three consecutive headed Chromium runs. The UI command also passed without a display. [Run the host and editor acceptance checks](studio-v1.md#verify-with-chromium)
+Run `npm run test:studio` for the focused suite. The V1A acceptance commands passed three consecutive headed Chromium runs. The UI command also passed without a display. [Run the host and editor acceptance checks](studio-v1.md#verify-with-chromium)
 
 | Command | Host-only acceptance | UI run, host handling | UI run, click to observed result |
 | --- | ---: | ---: | ---: |
@@ -83,6 +83,6 @@ Run `npm run test:studio` for the focused suite. Both acceptance commands passed
 
 Routine inspection returned 1–5 candidates in these runs. A separate refresh of the second application's dense page returned 64 candidates in 138 ms at the host and 226 ms from click to observed result with Chrome already connected. These are local observations. UI measurements include operator commands used to observe the result.
 
-The editor acceptance enrolled two applications, verified a Chrome outline with no draft write, used target IDs, completed Preview and the published guide, switched applications and recovered from blocked origins. It checked that editor exit closed the browser session. Each run returned browser sessions and owned live processes to baseline and released the acceptance ports.
+The V1A editor acceptance enrolled two applications, verified a Chrome outline with no draft write, used target IDs, completed Preview and the published guide, switched applications and recovered from blocked origins. It checked that editor exit closed the browser session. Each run returned browser sessions and owned live processes to baseline and released the acceptance ports.
 
 The foundation-era Chromium proof captured Profile, Display name and Save in one owned Chrome session from a separate Studio session. It saved and reopened a draft, completed Preview, published the draft and completed the guide as an ordinary user. It also verified that exiting the editor closed the browser session. In that run, connection took 3,479 ms and capture took 242–245 ms including operator commands. Preview completion took 440 ms including operator commands and the application save. These timings are from one foundation-era run. Separate diagnostics passed 10 checks and the vendored browser refused a probe to `example.invalid`.
