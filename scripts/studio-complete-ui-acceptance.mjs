@@ -9,17 +9,19 @@ const stories = [
   "Review, publish, revise, compare and restore immutable versions",
   "Register hash targets, author and preview a second workflow",
   "Check keyboard and responsive behavior",
+  "Keep the stale edit visible when two Studio tabs save the same draft",
+  "Run the published snapshot under strict CSP with Studio closed",
 ];
 if (process.argv.includes("--plan")) {
   for (const [index, name] of stories.entries()) console.log(`STEP ${index + 1} ${name}`);
-  console.log("Live run requires --run --completion and coordinated ports 8795, 5186–5188 and PostgreSQL 54362.");
+  console.log("Live run requires --run --completion and coordinated ports 8795, 5186–5189 and PostgreSQL 54362.");
 } else {
   assert.ok(process.argv.includes("--run") && process.argv.includes("--completion"), "Coordinate isolated ports before passing --run --completion");
   await run();
 }
 
 async function run() {
-  const { browserCommand, browserSession, elapsed, historyApp, launchOperator, originA, originB, request, requests, runStudioAcceptance, trackProcesses, until } =
+  const { browserCommand, browserSession, elapsed, historyApp, inventory, launchOperator, originA, originB, standaloneOrigin, startStandaloneHistory, request, requests, runStudioAcceptance, trackProcesses, until } =
     await import("./studio-acceptance-support.mjs");
   const applications = "/api/admin/applications";
   const workflows = "/api/admin/walkthroughs";
@@ -57,21 +59,24 @@ async function run() {
       (button.getAttribute("aria-label") || button.textContent.trim()) === ${JSON.stringify(name)} && !button.disabled && button.getClientRects().length > 0)`), `Missing enabled button ${name}`);
     await ui("find", "role", "button", "click", "--name", name, "--exact");
   }
-  async function enroll(name, origin, routing) {
+  async function enroll(name, origin, routing, runtime = false) {
     await route("applications");
     await wait("#application-name");
     await fill("#application-name", name);
     await fill("#application-origin", origin);
-    await fill("#application-allowed", origin);
+    await fill("#application-allowed", runtime ? `${origin}\n${standaloneOrigin}` : origin);
     await select("#application-environment", "test");
     await select("#application-registry", "studio-managed");
     await select("#application-routing", routing);
+    if (runtime) await ui("check", "#application-runtime");
     await click("Enroll application");
     await text("Application saved.");
     const item = (await request("GET", applications, 200)).applications.find(app => app.name === name);
     assert.equal(item?.routing, routing);
     assert.equal(item?.origin, origin);
     assert.equal(item?.enabled, true);
+    assert.equal(item?.runtimeAccess, runtime);
+    if (runtime) assert.ok(item.allowedOrigins.includes(standaloneOrigin));
     return item.id;
   }
   async function openEditor(name) {
@@ -146,7 +151,7 @@ async function run() {
     const profile = historyApp().origin;
 
     await step(0, async () => {
-      historyId = await enroll("History acceptance", profile, "history");
+      historyId = await enroll("History acceptance", profile, "history", true);
       ordersId = await enroll("Hash acceptance", originB, "hash");
       assert.notEqual(historyId, ordersId);
     });
@@ -264,6 +269,66 @@ async function run() {
       await publish();
       const hash = await stored(ordersTitle, ordersId);
       assert.equal((await request("GET", `${workflows}/${hash}`, 200)).liveVersion, 1);
+    });
+    await step(7, async () => {
+      await route("walkthroughs"); await click(`Edit: ${profileTitle}`); await wait("#editor-title");
+      const persisted = `${workflows}/${workflowId}`;
+      const before = (await request("GET", persisted, 200)).revision;
+      const oldTabs = new Set((await ui("tab")).tabs.map(tab => tab.tabId));
+      await ui("tab", "new", `${originA}/#/walkthroughs`);
+      const peer = (await ui("tab")).tabs.find(tab => !oldTabs.has(tab.tabId));
+      assert.ok(peer, "Second Studio tab was not opened");
+      await ui("tab", peer.tabId);
+      await wait("#demo-role");
+      await select("#demo-role", "maintainer");
+      await click(`Edit: ${profileTitle}`); await wait("#editor-title");
+      const from = requests.length;
+      await ui("tab", studioTab);
+      await fill("#editor-title", "Profile draft saved in first tab");
+      await click("Save draft"); await wait('#editor-save-state[data-state="saved"]');
+      await ui("tab", peer.tabId);
+      await fill("#editor-title", "Profile draft kept in second tab");
+      await click("Save draft");
+      await wait('#editor-conflict[role="alert"]:not([hidden])');
+      assert.equal(await read('document.querySelector("#editor-title").value'), "Profile draft kept in second tab");
+      const writes = requests.slice(from).filter(item => item.path === persisted && item.method === "PUT");
+      assert.deepEqual(writes.map(item => [item.status, item.body.expectedRevision]), [[200, before], [409, before]]);
+      assert.deepEqual(writes[1].response, { kind: "conflict", code: "REVISION_CONFLICT", currentRevision: before + 1 });
+      assert.equal((await request("GET", persisted, 200)).definition.title, "Profile draft saved in first tab");
+      await click("Load the saved version");
+      await until(() => read('document.querySelector("#editor-title")?.value === "Profile draft saved in first tab"'), "Peer did not reload the saved draft");
+      await ui("tab", "close", peer.tabId);
+      await ui("tab", studioTab);
+    });
+    await step(8, async () => {
+      const application = await request("GET", `${applications}/${historyId}`, 200);
+      assert.match(application.runtimeKey, /^rk-/u);
+      const fixture = await startStandaloneHistory(application.runtimeKey);
+      assert.equal(fixture.origin, standaloneOrigin);
+      const response = await fetch(fixture.origin, { signal: AbortSignal.timeout(2000) });
+      assert.equal(response.headers.get("content-security-policy"), fixture.policy());
+      await response.body?.cancel();
+      assert.match(fixture.policy(), /^default-src 'none';/u);
+      assert.doesNotMatch(fixture.policy(), /unsafe-inline/u);
+
+      const closed = operator;
+      await ui("close");
+      await until(async () => !(await inventory()).has(closed), "Studio operator still running");
+      const from = requests.length;
+      operator = await launchOperator(fixture.origin + "/");
+      assert.equal(await read("window.opener === null"), true);
+      assert.ok((await ui("tab")).tabs.every(tab => !tab.url.startsWith(originA)), "Studio must stay closed during delivery");
+      await click("Guides");
+      await click(`Start guide: ${changedTitle}`);
+      await text(steps[0]); await ui("click", '[data-ai-id="nav.profile"]');
+      await text(steps[1]); await ui("click", "#display-name"); await ui("press", "A");
+      await text(steps[2]); await ui("click", '[data-ai-id="profile.submit"]');
+      await text(finished);
+      assert.equal(await read('document.querySelector("#saved-status").textContent'), "Saved");
+      assert.deepEqual(await read("window.cspViolations"), []);
+      const served = requests.slice(from).filter(item => item.path.startsWith("/api/runtime/") && item.method === "GET");
+      assert.equal(served.length, 2);
+      assert.ok(served.every(item => item.status === 200 && item.origin === fixture.origin && !item.role && !item.hasCookie));
     });
   });
 }

@@ -22,6 +22,7 @@ import { registerApplicationRoutes } from "../apps/reference-host/dist/studio/ap
 import { registerStudioBrowser } from "../apps/reference-host/dist/studio/browser.js";
 import { createPostgresApplicationStore } from "../apps/reference-host/dist/studio/postgres-application-store.js";
 import { createPostgresTargetStore } from "../apps/reference-host/dist/studio/postgres-target-store.js";
+import { registerRuntimeRoutes } from "../apps/reference-host/dist/studio/runtime-routes.js";
 import { createRegistryResolver } from "../apps/reference-host/dist/studio/registry-resolver.js";
 import { createTargetExtension } from "../apps/reference-host/dist/studio/target-capabilities.js";
 import { createRegistryCatalog } from "../apps/reference-host/dist/studio/registries.js";
@@ -40,9 +41,10 @@ const config = fileURLToPath(new URL("../packages/browser-runtime/agent-browser.
 const managed = process.argv.includes("--managed");
 const completion = process.argv.includes("--completion");
 const v1bPorts = completion || managed || process.argv.includes("--v1b-ports");
-const ports = completion ? [8795, 5186, 5187, 5188] : v1bPorts ? [8795, 5186, 5187] : [8794, 5184, 5185];
+const ports = completion ? [8795, 5186, 5187, 5188, 5189] : v1bPorts ? [8795, 5186, 5187] : [8794, 5184, 5185];
 const hostOrigin = `http://127.0.0.1:${ports[0]}`;
 export const originA = `http://127.0.0.1:${ports[1]}`;
+export const standaloneOrigin = completion ? "http://127.0.0.1:5189" : undefined;
 export const originB = `http://127.0.0.1:${ports[2]}`;
 const useHeaded = !process.argv.includes("--headless") && (managed || Boolean(browserEnv.DISPLAY || browserEnv.WAYLAND_DISPLAY));
 const deadline = 30_000;
@@ -88,7 +90,13 @@ const ownedProcesses = new Map();
 let vite;
 let fixture;
 let historyFixture;
+let standaloneFixture;
 export const historyApp = () => historyFixture;
+export async function startStandaloneHistory(dapKey) {
+  assert.ok(completion && !standaloneFixture, "Standalone fixture is only available once in completion acceptance");
+  standaloneFixture = await startHistoryApp({ port: ports[4], variant: "moved", dapOrigin: hostOrigin, dapKey, csp: true });
+  return standaloneFixture;
+}
 let host;
 let app;
 let pool;
@@ -179,11 +187,18 @@ async function startHost() {
   app.addHook("onSend", async (request, reply, payload) => {
     const response = (request.url === "/api/studio/browser" || (completion && request.url.startsWith("/api/admin/walkthroughs/"))) && typeof payload === "string" ? JSON.parse(payload) : undefined;
     requests.push({ method: request.method, path: request.url, role: request.headers["x-demo-role"],
-      body: request.body, response, status: reply.statusCode, ms: elapsed(requestStartedAt.get(request)) });
+      body: request.body, response, origin: request.headers.origin, hasCookie: request.headers.cookie !== undefined, status: reply.statusCode, ms: elapsed(requestStartedAt.get(request)) });
     return payload;
   });
   registerAuthoringRoutes(app, { store, applications, catalog, targets, resolver, resolvePrincipal });
   registerApplicationRoutes(app, { applications, catalog, targets, resolver, resolvePrincipal });
+  if (completion) {
+    registerRuntimeRoutes(app, { applications, store, catalog, targets, resolver });
+    for (const [name, type] of [["dap-embed.js", "text/javascript"], ["dap-embed.css", "text/css"]]) {
+      const asset = await readFile(new URL(`../apps/reference-web/dist-embed/${name}`, import.meta.url));
+      app.get(`/${name}`, async (_request, reply) => reply.type(type).send(asset));
+    }
+  }
   const execute = localCli(cli);
   registerStudioBrowser(app, {
     resolvePrincipal, applications, catalog, authoring: store, targets, resolver,
@@ -227,12 +242,14 @@ export async function browserCommand(session, ...args) {
   assert.ok(ownedSessions.has(session) && (await inventory()).has(session), "Operate only on a live acceptance session");
   return cliJson(["--session", session, ...args]);
 }
-export async function launchOperator() {
+export async function launchOperator(url = originA + "/") {
+  assert.ok(url === originA + "/" || (completion && standaloneFixture && url === standaloneFixture.origin + "/"),
+    "Launch only on an isolated acceptance fixture");
   const session = `studio-ui-${randomUUID()}`;
   assert.ok(!baseline.has(session), "Operator must have a fresh session");
   ownedSessions.add(session);
   const result = await cliJson(["--session", session, "--allowed-domains", "127.0.0.1", "--no-webmcp",
-    ...(useHeaded ? ["--headed"] : []), "open", originA + "/"]);
+    ...(useHeaded ? ["--headed"] : []), "open", url]);
   assert.equal(result.success, true, result.error);
   await trackProcesses();
   return session;
@@ -270,7 +287,7 @@ export async function runStudioAcceptance(acceptance) {
       await (managed ? finalManagedStep : step)("cleanup compare sessions, PIDs and ports", async () => {
         const tracking = trackProcesses().catch(error => { failure ??= error; });
         await tracking;
-        const results = await Promise.allSettled([app?.close(), fixture?.close(), historyFixture?.close()]);
+        const results = await Promise.allSettled([app?.close(), fixture?.close(), historyFixture?.close(), standaloneFixture?.close()]);
         results.push(...await Promise.allSettled([host?.close(), pool?.end()]));
         for (const session of await inventory()) {
           if (ownedSessions.has(session)) await cliJson(["--session", session, "close"]);
