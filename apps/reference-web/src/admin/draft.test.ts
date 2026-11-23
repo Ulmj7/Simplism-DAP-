@@ -23,10 +23,14 @@ it("compiles one navigation per route change, validates a temporary id and round
   expect(definitionToDraft(json as unknown as typeof candidate, registry)).toEqual(draft);
 });
 
-it("refuses recover, branching, extra kinds and guides outside the editor's step count", () => {
+it("preserves recovery and refuses dangling recovery, branching, extra kinds and guides outside the editor’s step count", () => {
   const candidate = draftToDefinition(draft, registry);
   const modified = (delta: object) => ({ ...candidate, steps: candidate.steps.map(step => step.id === "s1" ? { ...step, ...delta } : step) });
-  expect(definitionToDraft(modified({ recover: "n2" }), registry)).toBeNull();
+  const withRecovery = modified({ recover: "n2" });
+  const reopened = definitionToDraft(withRecovery, registry);
+  expect(reopened?.steps[0]?.recover).toBe("n2");
+  expect(draftToDefinition(reopened!, registry)).toEqual(withRecovery);
+  for (const recover of ["n99", "s1", "done"]) expect(definitionToDraft(modified({ recover }), registry)).toBeNull();
   expect(definitionToDraft(modified({ next: "s3" }), registry)).toBeNull();
   expect(definitionToDraft({ ...candidate, steps: [...candidate.steps, candidate.steps[0]!] }, registry)).toBeNull();
   expect(definitionToDraft(draftToDefinition({ ...draft, steps: Array(9).fill(draft.steps[0]) }, registry), registry)).toBeNull();

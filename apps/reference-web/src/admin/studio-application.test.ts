@@ -872,3 +872,170 @@ it("the Targets page is denied to an ordinary user like every admin page", async
   expect(root.querySelector('nav [href="#/targets"]')).toBeNull();
   expect(root.textContent).toContain(c.denied);
 });
+
+it("keeps dirty edits when navigation or application switching is cancelled, and discards them after confirmation", async () => {
+  const { root } = await setup("editor");
+  fill(root, "editor-application", REF, "change"); await turn();
+  fill(root, "editor-title", "Local title");
+  const unload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(unload);
+  expect(unload.defaultPrevented).toBe(true);
+
+  fill(root, "editor-application", ORD, "change"); await turn();
+  await click(control(root, "dialog[open]"), c.cancel);
+  expect(control<HTMLInputElement>(root, "#editor-application").value).toBe(REF);
+
+  control<HTMLAnchorElement>(root, 'nav a[href="#/walkthroughs"]').click(); await turn();
+  expect(location.hash).toBe("#/editor");
+  const confirm = control(root, "dialog[open]");
+  expect(document.activeElement).toBe(button(confirm, c.cancel));
+  confirm.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(root.querySelector("dialog[open]")).toBeNull();
+  expect(control<HTMLInputElement>(root, "#editor-title").value).toBe("Local title");
+
+  await navigate("walkthroughs");
+  await click(control(root, "dialog[open]"), "Leave without saving");
+  expect(location.hash).toBe("#/walkthroughs");
+  await navigate("editor");
+  expect(control<HTMLInputElement>(root, "#editor-title").value).toBe("");
+});
+
+it("uses the loaded revision, keeps the local copy on conflict and reloads only at the maintainer's request", async () => {
+  const record = { ...guide(savedId, "draft", referenceDraft(savedId), REF), revision: 3, liveVersion: null, latestVersion: 0 };
+  const host = fakeHost({ guides: [record] });
+  const path = `/api/admin/walkthroughs/${savedId}`;
+  host.overrides.set(`PUT ${path}`, () => json({ kind: "conflict", code: "REVISION_CONFLICT", currentRevision: 4 }, 409));
+  requestEdit(savedId);
+  const { root } = await setup("editor", host);
+  expect(control(root, "#editor-save-state").dataset.state).toBe("saved");
+  fill(root, "editor-title", "Unsaved title");
+  expect(control(root, "#editor-save-state").dataset.state).toBe("unsaved");
+  await click(root, c.save);
+  expect(host.writes().at(-1)?.body?.expectedRevision).toBe(3);
+  expect(control(root, "#editor-save-state").dataset.state).toBe("failed");
+  expect(control(root, '#editor-conflict[role="alert"]').textContent).toContain("revision 4");
+  await click(root, "Keep editing");
+  expect(control<HTMLInputElement>(root, "#editor-title").value).toBe("Unsaved title");
+  await click(root, c.save);
+  expect(host.writes().at(-1)?.body?.expectedRevision).toBe(3);
+  host.rows.set(savedId, { ...record, definition: referenceDraft(savedId, "Saved elsewhere"), revision: 4 } as GuideRecord);
+  await click(root, "Load the saved version");
+  expect(control<HTMLInputElement>(root, "#editor-title").value).toBe("Saved elsewhere");
+  expect(control(root, "#editor-save-state").dataset.state).toBe("saved");
+});
+
+it("confirms removal of a step referenced by recovery and saves a definition with no dangling edges", async () => {
+  const definition = referenceDraft(savedId);
+  if (definition.steps[1]?.kind !== "guide") throw new Error("expected a guide step");
+  const first = { ...definition.steps[1], next: "s2", recover: "s2" };
+  const second = { ...definition.steps[1], id: "s2", text: "Recovery instructions." };
+  const host = fakeHost({ guides: [guide(savedId, "draft", { ...definition, steps: [definition.steps[0]!, first, second, definition.steps[2]!] }, REF)] });
+  requestEdit(savedId);
+  const { root } = await setup("editor", host);
+  await click(root, "Step 2");
+  await click(root, `${c.remove}: Step 2`);
+  const modal = control(root, "dialog[open]");
+  expect(modal.textContent).toContain("recovery");
+  await click(modal, c.cancel);
+  expect(root.querySelectorAll(".editor-step-row")).toHaveLength(2);
+  await click(root, `${c.remove}: Step 2`);
+  await click(control(root, "dialog[open]"), c.remove);
+  expect(root.querySelectorAll(".editor-step-row")).toHaveLength(1);
+  await click(root, c.save);
+  const stored = host.rows.get(savedId)?.definition;
+  expect(stored?.steps.map(item => item.id)).toEqual(["n1", "s1", "done"]);
+  expect(stored?.steps[1]).toMatchObject({ next: "done" });
+  expect(stored?.steps[1]).not.toHaveProperty("recover");
+});
+
+function managedEditor() {
+  const managed = app(ORD, "Managed Orders", 5185, "studio-managed");
+  const host = fakeHost({ apps: [managed], guides: [guide(savedId, "draft", ordersDraft(savedId), ORD)] });
+  const endpoint = `/api/admin/applications/${ORD}`;
+  host.overrides.set(`GET ${endpoint}/registry`, () => json({
+    ...registryReply[ORD], postconditionNames: ["route.home", "route.orders"], source: "studio-managed",
+    previewable: true, previewMode: "application-window", pages: { "/": "home", "/#/orders": "orders" }, checks: [],
+  }));
+  requestEdit(savedId);
+  return { managed, host, endpoint };
+}
+
+it("authors a route verification through the checks API and saves only its check name", async () => {
+  const { host, endpoint } = managedEditor();
+  const path = `${endpoint}/checks`;
+  const check = { name: "check.v0000000001", kind: "route.equals", targetId: null, route: "orders", attribute: null, expected: null, status: "active", references: { drafts: 0, published: 0 } };
+  host.overrides.set(`POST ${path}`, () => json(check));
+  const { root } = await setup("editor", host);
+  const condition = "editor-verification-condition";
+  fill(root, condition, "value", "change");
+  fill(root, "editor-verification-target", "orders.submit", "change");
+  expect(control<HTMLSelectElement>(root, `#${condition}`).value).toBe("visible");
+  expect(control<HTMLOptionElement>(root, `#${condition} option[value="value"]`).disabled).toBe(true);
+  fill(root, condition, "route", "change");
+  await click(root, "Set verification");
+  expect(control(root, '#editor-verification-alert[role="alert"]').textContent).toBe("Choose a route.");
+  fill(root, "editor-verification-route", "orders", "change");
+  await click(root, "Set verification");
+  expect(host.writes().at(-1)).toMatchObject({ path, body: { kind: "route.equals", route: "orders" } });
+  expect(control(root, "#editor-verification-words").textContent).toContain("The page is “orders”");
+  expect(control(root, ".step-summary").textContent).toContain("✓ check");
+  await click(root, c.save);
+  expect(host.rows.get(savedId)?.definition.steps[1]).toMatchObject({ verify: check.name });
+});
+
+it("reports a failed preview's target as broken once, displays progress and restarts from the same workflow start", async () => {
+  const { host, managed, endpoint } = managedEditor();
+  const path = `${endpoint}/targets/orders.submit/health`;
+  host.overrides.set(`POST ${path}`, () => json({ ...managedTarget, health: "broken" }));
+  const { root } = await setup("editor", host);
+  const postMessage = vi.fn();
+  const child = { closed: false, postMessage } as unknown as Window;
+  const send = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin: managed.origin, source: child }));
+  const open = vi.spyOn(window, "open").mockReturnValue(child);
+  try {
+    await click(root, c.preview);
+    send({ type: "dap-embed-ready", version: 1 });
+    send({ type: "dap-run-status", version: 1, status: "WAITING", stepIndex: 1, stepCount: 3 });
+    const panel = control(root, "#editor-preview-panel");
+    expect(panel.textContent).toContain("Step 2 of 3");
+    expect(panel.textContent).toContain("Waiting for: click");
+    expect(panel.textContent).toContain("Target: Submit order");
+    expect(document.activeElement?.id).toBe("editor-preview-title");
+    const failed = { type: "dap-run-status", version: 1, status: "FAILED", failure: { code: "target_unavailable", targetId: "orders.submit" } };
+    send(failed); send(failed);
+    await turn();
+    expect(panel.textContent).toContain("Target not found: orders.submit");
+    expect(host.writes()).toEqual([{ method: "POST", path, body: { state: "broken" } }]);
+    expect([...panel.querySelectorAll("button")].filter(item => !item.disabled).map(item => item.textContent)).toEqual(["Re-record target", "Restart Preview", "Edit"]);
+    await click(panel, "Restart Preview");
+    send({ type: "dap-embed-ready", version: 1 });
+    expect(postMessage).toHaveBeenCalledTimes(2);
+    expect(postMessage.mock.calls[1]?.[0]).toEqual(postMessage.mock.calls[0]?.[0]);
+    send({ type: "dap-run-status", version: 1, status: "COMPLETED" });
+    await turn();
+    expect(panel.textContent).toContain("Preview completed.");
+  } finally { open.mockRestore(); }
+});
+
+it("keeps step and verification controls in keyboard order in the responsive editor", async () => {
+  const { host } = managedEditor();
+  const { root } = await setup("editor", host);
+  const tabs = (area: ParentNode) => [...area.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>("button, input, select, textarea")]
+    .filter(item => !item.disabled && !item.closest("[hidden]") && item.tabIndex !== -1)
+    .map(node => node.getAttribute("aria-label") ?? node.labels?.[0]?.textContent ?? node.textContent);
+  const steps = control(root, ".editor-panes > :first-child");
+  expect(tabs(steps)).toEqual(["Step 1", "Duplicate: Step 1", c.add]);
+  await click(steps, "Duplicate: Step 1");
+  expect(tabs(steps)).toEqual(["Step 1", "Step 2", `${c.up}: Step 2`, "Duplicate: Step 2", `${c.remove}: Step 2`, c.add]);
+  expect(document.activeElement).toBe(button(steps, "Step 2"));
+  const properties = control(root, ".editor-panes > :last-child");
+  fill(properties, "editor-verification-condition", "attribute", "change");
+  expect(tabs(properties)).toEqual([c.title, c.description, c.completion, c.target, c.wait, c.text, "Condition", "Target", "Attribute", "Expected value", "Set verification"]);
+
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync("apps/reference-web/src/styles/app.css", "utf8");
+  const editor = css.slice(css.indexOf(".editor-panes {"));
+  expect(editor).toMatch(/@media \(max-width: 899px\) \{\s*\.editor-panes-studio \{ grid-template-columns: minmax\(var\(--zero\), 1fr\)/u);
+  expect(editor.slice(editor.indexOf("Editor core (S9)"))).not.toMatch(/\b(?:width|min-width|max-width)\s*:\s*\d+px/u);
+  expect(editor).toContain(".editor-panes[hidden] { display: none; }");
+});

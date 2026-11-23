@@ -1,5 +1,7 @@
 import { createWalkthroughCatalog } from "@dap/walkthrough";
 import type { WalkthroughDef } from "@dap/walkthrough";
+import { diagnose } from "./embed/managed-runtime.js";
+import type { RunStatus } from "./embed/protocol.js";
 import { createExternalGuides } from "./external-guides.js";
 import type { ExternalGuide } from "./admin/client.js";
 import { createAdminClient } from "./admin/client.js";
@@ -30,7 +32,7 @@ export async function boot(root: HTMLElement, options: { fetch?: FetchLike; trus
   let disposed = false;
   const mountOptions = options.trustedEventsOnly === undefined ? {} : { trustedEventsOnly: options.trustedEventsOnly };
 
-  function preview(definition: WalkthroughDef) {
+  function preview(definition: WalkthroughDef, onResult?: (status: RunStatus) => void) {
     const def = { ...definition, id: PREVIEW_ID };
     try { createWalkthroughCatalog(registry, POSTCONDITION_NAMES, [def]); } catch { return; }
     const returnHash = win.location.hash;
@@ -41,6 +43,9 @@ export async function boot(root: HTMLElement, options: { fetch?: FetchLike; trus
     app = mountApp(root, {
       ...mountOptions, walkthroughs: [...walkthroughs, def], hideFromLauncher: [PREVIEW_ID], autoStart: PREVIEW_ID, usage: false,
       onPreviewEnd: () => {
+        const snapshot = app?.runtime.getState();
+        const status = snapshot && diagnose(snapshot, def, [], app?.router.current() ?? "");
+        if (status) onResult?.(status);
         win.history.replaceState(null, "", returnHash || "#/walkthroughs");
         previewing = false;
         mountNormal(normalState);

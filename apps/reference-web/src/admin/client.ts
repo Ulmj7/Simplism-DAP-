@@ -266,7 +266,7 @@ export function createAdminClient(options: { fetch?: FetchLike | undefined; role
       return applicationId(id) && body !== null ? request(`${APPLICATIONS}/${id}/checks`, value => {
         const parsed = parseCheckView(value);
         // The reply is the check that was asked for, nothing else.
-        return parsed !== null && parsed.kind === input.kind && parsed.targetId === (input.targetId ?? null) && parsed.route === (input.route ?? null) && parsed.status === "active" ? parsed : null;
+        return parsed !== null && parsed.kind === input.kind && parsed.targetId === (input.targetId ?? null) && parsed.route === (input.route ?? null) && parsed.attribute === (input.attribute ?? null) && parsed.expected === (input.expected ?? null) && parsed.status === "active" ? parsed : null;
       }, "POST", body) : Promise.resolve(FAILED);
     },
     setCheckStatus: (id, name, wanted) => applicationId(id) && /^check\.v[0-9a-f]{10}$/u.test(name) && (wanted === "active" || wanted === "disabled")

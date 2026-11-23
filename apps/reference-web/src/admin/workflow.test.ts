@@ -297,7 +297,10 @@ it("previews the real runtime and overlay, hides the temporary id from Guides, a
   expect(resultDialog().textContent).toContain(copy.result.cancelled);
   button(resultDialog(), copy.result.close).click(); await turn();
   expect(root.querySelector("h1")?.textContent).toBe(c.editor);
-  expect(document.activeElement).toBe(root.querySelector("h1"));
+  expect(document.activeElement).toBe(root.querySelector("#editor-preview-title"));
+  expect(root.querySelector("#editor-preview-panel")?.textContent).toContain("Preview stopped");
+  button(root, "Edit").click();
+  expect(document.activeElement).toBe(button(root, c.preview));
   expect(control<HTMLInputElement>(root, '[id="editor-title"]').value).toBe("Authored settings tour");
   expect(control<HTMLTextAreaElement>(root, '[id="editor-text"]').value).toBe("Read the Security panel.");
   expect(handle.current()?.store.get()).toMatchObject({ advancedOpen: true, profile: { draft: "Normal profile" } });

@@ -6,7 +6,7 @@ import { emptyState, errorState, loadingState } from "../../ui/states.js";
 import type { ApplicationView } from "../applications.js";
 import { browserWorkspace } from "../browser-workspace.js";
 import type { BrowserWorkspace } from "../browser-workspace.js";
-import { getFocusedApplication, focusApplication } from "../session.js";
+import { getFocusedApplication, focusApplication, takeRepairRequest } from "../session.js";
 import type { TargetDetail, TargetHealth, TargetList, TargetView } from "../targets.js";
 import { adminPage, confirmAction, readError, writeError } from "./shared.js";
 import type { AdminPageOptions } from "./shared.js";
@@ -60,9 +60,15 @@ export function targetsPage({ client, signal, navigate }: AdminPageOptions) {
     apps = result.value.applications;
     notice.textContent = "";
     picker.replaceChildren(h("option", { value: "" }, c.application.choose), ...apps.map(app => h("option", { value: app.id }, `${app.name}${app.enabled ? "" : c.application.disabledSuffix}${app.source === "built-in" ? " · built-in" : ""}`)));
-    const wanted = getFocusedApplication();
+    // "Re-record target" from a failed Preview: open that application and that target's repair flow.
+    const request = takeRepairRequest();
+    const wanted = request?.applicationId ?? getFocusedApplication();
     const initial = apps.find(app => app.id === wanted) ?? apps.find(app => app.source === "studio-managed" && app.enabled);
-    if (initial) { picker.value = initial.id; await choose(initial); }
+    if (initial) {
+      picker.value = initial.id; await choose(initial);
+      const asked = request !== undefined && request.applicationId === initial.id ? data?.targets.find(item => item.id === request.targetId) : undefined;
+      if (asked) { await showDetail(asked.id, true); if (initial.enabled && asked.status === "active") startRepair(asked); }
+    }
     else { crumbsFor(); body.replaceChildren(emptyState(apps.length === 0 ? "No applications" : "Choose an application", apps.length === 0 ? "Enroll an application in Applications first." : c.application.chooseFirst)); }
   }
   async function choose(app: ApplicationView | undefined) {

@@ -1,4 +1,4 @@
-import { CHECK_ATTRIBUTES, MAX_ATTRIBUTE_EXPECTED, MAX_EXPECTED, VALUE_ROLES } from "../embed/checks.js";
+import { CHECK_ATTRIBUTES, expectedOf, MAX_ATTRIBUTE_EXPECTED, MAX_EXPECTED, VALUE_ROLES } from "../embed/checks.js";
 import type { CheckAttribute } from "../embed/checks.js";
 import type { CheckInput, CheckView } from "./checks.js";
 
@@ -34,7 +34,7 @@ export function checkInputOf(fields: VerificationFields, roleOf: (targetId: stri
   if (condition === "hidden") return { input: { kind: "element.hidden", targetId } };
   const text = (expected ?? "").trim();
   const limit = condition === "attribute" ? MAX_ATTRIBUTE_EXPECTED : MAX_EXPECTED;
-  if (text === "" || text.length > limit || /[\u0000-\u001f\u007f]/u.test(text)) return { problem: `Enter the expected value (1 to ${limit} characters).` };
+  if (!expectedOf(text, limit)) return { problem: `Enter the expected value (1 to ${limit} characters).` };
   if (condition === "text") return { input: { kind: "element.text.equals", targetId, expected: text } };
   if (condition === "value") return { input: { kind: "element.value.equals", targetId, expected: text } };
   if (!(CHECK_ATTRIBUTES as readonly string[]).includes(attribute ?? "")) return { problem: "Choose an attribute." };

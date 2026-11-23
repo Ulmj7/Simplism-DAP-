@@ -5,26 +5,57 @@ import { MAX_EDITOR_STEPS } from "./draft.js";
 import type { TargetHealth } from "./targets.js";
 
 /**
- * The pure core of the editor's step list (Studio completion S9): operations on the draft and the live, per-step validity. The compiled definition derives its step ids and its `next` links from the
- * order of the draft (`draftToDefinition`), so a duplicate, a deletion or a move can never leave a dangling `next` or `recover`: the links are rebuilt from the list every time.
- * Every operation returns the index that should be selected afterwards, or `null` when it does not apply (nothing is changed then).
+ * Keep authored step identities stable while the compiler rebuilds the linear next links.
+ * Operations return the index to select, or null when they cannot apply.
  */
+function assignStepIds(draft: EditorDraft) {
+  let next = 1;
+  const used = new Set(draft.steps.map(step => step.id));
+  function newId(): string {
+    while (used.has(`s${next}`)) next += 1;
+    return `s${next++}`;
+  }
+  for (const step of draft.steps) if (step.id === undefined) step.id = newId();
+  return newId;
+}
+
+export function addStep(draft: EditorDraft, step: EditorStep): number {
+  const nextId = assignStepIds(draft);
+  return draft.steps.push({ ...step, id: nextId() }) - 1;
+}
+
+const pointsTo = (link: string | undefined, id: string) => link === id || link === `n${id.slice(1)}`;
+
+export function hasRecoveryReference(draft: EditorDraft, index: number): boolean {
+  const id = draft.steps[index]?.id ?? `s${index + 1}`;
+  return draft.steps.some((step, position) => position !== index && (pointsTo(step.recover, id) || pointsTo(step.navigateRecover, id)));
+}
+
 export function duplicateStep(draft: EditorDraft, index: number): number | null {
   const step = draft.steps[index];
   if (step === undefined || draft.steps.length >= MAX_EDITOR_STEPS) return null;
   // Instruction, target, interaction and verification are copied; the copy sits right after the original and is selected.
-  const copy: EditorStep = { target: step.target, wait: step.wait, text: step.text, ...(step.verify === undefined ? {} : { verify: step.verify }) };
+  const nextId = assignStepIds(draft);
+  const copy: EditorStep = { ...step, id: nextId() };
+  delete copy.navigateRecover;
   draft.steps.splice(index + 1, 0, copy);
   return index + 1;
 }
 export function deleteStep(draft: EditorDraft, index: number): number | null {
   if (draft.steps[index] === undefined || draft.steps.length <= 1) return null;
+  assignStepIds(draft);
+  const id = draft.steps[index]!.id!;
   draft.steps.splice(index, 1);
+  for (const step of draft.steps) {
+    if (pointsTo(step.recover, id)) delete step.recover;
+    if (pointsTo(step.navigateRecover, id)) delete step.navigateRecover;
+  }
   return Math.min(index, draft.steps.length - 1);
 }
 export function moveStep(draft: EditorDraft, index: number, delta: -1 | 1): number | null {
   const next = index + delta;
   if (draft.steps[index] === undefined || draft.steps[next] === undefined) return null;
+  assignStepIds(draft);
   [draft.steps[index], draft.steps[next]] = [draft.steps[next]!, draft.steps[index]!];
   return next;
 }

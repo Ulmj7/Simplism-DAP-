@@ -1,3 +1,4 @@
+import type { RunStatus } from "../../embed/protocol.js";
 import type { SemanticRegistry, WalkthroughDef } from "@dap/walkthrough";
 import { copy } from "../../copy.js";
 import { h } from "../../dom.js";
@@ -14,7 +15,7 @@ export interface AdminPageOptions {
   navigate(route: "walkthroughs" | "applications" | "editor" | "targets"): void;
   /** The editor's dirty guard on in-app navigation (see router.ts). */
   setNavigationGuard?(guard: NavigationGuard | undefined): void;
-  preview(definition: WalkthroughDef): void;
+  preview(definition: WalkthroughDef, onResult?: (status: RunStatus) => void): void;
   refresh(focus?: boolean): void;
 }
 const c = copy.admin;

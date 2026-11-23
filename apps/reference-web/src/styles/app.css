@@ -138,3 +138,4 @@ input { min-height: var(--touch); width: var(--full); min-width: var(--zero); bo
 .preview-panel { overflow-wrap: anywhere; }
 .preview-status p { margin: var(--space-1) var(--zero); }
 #editor-conflict { margin: var(--space-3) var(--zero); }
+.editor-panes[hidden] { display: none; }

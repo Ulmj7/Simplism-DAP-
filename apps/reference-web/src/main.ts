@@ -1,3 +1,4 @@
+import type { RunStatus } from "./embed/protocol.js";
 /** The reference web app: a hash-routed vanilla TypeScript shell. `mountApp` is used by the browser entry (`browser.ts`) and by tests. */
 import { createOverlay, createTargets, createSemanticBridge, createAvailabilityFeed } from "@dap/walkthrough/dom";
 import type { Overlay, Targets } from "@dap/walkthrough/dom";
@@ -44,7 +45,7 @@ export interface AdminOptions {
   client: AdminClient;
   role: DemoRole | undefined;
   changeRole(role: DemoRole): void;
-  preview(definition: WalkthroughDef): void;
+  preview(definition: WalkthroughDef, onResult?: (status: RunStatus) => void): void;
   refresh(focus?: boolean): void;
 }
 

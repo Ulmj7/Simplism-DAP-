@@ -1,3 +1,4 @@
+import type { RunStatus } from "../embed/protocol.js";
 import type { AdminResult, DemoRole, GuideRecord } from "./client.js";
 import { emptyDraft } from "./draft.js";
 import type { EditorDraft } from "./draft.js";
@@ -21,6 +22,7 @@ export interface EditSession {
   saving?: Promise<AdminResult<GuideRecord>>;
   /** The revision the working copy was loaded or last saved at (S5): sent as `expectedRevision` on the next save. */
   revision?: number;
+  previewResult?: RunStatus;
 }
 let current: EditSession | undefined;
 export const getEditSession = () => current;

@@ -21,20 +21,24 @@ export function createRouter(win: Window): Router {
   };
   let guard: NavigationGuard | undefined;
   let settled = current();
-  let restoring = false;
   return {
     current,
     navigate(route) { win.location.hash = `#/${route}`; },
     setGuard(next) { guard = next; },
     subscribe(callback) {
       const listener = (): void => {
-        if (restoring) { restoring = false; return; }
         const next = current();
         if (guard !== undefined && next !== settled) {
           const stay = settled;
-          const proceed = (): void => { guard = undefined; win.location.hash = `#/${next}`; };
+          const proceed = (): void => {
+            guard = undefined;
+            win.location.hash = `#/${next}`;
+          };
           // Blocked: the address goes back to the page that is still shown, and the guard decides what happens next.
-          if (guard(next, proceed)) { restoring = true; win.location.hash = `#/${stay}`; return; }
+          if (guard(next, proceed)) {
+            win.history.replaceState(win.history.state, "", `#/${stay}`);
+            return;
+          }
         }
         settled = next;
         callback(next);

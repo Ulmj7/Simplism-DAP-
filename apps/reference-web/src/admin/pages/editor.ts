@@ -1,3 +1,6 @@
+import type { CheckDef } from "../../embed/checks.js";
+import type { RunStatus } from "../../embed/protocol.js";
+import { CHECK_ATTRIBUTES, MAX_ATTRIBUTE_EXPECTED, MAX_EXPECTED } from "../../embed/checks.js";
 import { applicationRunResult, applicationRunStatus, runInApplicationWindow } from "../application-window.js";
 import { createSemanticRegistry, MAX_DESCRIPTION as MAX_TEXT, MAX_LABEL as MAX_TITLE } from "@dap/walkthrough";
 import type { SemanticRegistry, WaitKind } from "@dap/walkthrough";
@@ -9,7 +12,7 @@ import type { ApplicationList, ApplicationView } from "../applications.js";
 import type { AdminResult, GuideRecord } from "../client.js";
 import { browserWorkspace } from "../browser-workspace.js";
 import { definitionToDraft, emptyStep, MAX_EDITOR_STEPS, validateDraft } from "../draft.js";
-import { deleteStep, duplicateStep, moveStep, saveStateText, stepSummary, stepValidity, validityText } from "../editor-model.js";
+import { addStep, deleteStep, duplicateStep, hasRecoveryReference, moveStep, saveStateText, stepSummary, stepValidity, validityText } from "../editor-model.js";
 import type { SaveState } from "../editor-model.js";
 import { conditionLabels, conditionSupport, checkInputOf, describeCheck, DO_NOT_ENTER_SECRETS, fieldsOf, MANAGED_CONDITIONS } from "../verification.js";
 import type { Condition, VerificationFields } from "../verification.js";
@@ -18,14 +21,13 @@ import type { PreviewMode, PreviewProgress } from "../preview-model.js";
 import type { CheckView } from "../checks.js";
 import type { TargetHealth } from "../targets.js";
 import { requestRepair } from "../session.js";
-import type { DraftProblem } from "../draft.js";
+import type { DraftProblem, EditorStep } from "../draft.js";
 import { getEditSession, newEditSession, requestEdit, setEditSession, takeRequestedEdit } from "../session.js";
 import type { EditSession } from "../session.js";
 import { adminPage, backLink, confirmAction, confirmPublish, readError, writeError } from "./shared.js";
 import type { AdminPageOptions } from "./shared.js";
 
 const c = copy.admin;
-const CHECK_ATTRIBUTE_NAMES: readonly string[] = ["aria-checked", "aria-expanded", "aria-selected", "aria-pressed", "aria-disabled", "aria-current", "disabled", "checked"];
 /** What an application contributes to the editor: its targets, the checks it declares, and whether Preview can run it. */
 export interface RegistryData { registry: SemanticRegistry; postconditions: readonly string[]; previewable: boolean; pages?: Readonly<Record<string, string>>; previewMode: "in-app" | "application-window"; checks?: readonly CheckView[] }
 const EMPTY: RegistryData = { registry: createSemanticRegistry({ routes: [], elements: [] }), postconditions: [], previewable: false, previewMode: "in-app", checks: [] };
@@ -125,7 +127,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     control.maxLength = name === "title" ? MAX_TITLE : MAX_TEXT;
     control.value = value;
     field(name, label, control, parent);
-    control.addEventListener("input", () => { if (!busy) { set(control.value); changed(); } });
+    control.addEventListener("input", () => { if (canEdit()) { set(control.value); changed(); } });
   }
   const option = (value: string, text: string) => h("option", { value }, text);
   const select = () => h("select") as HTMLSelectElement;
@@ -148,16 +150,17 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     const result = await client.targets(id);
     if (signal.aborted || session.applicationId !== id || result.kind !== "ok") return;
     for (const target of result.value.targets) { health.set(target.id, target.health); markers.set(target.id, target.marker); }
-    stepControls(); update();
+    update();
   }
   let saveFailed = false;
   let conflict: number | undefined;
   let mode: PreviewMode = "edit";
-  const hasContent = () => draft.title !== "" || draft.description !== "" || draft.completion !== "" || draft.steps.some(step => step.target !== "" || step.text !== "");
+  const hasContent = () => draft.title !== "" || draft.description !== "" || draft.completion !== "" || draft.steps.length !== 1
+    || draft.steps.some(step => step.target !== "" || step.text !== "" || step.wait !== "ack" || step.verify !== undefined);
   /** Unsaved changes the maintainer would lose: a saved workflow that was edited, or a new one that has content. */
   const hasUnsaved = () => session.dirty && session.saving === undefined && (session.id !== undefined || hasContent());
   const saveState = (): SaveState => (session.saving !== undefined ? "saving" : saveFailed ? "failed" : session.dirty ? "unsaved" : "saved");
-  function canEdit() { return !busy && !signal.aborted && mode === "edit"; }
+  function canEdit() { return !busy && !previewRunning && !signal.aborted && mode === "edit"; }
   function changed() {
     session.dirty = true; session.saved = false; saveFailed = false; notice.textContent = ""; update();
   }
@@ -170,7 +173,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     add.disabled = busy || draft.steps.length >= MAX_EDITOR_STEPS;
     add.addEventListener("click", () => {
       if (!canEdit() || add.disabled) return;
-      draft.steps.push(emptyStep()); session.selected = draft.steps.length - 1; stepControls(true); changed();
+      session.selected = addStep(draft, emptyStep()); stepControls(true); changed();
     });
     const context = () => ({ registry, postconditions, health });
     draft.steps.forEach((_step, i) => {
@@ -188,21 +191,25 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
       const actions = h("div", { class: "admin-actions" }, pick);
       if (i === session.selected) {
         selected = pick;
-        const action = (label: string, disabled: boolean, run: () => number | null) => {
+        const action = (label: string, disabled: boolean, run: () => number | null, confirm = false) => {
           const control = button(label); control.disabled = disabled || busy;
           control.setAttribute("aria-label", `${label}: ${stepLabel(i)}`);
           control.addEventListener("click", () => {
             if (!canEdit() || control.disabled) return;
-            const next = run();
-            if (next === null) return;
-            session.selected = next; stepControls(true); changed();
+            const apply = () => {
+              const next = run();
+              if (next === null) return;
+              session.selected = next; stepControls(true); changed();
+            };
+            if (confirm) confirmAction(control, page, "Remove this step?", "Other steps use this step for recovery. Removing it clears those links.", c.remove, apply);
+            else apply();
           });
           actions.append(control);
         };
         action(c.up, i === 0, () => moveStep(draft, i, -1));
         action(c.down, i === draft.steps.length - 1, () => moveStep(draft, i, 1));
         action("Duplicate", draft.steps.length >= MAX_EDITOR_STEPS, () => duplicateStep(draft, i));
-        action(c.remove, draft.steps.length <= 1, () => deleteStep(draft, i));
+        action(c.remove, draft.steps.length <= 1, () => deleteStep(draft, i), hasRecoveryReference(draft, i));
       }
       list.append(h("li", { class: "editor-step-row" }, actions, summary, " ", state));
     });
@@ -211,7 +218,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     if (focus) selected?.focus();
   }
   function renderVerification(step: EditorStep) {
-    const box = h("fieldset", { class: "field verification" }, h("legend", {}, "Verification"));
+    const box = h("fieldset", { class: "field verification" }, h("legend", {}, "Verification")) as HTMLFieldSetElement;
     const existing = step.verify === undefined ? undefined : checks.find(item => item.name === step.verify);
     const now: { condition: Condition; targetId: string; route: string; attribute: string; expected: string } = { condition: "none", targetId: "", route: "", attribute: "aria-expanded", expected: "" };
     if (existing) { const f: VerificationFields = fieldsOf(existing); now.condition = f.condition; now.targetId = f.targetId ?? ""; now.route = f.route ?? ""; now.attribute = f.attribute ?? "aria-expanded"; now.expected = f.expected ?? ""; }
@@ -221,8 +228,8 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     const condition = h("select", { id: "editor-verification-condition" }) as HTMLSelectElement;
     const target = h("select", { id: "editor-verification-target" }) as HTMLSelectElement;
     const routeChoice = h("select", { id: "editor-verification-route" }) as HTMLSelectElement;
-    const attribute = h("select", { id: "editor-verification-attribute" }, ...CHECK_ATTRIBUTE_NAMES.map(name => option(name, name))) as HTMLSelectElement;
-    const expected = h("input", { id: "editor-verification-expected", type: "text", maxlength: "120", autocomplete: "off", "aria-describedby": "editor-verification-secrets" }) as HTMLInputElement;
+    const attribute = h("select", { id: "editor-verification-attribute" }, ...CHECK_ATTRIBUTES.map(name => option(name, name))) as HTMLSelectElement;
+    const expected = h("input", { id: "editor-verification-expected", type: "text", maxlength: String(MAX_EXPECTED), autocomplete: "off", "aria-describedby": "editor-verification-secrets" }) as HTMLInputElement;
     const secrets = h("p", { id: "editor-verification-secrets", class: "hint" }, DO_NOT_ENTER_SECRETS);
     target.append(option("", c.problem.target));
     for (const route of registry.routes) {
@@ -246,6 +253,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
       show(target, kind !== "none" && kind !== "route"); show(routeChoice, kind === "route"); show(attribute, kind === "attribute");
       show(expected, kind === "text" || kind === "value" || kind === "attribute");
       secrets.hidden = !(kind === "text" || kind === "value" || kind === "attribute");
+      expected.maxLength = kind === "attribute" ? MAX_ATTRIBUTE_EXPECTED : MAX_EXPECTED;
     }
     const row = (control: HTMLElement, label: string) => h("div", { class: "field" }, h("label", { for: control.id }, label), control);
     const set = button("Set verification");
@@ -270,35 +278,33 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
       delete step.verify; renderInspector(); changed();
       notice.textContent = "Verification removed.";
     });
+    const focusCondition = () => inspector.querySelector<HTMLElement>("#editor-verification-condition")?.focus();
     set.addEventListener("click", () => {
       if (!canEdit()) return;
       alert.textContent = "";
       if (now.condition === "none") { if (step.verify !== undefined) { delete step.verify; renderInspector(); changed(); } return; }
-      if (now.condition === "route") {
-        const name = `route.${now.route}`;
-        if (now.route === "" || !postconditions.includes(name)) { alert.textContent = "Choose a route."; return; }
-        step.verify = name; renderInspector(); changed(); notice.textContent = `Verification set: ${verifyWords(name)}.`;
-        return;
-      }
-      const request = checkInputOf({ condition: now.condition, targetId: now.targetId, attribute: now.attribute, expected: now.expected }, roleOf);
+      const request = checkInputOf({ condition: now.condition, targetId: now.targetId, route: now.route, attribute: now.attribute, expected: now.expected }, roleOf);
       if ("problem" in request) { alert.textContent = request.problem; return; }
       const owner = session.applicationId;
       if (owner === undefined) return;
-      busy = true; set.disabled = true;
+      busy = true;
+      box.disabled = true;
+      update();
       void client.createCheck(owner, request.input).then(result => {
         busy = false;
+        box.disabled = false;
         if (signal.aborted) return;
         if (result.kind !== "ok") {
-          renderInspector();
-          const message = result.kind === "denied" ? c.denied : result.kind === "invalid" ? result.issues.join(" ") : writeError(result);
-          const next = inspector.querySelector<HTMLElement>("#editor-verification-alert"); if (next) next.textContent = message;
+          alert.textContent = result.kind === "denied" ? c.denied : result.kind === "invalid" ? result.issues.join(" ") : writeError(result);
+          update();
+          set.focus();
           return;
         }
         const created = result.value;
         if (!checks.some(item => item.name === created.name)) checks = [...checks, created];
         if (!postconditions.includes(created.name)) postconditions = [...postconditions, created.name];
         step.verify = created.name;
-        renderInspector(); changed();
+        renderInspector(); changed(); focusCondition();
         notice.textContent = `Verification set: ${verifyWords(created.name)}.`;
       });
     });
@@ -357,7 +363,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     errors.hidden = validation.ok && !unassigned;
     for (const [name, { control, hint }] of fields) {
       const issue = problems.find(p => p.field === name && (p.step === undefined || p.step === session.selected));
-      control.disabled = busy;
+      control.disabled = busy || previewRunning;
       if (issue) control.setAttribute("aria-invalid", "true"); else control.removeAttribute("aria-invalid");
       hint.textContent = issue?.message ?? "";
       hint.hidden = hint.textContent === "";
@@ -366,13 +372,20 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     const canPreview = previewable && (previewMode === "in-app" || (registry.routes.length > 0 && applicationNamed(session.applicationId)?.enabled === true));
     previewHint.textContent = previewMode === "application-window" ? "Add a route and select an enabled application to preview in its window." : c.application.noPreview;
     previewHint.hidden = canPreview || unassigned;
-    save.disabled = busy || !validation.ok || unassigned || mode !== "edit";
+    save.disabled = busy || previewRunning || !validation.ok || unassigned || mode !== "edit";
     showPreview.disabled = busy || !validation.ok || !canPreview || previewRunning || mode !== "edit";
-    publish.disabled = busy || !validation.ok || session.dirty || session.id === undefined || mode !== "edit";
+    publish.disabled = busy || previewRunning || !validation.ok || session.dirty || session.id === undefined || mode !== "edit";
     const state = saveState();
     saveIndicator.textContent = saveStateText[state];
     saveIndicator.setAttribute("data-state", state);
     saveIndicator.hidden = session.id === undefined && !hasContent() && !saveFailed;
+    left.querySelectorAll<HTMLElement>(".editor-step-row").forEach((row, index) => {
+      const summary = row.querySelector(".step-summary");
+      const state = row.querySelector<HTMLElement>(".step-validity");
+      const validity = stepValidity(draft, index, { registry, postconditions, health });
+      if (summary) summary.textContent = stepSummary(draft, index);
+      if (state) { state.textContent = validityText(validity); state.dataset.validity = validity.level; }
+    });
     const line = inspector.querySelector<HTMLElement>("#editor-step-validity");
     if (line) {
       const own = stepValidity(draft, session.selected, { registry, postconditions, health });
@@ -452,7 +465,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   async function chooseApplication(id: string) {
     if (!canEdit() || session.applicationLocked || id === (session.applicationId ?? "")) return;
     // Switching application drops the registry the steps' targets belong to: ask first when there is something to lose.
-    if (hasUnsaved() && draft.steps.some(step => step.target !== "") && !confirmedSwitch) {
+    if (hasUnsaved() && !confirmedSwitch) {
       const choice = applicationBox.querySelector<HTMLSelectElement>("select");
       confirmAction(choice ?? page, page, "Switch application?", "The steps keep their targets, but those targets belong to the current application and will be flagged as unavailable.", "Switch application",
         () => { confirmedSwitch = true; void chooseApplication(id).finally(() => { confirmedSwitch = false; }); }, () => { if (choice) choice.value = session.applicationId ?? ""; });
@@ -497,7 +510,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     }
     choice.id = "editor-application";
     choice.value = session.applicationId ?? "";
-    choice.disabled = busy;
+    choice.disabled = busy || previewRunning || mode !== "edit";
     choice.addEventListener("change", () => { void chooseApplication(choice.value); });
     const hint = applications.applications.some(application => application.enabled) ? c.application.chooseFirst : c.application.none;
     applicationBox.replaceChildren(card(h("div", { class: "field" }, h("label", { for: choice.id }, c.application.label), choice,
@@ -525,17 +538,21 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   let progress: PreviewProgress | null = null;
   let resultView: { ok: boolean; title: string; detail: string; action?: { targetId: string; label: string } } | undefined;
   let reported = false;
+  let openingRepair = false;
   function setMode(next: PreviewMode) {
     mode = next;
     previewPanel.hidden = next === "edit";
     panes.hidden = next !== "edit";
     renderPreviewPanel();
     update();
+    if (next !== "edit") previewPanel.querySelector<HTMLElement>("h2")?.focus();
   }
   function renderPreviewPanel() {
     if (mode === "edit") { previewPanel.replaceChildren(); return; }
+    const focused = page.ownerDocument.activeElement;
+    const restore = focused && previewPanel.contains(focused) ? focused.id : "";
     const title = h("h2", { id: "editor-preview-title", tabindex: "-1" }, mode === "preview" ? "Preview" : "Preview results");
-    const info = h("p", { class: "hint" }, "Preview always starts from Step 1 and runs the whole workflow in the application's own window.");
+    const info = h("p", { class: "hint" }, "Preview always starts from Step 1 and runs the whole workflow.");
     const status = h("div", { id: "editor-preview-status", role: "status", "aria-live": "polite", class: "preview-status" });
     if (mode === "preview") {
       status.append(h("p", {}, progress === null ? "Starting the preview…" : `Step ${progress.step} of ${progress.count}`),
@@ -545,28 +562,59 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     }
     const buttons = h("div", { class: "admin-actions" });
     const restart = button("Restart Preview", true);
+    restart.id = "editor-preview-restart";
     restart.disabled = previewRunning;
     restart.addEventListener("click", () => { startPreview(); });
     const edit = button("Edit");
-    edit.addEventListener("click", () => { progress = null; resultView = undefined; setMode("edit"); showPreview.focus(); });
+    edit.id = "editor-preview-edit";
+    edit.disabled = previewRunning;
+    edit.addEventListener("click", () => { progress = null; resultView = undefined; setMode("edit"); renderApplication(); showPreview.focus(); });
     if (mode === "results" && resultView?.action) {
       const rerecord = button(resultView.action.label);
       const { targetId } = resultView.action;
-      rerecord.addEventListener("click", () => { const owner = session.applicationId; if (owner === undefined) return; requestRepair(owner, targetId); navigate("targets"); });
+      rerecord.id = "editor-preview-rerecord";
+      rerecord.addEventListener("click", () => {
+        const owner = session.applicationId;
+        if (owner === undefined) return;
+        openingRepair = true;
+        requestRepair(owner, targetId);
+        navigate("targets");
+      });
       buttons.append(rerecord);
     }
     buttons.append(restart, edit);
     previewPanel.replaceChildren(title, info, status, buttons);
+    if (restore) page.ownerDocument.getElementById(restore)?.focus();
   }
-  function embeddedChecks() {
-    const names = new Set(postconditions);
-    return checks.filter(item => names.has(item.name) && item.status === "active").map(item => ({ name: item.name, kind: item.kind,
-      ...(item.targetId === null ? {} : { targetId: item.targetId }), ...(item.route === null ? {} : { route: item.route }), ...(item.attribute === null ? {} : { attribute: item.attribute }), ...(item.expected === null ? {} : { expected: item.expected }) }));
+  function embeddedChecks(): CheckDef[] {
+    return checks.flatMap((item): CheckDef[] => {
+      if (item.status !== "active" || !postconditions.includes(item.name)) return [];
+      const { name, kind, targetId, route, attribute, expected } = item;
+      if (kind === "route.equals") return route === null ? [] : [{ name, kind, route }];
+      if (targetId === null) return [];
+      if (kind === "element.visible" || kind === "element.hidden") return [{ name, kind, targetId }];
+      if (expected === null) return [];
+      if (kind === "element.attribute.equals") return attribute === null ? [] : [{ name, kind, targetId, expected, attribute }];
+      return [{ name, kind, targetId, expected }];
+    });
+  }
+  function showPreviewResult(status: RunStatus): void {
+    if (status.status === "COMPLETED") {
+      resultView = { ok: true, title: "Preview completed.", detail: "Every step ran and every verification passed." };
+    } else if (status.status === "FAILED" || status.status === "CANCELLED") {
+      const failure = status.failure ?? { code: status.status === "CANCELLED" ? "cancelled" as const : "invalid" as const };
+      const found = diagnoseRun(failure, verifyWords);
+      resultView = { ok: false, title: found.title, detail: found.detail, ...(found.action && managed() ? { action: { targetId: found.action.targetId, label: found.action.label } } : {}) };
+    } else return;
+    setMode("results");
   }
   function startPreview() {
     const check = update();
     if (!check.ok) return;
-    if (previewMode === "in-app") { preview(check.definition); return; }
+    if (previewMode === "in-app") {
+      preview(check.definition, status => { session.previewResult = status; });
+      return;
+    }
     const application = applicationNamed(session.applicationId);
     const win = page.ownerDocument.defaultView;
     if (!win || !application || !pages) return;
@@ -574,34 +622,32 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     previewRunning = true; reported = false; progress = null;
     let entered = false;
     notice.textContent = "Opening the application window…";
-    update(); renderPreviewPanel();
+    update(); renderApplication(); renderPreviewPanel();
     const known = embeddedChecks();
-    const bundleChecks = known as never;
     void runInApplicationWindow({ window: win, application, bundle: {
       application: { id: application.id, name: application.name, origin: application.origin },
       definition, registry: { routes: registry.routes,
         elements: registry.list().map(element => (markers.has(element.id) && markers.get(element.id) !== element.id ? { ...element, marker: markers.get(element.id)! } : element)),
         postconditionNames: postconditions.filter(name => name.startsWith("route.") || known.some(item => item.name === name)), pages,
-        ...(known.length > 0 ? { checks: bundleChecks } : {}), ...(application.routing === "history" ? { routing: "history" as const } : {}) },
+        ...(known.length > 0 ? { checks: known } : {}), ...(application.routing === "history" ? { routing: "history" as const } : {}) },
     }, onStatus(status) {
       if (signal.aborted) return;
       notice.textContent = applicationRunStatus(status);
       progress = progressOf(status, definition, labelOf, verifyWords);
       // The preview becomes the page's mode only once the application's window answered: a blocked window or a missing embed leaves the editor as it was.
       if (!entered && status.status !== "refused") { entered = true; resultView = undefined; setMode("preview"); }
-      if (status.status === "COMPLETED") { resultView = { ok: true, title: "Preview completed.", detail: "Every step ran and every verification passed." }; setMode("results"); return; }
+      if (status.status === "COMPLETED") { showPreviewResult(status); return; }
       if (status.status === "FAILED" || status.status === "CANCELLED") {
         const failure = status.failure ?? { code: status.status === "CANCELLED" ? "cancelled" as const : "invalid" as const };
-        const found = diagnoseRun(failure, verifyWords);
-        resultView = { ok: false, title: found.title, detail: found.detail, ...(found.action ? { action: { targetId: found.action.targetId, label: found.action.label } } : {}) };
-        setMode("results");
+        showPreviewResult(status);
         // A target the page no longer offers is reported to the host as broken (the client may only ever report broken).
-        if (failure.code === "target_unavailable" && failure.targetId !== undefined && !reported) {
+        if (failure.code === "target_unavailable" && failure.targetId !== undefined && !reported
+          && definition.steps.some(step => step.kind === "guide" && step.target === failure.targetId)) {
           reported = true;
           const id = failure.targetId;
           void client.setTargetHealth(application.id, id, "broken").then(result => {
             if (signal.aborted || result.kind !== "ok") return;
-            health.set(id, "broken"); stepControls(); update();
+            health.set(id, "broken"); update();
             notice.textContent = `Target ${id} was reported as broken.`;
           });
         }
@@ -611,6 +657,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     } }).then(result => {
       if (signal.aborted) return;
       previewRunning = false;
+      renderApplication();
       if (result.kind !== "started" && mode === "preview") {
         resultView = { ok: false, title: "Preview did not run", detail: applicationRunResult(result) };
         setMode("results");
@@ -644,7 +691,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   const onUnload = (event: BeforeUnloadEvent) => { if (hasUnsaved()) { event.preventDefault(); event.returnValue = ""; } };
   win?.addEventListener("beforeunload", onUnload);
   options.setNavigationGuard?.((_to, proceed) => {
-    if (!hasUnsaved() || signal.aborted) return false;
+    if (openingRepair || !hasUnsaved() || signal.aborted) return false;
     confirmAction(page.querySelector<HTMLElement>("h1") ?? page, page, "Leave with unsaved changes?", "Your changes to this workflow have not been saved. If you leave now they are lost.", "Leave without saving", () => { setEditSession(); proceed(); });
     return true;
   });
@@ -658,4 +705,8 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
   void loadManaged();
   if (session.saving) void showSaving(session.saving, false);
   else { stepControls(); update(); }
+  if (session.previewResult) {
+    showPreviewResult(session.previewResult);
+    delete session.previewResult;
+  }
 }
