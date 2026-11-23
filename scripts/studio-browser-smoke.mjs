@@ -85,7 +85,7 @@ async function connectChrome(name, origin, markerId) {
     await waitText("Chrome connected. Browse to a page, then inspect it.");
     await state("CONNECTED");
   });
-  assert.deepEqual(await workspace(), { Application: name, Status: "Connected", "Current URL": "—", Route: "—", Candidates: "0" });
+  assert.deepEqual(await workspace(), { Application: name, Status: "Connected", Registry: "Built-in", "Current URL": "—", Page: "—", Route: "—", Candidates: "0" });
   const chrome = browserSession();
   assert.ok(chrome && chrome !== ui);
   await trackProcesses();
@@ -97,11 +97,12 @@ async function connectChrome(name, origin, markerId) {
 async function inspect(route, url) {
   await timed("refresh", async () => {
     await click("Inspect current page");
-    await waitText("Highlight a trusted target to find it in Chrome, or use it for the selected step.");
+    await waitText("Highlight a target to find it in Chrome, use a trusted one for the selected step, or register a registrable one.");
     await state("CONNECTED");
     await until(async () => {
       const data = await workspace();
-      return data?.Route === route && data["Current URL"] === url;
+      const location = new URL(url);
+      return data?.Route === route && data["Current URL"] === url && data.Page === location.pathname + location.hash;
     }, `Expected workspace to inspect ${url}`);
   });
 }
