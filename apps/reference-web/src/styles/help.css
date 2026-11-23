@@ -1,0 +1,31 @@
+/* C01 AI Help. Theme tokens only; no motion (so reduced-motion needs no override). The panel sits below the guide overlay's layer. */
+.page-container { padding-bottom: calc(var(--touch) + var(--space-12)); }
+.help-launcher { position: fixed; right: var(--space-6); bottom: var(--space-6); z-index: var(--help-z); min-height: var(--touch); min-width: var(--touch); display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border: 1px solid var(--dap-accent); border-radius: var(--radius-pill); background: var(--dap-accent); color: var(--dap-surface); font: var(--weight-medium) var(--type-body) var(--font-ui); box-shadow: var(--shadow-panel); cursor: pointer; }
+/* While the panel is open its Close button is the way out, so the launcher steps aside instead of covering page content; focus returns to it on close. */
+.help-launcher[hidden], body.dap-help-open .help-launcher { display: none; }
+.help-panel { position: fixed; top: var(--zero); right: var(--zero); bottom: var(--zero); z-index: var(--help-z); width: var(--help-width); max-width: var(--full); display: flex; flex-direction: column; background: var(--dap-surface); color: var(--dap-ink); border-left: var(--border); box-shadow: var(--shadow-panel); font-family: var(--font-ui); }
+.help-panel[hidden] { display: none; }
+.help-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-4) var(--space-6); border-bottom: var(--border); }
+.help-head h2 { margin: var(--zero); }
+.help-body { flex: var(--one) var(--one) auto; min-height: var(--zero); overflow-y: auto; padding: var(--space-6); }
+.help-intro { font-weight: var(--weight-medium); }
+.help-suggestions { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-2); margin-bottom: var(--space-4); }
+.help-suggestion { justify-content: flex-start; text-align: left; font-weight: var(--weight-normal); }
+.help-result:empty { display: none; }
+.help-result { margin-top: var(--space-2); }
+.help-text { white-space: pre-line; overflow-wrap: anywhere; }
+.help-answer, .help-notice { padding: var(--space-4); border: var(--border); border-radius: var(--radius-control); }
+.help-sources-title { font-size: var(--type-small); margin: var(--space-4) var(--zero) var(--space-2); }
+.help-sources { margin: var(--zero); padding-left: var(--space-6); color: var(--dap-text-muted); font-size: var(--type-small); overflow-wrap: anywhere; }
+.help-recommendation { padding: var(--space-4); border: 1px solid var(--dap-accent); border-left-width: var(--space-1); border-radius: var(--radius-control); background: var(--dap-accent-wash); }
+.help-lead { color: var(--dap-accent); font-weight: var(--weight-medium); margin-bottom: var(--space-2); }
+.help-guide-title { font-size: var(--type-body); margin: var(--zero) var(--zero) var(--space-3); overflow-wrap: anywhere; }
+.help-form { padding: var(--space-4) var(--space-6) var(--space-6); border-top: var(--border); }
+.help-ask { display: flex; gap: var(--space-2); }
+.help-ask input { flex: var(--one) var(--one) auto; }
+@media (min-width: 768px) { body.dap-help-open { padding-right: var(--help-width); } }
+@media (max-width: 767px) {
+ .help-launcher { right: var(--space-4); bottom: var(--space-4); }
+ .help-panel { top: var(--space-6); width: var(--full); border-left: none; border-top: var(--border); border-radius: var(--radius-card) var(--radius-card) var(--zero) var(--zero); }
+ .help-head, .help-body, .help-form { padding-left: var(--space-4); padding-right: var(--space-4); }
+}

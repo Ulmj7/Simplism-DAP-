@@ -1,0 +1,43 @@
+# Local development only. Password defaults below are not deployment credentials.
+# After startup, export DAP_MIGRATE_DATABASE_URL (dap_owner) and DAP_DATABASE_URL
+# (dap_app) using these passwords, host 127.0.0.1, port 54329, database dap.
+name: dap-foundation
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: dap
+      POSTGRES_USER: dap_bootstrap
+      POSTGRES_PASSWORD: ${DAP_POSTGRES_PASSWORD:-dap_bootstrap_local_only}
+      DAP_OWNER_PASSWORD: ${DAP_OWNER_PASSWORD:-dap_owner_local_only}
+      DAP_APP_PASSWORD: ${DAP_APP_PASSWORD:-dap_app_local_only}
+    ports:
+      - "127.0.0.1:${DAP_POSTGRES_PORT:-54329}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../db/migrations/000_roles.sql:/docker-entrypoint-initdb.d/000_roles.sql:ro
+    configs:
+      - source: postgres-passwords
+        target: /docker-entrypoint-initdb.d/001_passwords.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+configs:
+  postgres-passwords:
+    content: |
+      #!/bin/sh
+      set -eu
+      psql --set=ON_ERROR_STOP=1 --username="$$POSTGRES_USER" --dbname="$$POSTGRES_DB" \
+        --set=owner_password="$$DAP_OWNER_PASSWORD" --set=app_password="$$DAP_APP_PASSWORD" \
+        --set=database_name="$$POSTGRES_DB" <<'SQL'
+      ALTER ROLE dap_owner PASSWORD :'owner_password';
+      ALTER ROLE dap_app PASSWORD :'app_password';
+      ALTER DATABASE :"database_name" OWNER TO dap_owner;
+      SQL
+
+volumes:
+  postgres-data:

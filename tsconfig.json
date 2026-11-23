@@ -1,0 +1,35 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/contracts"
+    },
+    {
+      "path": "packages/ai"
+    },
+    {
+      "path": "packages/actions"
+    },
+    {
+      "path": "packages/security"
+    },
+    {
+      "path": "packages/walkthrough"
+    },
+    {
+      "path": "packages/testkit"
+    },
+    {
+      "path": "apps/reference-web"
+    },
+    {
+      "path": "apps/reference-host"
+    },
+    {
+      "path": "tests"
+    },
+    {
+      "path": "packages/browser-runtime"
+    }
+  ]
+}

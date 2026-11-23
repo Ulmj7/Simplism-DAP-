@@ -1,0 +1,23 @@
+{
+  "name": "@dap/walkthrough",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@dap/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./dom": {
+      "@dap/source": "./src/dom/index.ts",
+      "types": "./dist/dom/index.d.ts",
+      "default": "./dist/dom/index.js"
+    },
+    "./authoring": {
+      "@dap/source": "./src/authoring/index.ts",
+      "types": "./dist/authoring/index.d.ts",
+      "default": "./dist/authoring/index.js"
+    }
+  }
+}

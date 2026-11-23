@@ -1,0 +1,52 @@
+{
+  "name": "dap-security-foundation",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "AI Security Foundation: Action Registry, Policy Gateway, audit, and confirmation. The LLM is an untrusted planner.",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc -b",
+    "check:deps": "depcruise --config dependency-cruiser.config.cjs packages apps",
+    "test": "vitest run",
+    "test:arch": "vitest run --project arch",
+    "test:security": "vitest run --project security",
+    "test:conformance": "vitest run --project conformance",
+    "test:integration": "vitest run --project integration",
+    "test:walkthrough": "vitest run --project unit --project dom --project arch packages/walkthrough apps/reference-web tests/architecture/walkthrough-boundary.test.ts",
+    "test:walkthrough:proof": "vitest run --project dom --project integration apps/reference-web/src/e2e.test.ts tests/integration/walkthrough-summary-parity.test.ts",
+    "dev:web": "vite apps/reference-web",
+    "build:web": "vite build apps/reference-web",
+    "test:m1-gate": "node scripts/m1-gate.mjs",
+    "coverage:security": "node packages/testkit/dist/cli/coverage.js",
+    "db:migrate": "node db/migrate.mjs",
+    "dev:host": "tsc -b && node apps/reference-host/dist/http/dev-server.js",
+    "guidance:demo": "tsc -b && node apps/reference-host/dist/guidance/demo.js",
+    "test:authoring": "vitest run apps/reference-host/src/authoring apps/reference-web/src/admin apps/reference-web/src/usage* tests/architecture/authoring-boundary.test.ts tests/integration/authoring*.test.ts",
+    "test:guidance": "vitest run packages/ai/src/guidance packages/testkit/src/guidance packages/testkit/src/fake-guidance-model.test.ts apps/reference-host/src/guidance apps/reference-host/src/http tests/architecture/ai-guidance-boundary.test.ts tests/architecture/guidance-host-boundary.test.ts tests/integration/guidance tests/integration/c01-guidance-transport.test.ts tests/integration/c01-help-end-to-end.test.ts",
+    "build:agent-browser": "cargo build --locked --release --manifest-path vendor/agent-browser/cli/Cargo.toml",
+    "test:studio": "vitest run packages/browser-runtime apps/reference-host/src/studio apps/reference-web/src/admin tests/integration/studio-fixture-app.test.ts",
+    "probe:studio-domains": "tsc -b && node scripts/studio-domain-probe.mjs",
+    "acceptance:studio-v1-host": "tsc -b && node scripts/studio-v1-host-acceptance.mjs",
+    "acceptance:studio-v1-ui": "tsc -b && node scripts/studio-browser-smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "dependency-cruiser": "^18.7.2",
+    "eslint": "^10.14.0",
+    "fast-check": "^4.10.2",
+    "jsdom": "^31.0.1",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  }
+}

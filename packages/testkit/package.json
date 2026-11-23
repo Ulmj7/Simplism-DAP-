@@ -1,0 +1,21 @@
+{
+  "name": "@dap/testkit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@dap/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@dap/contracts": "*",
+    "@dap/security": "*",
+    "@dap/ai": "*"
+  },
+  "devDependencies": {
+    "fast-check": "^4.10.2"
+  }
+}

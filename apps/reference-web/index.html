@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title></title>
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <link rel="stylesheet" href="/src/styles/app.css" />
+    <link rel="stylesheet" href="/src/styles/overlay.css" />
+    <link rel="stylesheet" href="/src/styles/help.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { boot } from "/src/browser.ts";
+      const root = document.getElementById("app");
+      if (!root) throw new Error("#app is missing from index.html");
+      void boot(root, { demoRoleEnabled: import.meta.env.DEV });
+    </script>
+  </body>
+</html>

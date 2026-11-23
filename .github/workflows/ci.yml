@@ -1,0 +1,100 @@
+name: ci
+
+# Feature 001 (AI Security Foundation), Milestone M1: enforces only what the M1 scope requires (lint, types, dependency boundaries,
+# PostgreSQL migrations, the security, conformance and integration suites, the reference-host vertical path, and the single M1 gate).
+# Feature 002 (semantic walkthrough runtime, UI P0) adds three steps before the M1 gate: its focused suite, its two closure proofs and the web build.
+# None of them needs PostgreSQL, a browser download, a model provider or the network beyond `npm ci`.
+# Optional and future checks (mutation, determinism, coverage report, container build, scanners) are deliberately not here.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        # Same major version as deploy/compose.yaml. The bootstrap user and database mirror that file; the dap_owner and dap_app roles are created
+        # below from the repository's own db/migrations/000_roles.sql, because a service container cannot mount repository files.
+        image: postgres:16
+        env:
+          POSTGRES_DB: dap
+          POSTGRES_USER: dap_bootstrap
+          POSTGRES_PASSWORD: dap_bootstrap_local_only
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U dap_bootstrap -d dap"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      # Development-only credentials of this job's own ephemeral database on localhost (the ones deploy/compose.yaml documents). Not secrets.
+      DAP_DATABASE_URL: postgresql://dap_app:dap_app_local_only@127.0.0.1:54329/dap
+      DAP_MIGRATE_DATABASE_URL: postgresql://dap_owner:dap_owner_local_only@127.0.0.1:54329/dap
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Dependency boundaries (dependency-cruiser)
+        run: npm run check:deps
+      - name: Architecture tests
+        run: npm run test:arch
+      - name: Create the database roles (the same bootstrap as deploy/compose.yaml)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "54329"
+          PGUSER: dap_bootstrap
+          PGPASSWORD: dap_bootstrap_local_only
+          PGDATABASE: dap
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -f db/migrations/000_roles.sql
+          psql -v ON_ERROR_STOP=1 --set=owner_password=dap_owner_local_only --set=app_password=dap_app_local_only --set=database_name=dap <<'SQL'
+          ALTER ROLE dap_owner PASSWORD :'owner_password';
+          ALTER ROLE dap_app PASSWORD :'app_password';
+          ALTER DATABASE :"database_name" OWNER TO dap_owner;
+          SQL
+      - name: PostgreSQL migrations
+        run: npm run db:migrate
+      - name: Security tests
+        run: npm run test:security
+      - name: PostgreSQL conformance tests
+        run: npm run test:conformance
+      - name: PostgreSQL integration tests
+        run: npm run test:integration
+      - name: Reference host vertical path (T136, dev auth to Gateway to PostgreSQL audit to executor)
+        run: npx vitest run --project integration tests/integration/reference-host.test.ts
+      - name: Full test suite
+        run: npm test
+      - name: Guidance (offline provider, PostgreSQL)
+        run: npm run test:guidance
+      - name: Walkthrough runtime, reference web UI and boundaries (Feature 002)
+        run: npm run test:walkthrough
+      - name: Feature 002 closure proofs (T221 end-to-end in a real DOM, T240 host summaries equal the real catalog)
+        # Explicit file paths: vitest fails if either file is missing, so neither proof can be dropped silently.
+        run: npm run test:walkthrough:proof
+      - name: Walkthrough authoring and usage (Feature 004)
+        run: npm run test:authoring
+      - name: Reference web build
+        run: npm run build:web
+      - name: M1 gate (authoritative)
+        run: npm run test:m1-gate

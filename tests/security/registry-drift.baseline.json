@@ -1,0 +1,165 @@
+[
+  {
+    "id": "testCriticalDelete",
+    "version": 1,
+    "definitionHash": "e7012fa60fb8c8e830639a8c69e12da5923940998ad1ce18254eb3107eb71ff2",
+    "inputSchemaJson": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "documentId": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "documentId"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "id": "testForbiddenShell",
+    "version": 1,
+    "definitionHash": "1d14ec904a4be0939258cb3ddd3203d6f96c7eaa416bcf6f0e591f914bff6c62",
+    "inputSchemaJson": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "id": "testHighPublish",
+    "version": 1,
+    "definitionHash": "c347fe87b3627b9bcda025b3d766c91e5a4145f0ac462328a70161232a93f702",
+    "inputSchemaJson": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "audience": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "type": "array"
+        },
+        "documentId": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "documentId",
+        "audience"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "id": "testLowNavigate",
+    "version": 1,
+    "definitionHash": "ae38048c847d7df016db58aa2e6ac6353c347efa0fe95fe33d1927ea29b4fa82",
+    "inputSchemaJson": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "route": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "route"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "id": "testMediumDraft",
+    "version": 1,
+    "definitionHash": "e92e861ef43c466e4ea7c78c6f47d188d875b2a5212157a84b244f9b2bdb559e",
+    "inputSchemaJson": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "documentId": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "draft": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "documentId",
+        "draft"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "id": "testMediumOptOut",
+    "version": 1,
+    "definitionHash": "dd32a980b132a92d72cca1d265e96481d283fe5b86904fd69f198d9eb44bf85d",
+    "inputSchemaJson": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "documentId": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "draft": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "documentId",
+        "draft"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "id": "testSafeEcho",
+    "version": 1,
+    "definitionHash": "dcca4b8eec27cf5429d04884517d7b24a77629f5e2ff0448953a64870e6f55fc",
+    "inputSchemaJson": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    }
+  }
+]

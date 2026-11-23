@@ -1,0 +1,31 @@
+/**
+ * The Application store port (Studio V1A). Small on purpose: exactly the operations the enrollment capabilities and the maintainer routes need, no generic repository.
+ *
+ * Trust: `scope` ({ tenantId, actor }) comes from the trusted context of the caller (the Gateway's `call.security` for writes, the host-resolved principal for reads),
+ * never from a request body or a parameter. Every read is confined to the caller's tenant: another tenant's application is simply `null`. The store re-checks the SHAPE it is
+ * given but does not decide what an enrollable application is: the executor validates with `validateApplicationConfig` before it calls `save`.
+ */
+import type { ApplicationConfig, ApplicationRecord } from "./applications.js";
+
+export interface ApplicationScope {
+  /** From the trusted context. */
+  readonly tenantId: string;
+  /** The safe actor id from the trusted context (`call.security.userId`). */
+  readonly actor: string;
+}
+export type ApplicationSaveOutcome = "created" | "updated" | "limit_reached" | "id_refused";
+export type ApplicationEnabledOutcome = "changed" | "unchanged" | "not_found" | "id_refused";
+
+export interface ApplicationStore {
+  /** The tenant's applications, newest update first, at most 20. */
+  list(tenantId: string): Promise<readonly ApplicationRecord[]>;
+  /** `null` when the id is malformed, does not exist, or belongs to another tenant (the three look the same). */
+  get(tenantId: string, id: string): Promise<ApplicationRecord | null>;
+  /**
+   * Inserts a new application (enabled) or updates an existing one in place (`enabled` is never touched by a save). At most 20 applications per tenant: the 21st is
+   * `limit_reached`, serialised per tenant so two concurrent creates cannot exceed it.
+   */
+  save(scope: ApplicationScope, id: string, config: ApplicationConfig): Promise<ApplicationSaveOutcome>;
+  /** Enables or disables an existing application; never creates one. Disabling is the only way an application stops being used: there is no delete. */
+  setEnabled(scope: ApplicationScope, id: string, enabled: boolean): Promise<ApplicationEnabledOutcome>;
+}

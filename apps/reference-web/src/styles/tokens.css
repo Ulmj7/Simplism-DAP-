@@ -1,0 +1,14 @@
+:root {
+ --dap-scrim: rgb(0 0 0 / 42%); --guide-width: 336px; --dialog-width: 440px; --help-width: 400px; --help-z: calc(var(--guide-z) - 10); --guide-z: 2147483000; --guide-outline: 3px solid var(--dap-accent);
+ --dap-bg: #F1F2F4; --dap-accent: #812F74; --dap-ink: #000000;
+ --dap-surface: #FFFFFF; --dap-border: #D6D8DC; --dap-text-muted: #62646A;
+ --dap-accent-wash: #F5EBF3; --dap-danger: #B42318; --dap-focus-ring: #812F74;
+ --font-display: Georgia, "Times New Roman", serif; --font-ui: system-ui, Arial, Helvetica, sans-serif;
+ --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px; --space-12: 48px; --space-16: 64px;
+ --radius-control: 10px; --radius-card: 14px; --radius-pill: 999px;
+ --border: 1px solid var(--dap-border); --shadow-panel: 0 4px 18px rgb(0 0 0 / 5%);
+ --type-body: 16px; --type-small: 14px; --type-card: 22px; --type-title: clamp(32px, 5vw, 52px); --line-body: 1.5; --line-title: 1.12;
+ --weight-normal: 400; --weight-medium: 600; --tracking-title: -0.025em;
+ --column: 1fr;
+ --page-width: 1240px; --form-width: 480px; --touch: 44px; --header-height: 64px; --full: 100%; --zero: 0; --one: 1; --focus: 2px solid var(--dap-focus-ring); --focus-offset: 3px; --disabled-opacity: 0.65;
+}
