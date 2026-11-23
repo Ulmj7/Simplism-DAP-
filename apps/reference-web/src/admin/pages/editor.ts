@@ -218,7 +218,7 @@ function renderEditor(page: HTMLElement, notice: HTMLElement, session: EditSessi
     }
     // Preview runs the reference application's own runtime, so only its registry can be previewed in this release.
     const inAppPreview = previewable && previewMode === "in-app";
-    previewHint.textContent = previewMode === "application-window" ? "Preview in the application window is added in the next step." : c.application.noPreview;
+    previewHint.textContent = previewMode === "application-window" ? c.application.windowPreviewPending : c.application.noPreview;
     previewHint.hidden = inAppPreview || unassigned;
     save.disabled = busy || !validation.ok || unassigned;
     showPreview.disabled = busy || !validation.ok || !inAppPreview;

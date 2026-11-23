@@ -43,6 +43,7 @@ export const copy = {
    chooseFirst: "Choose an application to see its targets.", disabledSuffix: " (disabled)", loadingRegistry: "Loading the application's targets…",
    registryFailed: "The targets of this application could not be loaded. Choose it again or pick another application.",
    fixedHint: "This walkthrough belongs to this application. It cannot be moved.",
+   windowPreviewPending: "Preview in the application window is added in the next step.",
    noPreview: "Preview is available for the reference application in this release.",
    none: "No enabled applications yet. Enroll one in Applications.", unavailable: "Applications could not be loaded. Please try again.",
    failures: {

@@ -42,11 +42,17 @@ export function walkthroughsPage(options: AdminPageOptions) {
         trigger.addEventListener("click", () => { if (!busy && !signal.aborted && !trigger.disabled) run(trigger); });
         controls.append(trigger);
       }
-      const readValid = async (invalid: string) => {
+      const readValid = async (invalid: string, forPreview = false) => {
         const loaded = await client.get(row.id);
         if (signal.aborted) return null;
         if (loaded.kind !== "ok") { notice.textContent = readError(loaded); return null; }
-        try { return createWalkthroughCatalog(registry, POSTCONDITION_NAMES, [loaded.value.definition]).get(row.id) ?? null; }
+        const owner = loaded.value.applicationId === null ? undefined : await client.applicationRegistry(loaded.value.applicationId);
+        if (signal.aborted) return null;
+        if (owner !== undefined && owner.kind !== "ok") { notice.textContent = readError(owner); return null; }
+        const data = owner?.value;
+        if (forPreview && data?.previewMode === "application-window") { notice.textContent = c.application.windowPreviewPending; return null; }
+        if (forPreview && data?.previewable === false) { notice.textContent = c.application.noPreview; return null; }
+        try { return createWalkthroughCatalog(data?.registry ?? registry, data?.postconditionNames ?? POSTCONDITION_NAMES, [loaded.value.definition]).get(row.id) ?? null; }
         catch { notice.textContent = invalid; return null; }
       };
       async function setStatus(wanted: GuideStatus) {
@@ -64,10 +70,7 @@ export function walkthroughsPage(options: AdminPageOptions) {
         if (builtIn) { preview(builtIn); return; }
         busy = true; notice.textContent = c.loading;
         void (async () => {
-          // Preview runs the reference application's own runtime: say so plainly for any other application instead of "invalid".
-          const owner = "applicationId" in row && row.applicationId !== null ? await client.applicationRegistry(row.applicationId) : undefined;
-          if (owner?.kind === "ok" && !owner.value.previewable) { busy = false; if (!signal.aborted) notice.textContent = c.application.noPreview; return; }
-          const def = await readValid(c.previewFailed);
+          const def = await readValid(c.previewFailed, true);
           busy = false;
           if (def && !signal.aborted) { notice.textContent = ""; preview(def); }
         })();

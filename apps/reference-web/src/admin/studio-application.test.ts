@@ -759,3 +759,16 @@ it("shows managed routes and target references and confirms a referenced disable
   await click(root, "Enable orders.submit");
   expect(host.writes().at(-1)?.body).toEqual({ status: "active" });
 });
+
+it("uses the managed registry for list Publish and defers list Preview to the application window", async () => {
+  const host = fakeHost({ apps: [managed], guides: [guide(savedId, "draft", ordersDraft(savedId), ORD)] });
+  const registryForOrders = { ...managedRegistry(true), routes: ["home", "orders"], elements: ordersElements,
+    pages: { "/": "home", "/#/orders": "orders" }, postconditionNames: ["route.home", "route.orders"] };
+  host.overrides.set(`GET /api/admin/applications/${ORD}/registry`, () => json(registryForOrders));
+  const { root } = await setup("walkthroughs", host);
+  await click(root, "Preview: Orders tour");
+  expect(notice(root)).toBe(c.application.windowPreviewPending);
+  expect(document.querySelector("[data-ai-overlay]")).toBeNull();
+  await click(root, "Publish: Orders tour");
+  expect(root.querySelector("dialog[open]")).not.toBeNull();
+});
