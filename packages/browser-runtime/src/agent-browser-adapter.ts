@@ -33,7 +33,7 @@ const historyPath = /^\/[A-Za-z0-9._~/-]*$/u;
 const textRefBase = 900_000_000;
 const maxTextElements = 32;
 const textKinds = [
-  { role: "status", xpath: '//*[@data-ai-id][@role="status" or self::output]' },
+  { role: "status", xpath: '//*[@data-ai-id][@role="status" or (self::output and not(@role))]' },
   { role: "alert", xpath: '//*[@data-ai-id][@role="alert"]' },
 ] as const;
 

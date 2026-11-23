@@ -10,7 +10,7 @@ import { BrowserRuntimeError } from "./errors.js";
 const origin = "http://127.0.0.1:5188";
 const reply = (data: unknown) => JSON.stringify({ success: true, data, error: null });
 const failure = () => JSON.stringify({ success: false, data: null, error: "gone secret-canary" });
-const STATUS = '//*[@data-ai-id][@role="status" or self::output]';
+const STATUS = '//*[@data-ai-id][@role="status" or (self::output and not(@role))]';
 const ALERT = '//*[@data-ai-id][@role="alert"]';
 
 interface Region { marker: string | null; text: string; visible?: boolean; attrs?: Record<string, string | null>; gone?: boolean }
