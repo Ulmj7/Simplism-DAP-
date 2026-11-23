@@ -9,6 +9,7 @@
  *   (hidden)     everything else: no marker, an invalid or reserved marker, a non-registrable role, a target of another route or role, a non-public or secret-looking element, a page that is not
  *                hash-routed, a registry at its caps, an element whose facts could not be read
  *
+ * A marker on more than one inspected control is ambiguous and hides all of them.
  * At most 64 controls are inspected (the adapter reads their markers), in document order; `truncated` is true when the page had more. `hidden` counts every control that is not listed.
  */
 import type { BrowserSnapshot, ElementFacts, ElementRef } from "@dap/browser-runtime";
@@ -100,6 +101,18 @@ export interface ManagedInput {
   readonly registry: ManagedRegistryView;
 }
 
+/**
+ * A marker carried by MORE THAN ONE control of the inspected set (the first 64 controls, whatever their role, privacy or name: the runtime resolves `data-ai-id` to a single element and a private
+ * or non-registrable twin still competes for it) is ambiguous: none of those controls is listed and all are counted as hidden. A twin beyond the inspected set cannot be seen (the adapter reads at most 64 markers).
+ */
+function isAmbiguousMarker(input: ManagedInput, marker: string): boolean {
+  let seen = 0;
+  for (const element of input.snapshot.elements.slice(0, MAX_INSPECTED)) {
+    if (input.ids.get(element.ref) === marker) { seen += 1; if (seen > 1) return true; }
+  }
+  return false;
+}
+
 /** The decision for ONE control (also used to re-verify a registration against fresh facts): a candidate, or `null` for hidden. */
 export function classifyControl(input: ManagedInput, element: BrowserSnapshot["elements"][number]): ManagedCandidate | null {
   if (!REF_PATTERN.test(element.ref) || !inBounds(element.name, element.role)) return null;
@@ -107,6 +120,7 @@ export function classifyControl(input: ManagedInput, element: BrowserSnapshot["e
   const targetRole = snapshotRoleToTargetRole(element.role);
   const marker = input.ids.get(element.ref);
   if (targetRole === null || !isTargetId(marker)) return null;
+  if (isAmbiguousMarker(input, marker)) return null; // the runtime resolves a marker to ONE element: a marker on several controls identifies none of them
   const page = pageOfUrl(input.snapshot.url);
   const route = routeOfPage(page, input.registry.routes);
   const facts = input.facts.get(element.ref);

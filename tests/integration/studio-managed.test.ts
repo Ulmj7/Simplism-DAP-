@@ -331,3 +331,27 @@ it("reports route creation exactly once when another registration wins the trans
     expect.objectContaining({ id: "orders.submitButton" }), expect.objectContaining({ id: "orders.competitor" }),
   ]) });
 });
+
+describe("duplicate markers fail closed through the real routes (H5)", () => {
+  it("two controls sharing a marker are listed as neither registrable nor trusted, the register command refuses them, and the database stays empty", async () => {
+    const saved = PAGES["/#/orders"]!;
+    PAGES["/#/orders"] = [control("Twin one", "button", "orders.twin"), control("Twin two", "link", "orders.twin"), control("Order note", "textbox", "orders.note")];
+    try {
+      const t = await start();
+      const appId = await t.createApplication(managedConfig());
+      const session = (await t.studio({ action: "connect", applicationId: appId })).body.sessionId as string;
+      const shown = await t.studio({ action: "refresh", sessionId: session, applicationId: appId });
+      expect((shown.body.elements as { name: string }[]).map((e) => e.name)).toEqual(["Order note"]);
+      expect(shown.body.hidden).toBe(2);
+      expect(shown.raw).not.toMatch(/Twin/u);
+      for (const ref of ["@e1", "@e2"]) expect((await t.studio(registerBody(session, appId, { ref, targetId: "orders.twin", label: "Twin", description: "Twin." }))).body, ref).toEqual({ error: "REF_NOT_FOUND" });
+      expect((await t.targets.list(t.tenant, appId)).targets).toEqual([]);
+      // a register the editor could not have offered is also refused when the marker turns ambiguous after the refresh
+      PAGES["/#/orders"] = [control("Order note", "textbox", "orders.note"), control("Later", "button", null)];
+      await t.studio({ action: "refresh", sessionId: session, applicationId: appId });
+      PAGES["/#/orders"]![1] = control("Later twin", "textbox", "orders.note");
+      expect((await t.studio(registerBody(session, appId, { ref: "@e1", targetId: "orders.note", operations: ["highlight", "input"], label: "Note", description: "Note." }))).body).toEqual({ error: "TARGET_NOT_REGISTRABLE" });
+      expect((await t.targets.list(t.tenant, appId)).targets).toEqual([]);
+    } finally { PAGES["/#/orders"] = saved; }
+  });
+});

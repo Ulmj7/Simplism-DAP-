@@ -645,3 +645,39 @@ describe("capture returns the STORED semantic role, the inspector keeps the live
     expect((await capture("@e2", reopened)).body).toMatchObject({ role: "select" });
   });
 });
+
+describe("duplicate markers fail closed (H5)", () => {
+  const twins = () => [control("Export", "button", "orders.exportButton"), control("Export copy", "button", "orders.exportButton"), control("Order note", "textbox", "orders.note")];
+  it("refresh lists neither twin and counts both as hidden", async () => {
+    const h = await harness({ controls: twins() });
+    await h.connect();
+    const res = await h.command(refresh());
+    expect((res.body.elements as { name: string }[]).map((e) => e.name)).toEqual(["Order note"]);
+    expect(res.body.hidden).toBe(2);
+    expect(res.raw).not.toMatch(/Export/u);
+  });
+  it("register of a twin ref is refused (it was never listed) and nothing reaches the Gateway or the store", async () => {
+    const h = await harness({ controls: twins() });
+    await h.connect();
+    await h.command(refresh());
+    for (const ref of ["@e1", "@e2"]) expect((await h.command(registerBody({ ref }))).body, ref).toEqual({ error: "REF_NOT_FOUND" });
+    expect(h.calls).toEqual([]);
+    expect(await storedTargets(h)).toEqual([]);
+  });
+  it("a control of the inspected set that is re-marked as a twin AFTER the refresh is caught by the live re-check: TARGET_NOT_REGISTRABLE, nothing written", async () => {
+    const h = await ready();
+    h.runtimes[0]!.controls[3] = control("Late twin", "button", "orders.exportButton"); // the former "Save" control (no marker) now carries the same marker
+    const res = await h.command(registerBody());
+    expect(res).toMatchObject({ status: 409, body: { error: "TARGET_NOT_REGISTRABLE" } });
+    expect(h.calls).toEqual([]);
+    expect(await storedTargets(h)).toEqual([]);
+    expect(res.raw).not.toContain("Late twin");
+  });
+  it("once the twin is gone the control registers normally", async () => {
+    const h = await ready();
+    h.runtimes[0]!.controls[3] = control("Late twin", "button", "orders.exportButton");
+    expect((await h.command(registerBody())).status).toBe(409);
+    h.runtimes[0]!.controls[3] = control("Save", "button", null);
+    expect((await h.command(registerBody())).status).toBe(200);
+  });
+});

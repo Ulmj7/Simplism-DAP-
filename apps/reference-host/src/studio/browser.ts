@@ -270,7 +270,10 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     // The caps are answered as such (not as "not registrable"): the registry is full, or the live page needs a new route and no route is left.
     const livePage = pageOfUrl(snapshot.url);
     if (registry.targets.length >= MAX_TARGETS_PER_APPLICATION || (livePage !== null && routeOfPage(livePage, registry.routes) === null && registry.routes.length >= MAX_ROUTES_PER_APPLICATION)) return deny(409, "REGISTRY_FULL");
-    const live = classifyControl({ snapshot, ids: new Map([[element.ref, liveMarker]]), facts: new Map([[element.ref, liveFacts]]), registry }, element);
+    // The ids of the whole inspected set are read again so a marker that now sits on a second control is seen (ambiguous markers are never registrable).
+    const liveIds = new Map(await session.runtime.inspectSemanticIds(snapshot));
+    liveIds.set(element.ref, liveMarker);
+    const live = classifyControl({ snapshot, ids: liveIds, facts: new Map([[element.ref, liveFacts]]), registry }, element);
     if (live === null || live.status !== "registrable") return deny(409, "TARGET_NOT_REGISTRABLE");
     const { proposal } = live;
     // The page keeps its route; a new route name may not belong to another page.

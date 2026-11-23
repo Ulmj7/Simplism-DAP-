@@ -208,6 +208,51 @@ describe("classifyManaged: what is listed and in which state", () => {
   });
 });
 
+describe("a marker on more than one control of the inspected set is ambiguous: none of them is listed, all are counted as hidden (H5)", () => {
+  const reg = () => registry({ targets: [target("orders.save", "orders", "button"), target("orders.off", "orders", "button", "disabled")] });
+  it("two controls with one new marker: neither is registrable, both are hidden, neither name leaks", () => {
+    const res = classifyManaged(input([{ name: "First twin", role: "button", id: "orders.twin" }, { name: "Second twin", role: "link", id: "orders.twin" }, { name: "Other", role: "button", id: "orders.other" }]));
+    expect(res.elements.map((e) => e.name)).toEqual(["Other"]);
+    expect(res.hidden).toBe(2);
+    expect(JSON.stringify(res)).not.toMatch(/twin/iu);
+  });
+  it("three controls with one marker: all three are hidden", () => {
+    const res = classifyManaged(input([{ name: "A", role: "button", id: "orders.twin" }, { name: "B", role: "button", id: "orders.twin" }, { name: "C", role: "button", id: "orders.twin" }]));
+    expect(res).toEqual({ elements: [], hidden: 3, truncated: false });
+  });
+  it("a duplicate of a REGISTERED target hides both: neither is trusted (active) nor disabled", () => {
+    expect(classifyManaged(input([{ name: "Save", role: "button", id: "orders.save" }, { name: "Save again", role: "button", id: "orders.save" }], undefined, reg()))).toEqual({ elements: [], hidden: 2, truncated: false });
+    expect(classifyManaged(input([{ name: "Old", role: "button", id: "orders.off" }, { name: "Old again", role: "button", id: "orders.off" }], undefined, reg()))).toEqual({ elements: [], hidden: 2, truncated: false });
+  });
+  it("the rule counts every control of the inspected set with the marker, whatever its role, privacy or name: a private, non-registrable or secret-named twin still makes the visible one ambiguous", () => {
+    const twins: Control[] = [
+      { name: "Hidden twin", role: "button", id: "orders.twin", facts: { ...PUBLIC, dataAiPrivate: true } },
+      { name: "Heading twin", role: "heading", id: "orders.twin" },
+      { name: "Password twin", role: "textbox", id: "orders.twin" },
+      { name: "Unreadable twin", role: "button", id: "orders.twin", facts: null },
+    ];
+    for (const twin of twins) {
+      const res = classifyManaged(input([{ name: "Visible", role: "button", id: "orders.twin" }, twin]));
+      expect(res, twin.name).toEqual({ elements: [], hidden: 2, truncated: false });
+    }
+  });
+  it("a twin beyond the 64 inspected controls is not seen (the adapter reads at most 64 markers): the documented limit", () => {
+    const filler: Control[] = Array.from({ length: 63 }, (_, i) => ({ name: `F${i}`, role: "button", id: `orders.f${i}` }));
+    const res = classifyManaged(input([{ name: "Visible", role: "button", id: "orders.twin" }, ...filler, { name: "Twin past the bound", role: "button", id: "orders.twin" }]));
+    expect(res.elements.map((e) => e.name)).toContain("Visible");
+    expect(res.truncated).toBe(true);
+  });
+  it("different markers and controls without a marker are never ambiguous", () => {
+    const res = classifyManaged(input([{ name: "A", role: "button", id: "orders.a" }, { name: "B", role: "button", id: "orders.b" }, { name: "N1", role: "button" }, { name: "N2", role: "button" }]));
+    expect(res.elements.map((e) => e.name)).toEqual(["A", "B"]);
+  });
+  it("classifyControl applies the same rule (used to re-verify a registration)", () => {
+    const i = input([{ name: "A", role: "button", id: "orders.twin" }, { name: "B", role: "button", id: "orders.twin" }]);
+    expect(classifyControl(i, i.snapshot.elements[0]!)).toBeNull();
+    expect(classifyControl(i, i.snapshot.elements[1]!)).toBeNull();
+  });
+});
+
 describe("selectFactRefs: facts are read for every control that could be listed", () => {
   it("selects registrable-role controls with a valid marker, registered or not, at most 64, in document order", () => {
     const reg = registry({ targets: [target("orders.known", "orders", "button")] });
