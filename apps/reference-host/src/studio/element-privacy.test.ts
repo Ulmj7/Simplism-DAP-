@@ -46,8 +46,43 @@ describe("secretNameHit: the documented deny-list", () => {
   });
   it.each([
     ["Pass word"], ["Card_number"], ["card-number"], ["Social   Security"], ["one time code"], ["API-key"], ["api_key"], ["Confirm password"], ["New Password (again)"], ["Login token:"],
-  ])("refuses the separator variant %s", (name) => { expect(secretNameHit(name)).toBe(name !== "Pass word"); });
+  ])("refuses the separator variant %s", (name) => { expect(secretNameHit(name)).toBe(true); });
   it.each([
-    ["Save"], ["Display name"], ["Submit order"], ["Tokenize"], ["Secretary"], ["Passport number"], ["Hotspot"], ["Cvvx"], ["Ssnow"], ["Protocol"], ["Totp"], [""],
-  ])("does not refuse %s (whole words only)", (name) => { expect(secretNameHit(name)).toBe(false); });
+    ["Save"], ["Display name"], ["Submit order"], ["Passport number"], ["Hotspot"], ["Cvvx"], ["Ssnow"], ["Protocol"], ["Totp"], [""],
+  ])("does not refuse %s (the short words match whole words only)", (name) => { expect(secretNameHit(name)).toBe(false); });
+});
+
+// --- H4: the name is normalised before matching (lead fuzz variants) ---------------------------------------------------------------------------------------------------
+const LONG_WORDS = ["password", "passcode", "secret", "token", "api key", "card number", "social security", "one-time code"];
+const SHORT_WORDS = ["cvv", "cvc", "ssn", "otp"];
+const fullwidth = (text: string) => text.toUpperCase().replace(/[A-Z]/gu, (ch) => String.fromCharCode(ch.charCodeAt(0) + 0xfee0));
+const capital = (word: string) => word.replace(/(^|[ -])([a-z])/gu, (_m, sep: string, ch: string) => `${sep}${ch.toUpperCase()}`);
+/** Forms every word must be hidden in: plain, case, separators, invisible characters, fullwidth, digit suffix, letter-spaced and dotted. */
+const universal = (word: string): string[] => [
+  word, word.toUpperCase(), `${word}s`, `Enter your ${word.toUpperCase()}`, word.replace(/ /gu, "-"), word.replace(/ /gu, "_"), word.replace(/[ -]/gu, ""), `${word.toUpperCase()}:`, `(${word})`,
+  `${word.slice(0, 2)}\u200b${word.slice(2)}`, `${word.slice(0, 2)}\u00ad${word.slice(2)}`, `${word.slice(0, 2)}\u2060${word.slice(2)}`, `${word.slice(0, 1)}\ufeff${word.slice(1)}`, fullwidth(word), `${word}2`, `${word}1`,
+  word.split("").join("."), word.split("").join(" "), `${word}_value`, `${"a".repeat(60)} ${word}`, word.replace(/ /gu, "\u00a0"), word.replace(/ /gu, "\u3000"),
+];
+/** Forms only the LONG words must be hidden in: joined to a prefix or a camelCase word. */
+const joined = (word: string): string[] => [`my${word}`, `new${capital(word).replace(/[ -]/gu, "")}`, `x${word}`, `${capital(word).replace(/[ -]/gu, "")}Input`, `current${capital(word).replace(/[ -]/gu, "")}`];
+
+describe("secretNameHit: the normalised, squashed match (H4)", () => {
+  it.each(LONG_WORDS.flatMap((word) => [...universal(word), ...joined(word)].map((form) => [word, form] as const)))("long word %s is hidden in %j", (_word, form) => {
+    expect(secretNameHit(form)).toBe(true);
+  });
+  it.each(SHORT_WORDS.flatMap((word) => universal(word).map((form) => [word, form] as const)))("short word %s is hidden in %j", (_word, form) => {
+    expect(secretNameHit(form)).toBe(true);
+  });
+  it.each(SHORT_WORDS.flatMap((word) => joined(word).map((form) => [word, form] as const)))("a short word joined to other letters (%s in %j) stays visible: the squashed form must equal the word", (_word, form) => {
+    expect(secretNameHit(form)).toBe(false);
+  });
+  it.each(["Save", "Orders", "Submit order", "Profile", "Display name", "Settings", "Advanced", "Home", "Search", "Cancel", "Next", "Previous", "Add to cart", "Notes", "Passport number", "Hotspot", "Protocol", "Totp", "Cvvx", "Ssnow", "Costs", "Cost center", "Bottom panel"])(
+    "the ordinary name %j stays visible", (name) => { expect(secretNameHit(name)).toBe(false); });
+  it.each(["Tokenize", "Secretary", "Secretariat", "Tokens", "Passcodes"])("documented over-matching: %j contains a long word, so the heuristic hides it (fail closed)", (name) => {
+    expect(secretNameHit(name)).toBe(true);
+  });
+  it("homoglyphs from other scripts and leet spellings are NOT caught (documented limit)", () => {
+    expect(secretNameHit("p\u0430ssword")).toBe(false); // Cyrillic a
+    expect(secretNameHit("p4ssw0rd")).toBe(false);
+  });
 });
