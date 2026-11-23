@@ -334,11 +334,15 @@ async function acceptance() {
     await click(`Use for authoring: ${reference}`);
     await uiCommand("wait", "#editor-application");
     const current = await connectChrome(reference, originA, "nav.profile");
-    for (const url of [originB + "/", "http://localhost:5184/"]) {
+    for (const url of [originB + "/", `http://localhost:${new URL(originA).port}/`]) {
       const attempt = await browserCommand(current, "open", url);
       if ((await browse("get", "url")).url !== url) {
         assert.equal(attempt.success, false);
         assert.match(attempt.error, /domain|allow.list/u);
+        if (process.argv.includes("--ordinary")) {
+          await inspect("dashboard", originA + "/");
+          continue;
+        }
         await browse("eval", `setTimeout(() => location.assign(${JSON.stringify(url)}), 100)`);
         await until(async () => (await browse("get", "url")).url === url, "Chrome did not show the blocked-document URL");
       }

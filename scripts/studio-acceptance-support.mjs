@@ -37,7 +37,8 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const cli = fileURLToPath(new URL("../vendor/agent-browser/cli/target/release/agent-browser", import.meta.url));
 const config = fileURLToPath(new URL("../packages/browser-runtime/agent-browser.json", import.meta.url));
 const managed = process.argv.includes("--managed");
-const ports = managed ? [8795, 5186, 5187] : [8794, 5184, 5185];
+const v1bPorts = managed || process.argv.includes("--v1b-ports");
+const ports = v1bPorts ? [8795, 5186, 5187] : [8794, 5184, 5185];
 const hostOrigin = `http://127.0.0.1:${ports[0]}`;
 export const originA = `http://127.0.0.1:${ports[1]}`;
 export const originB = `http://127.0.0.1:${ports[2]}`;
@@ -49,7 +50,7 @@ assert.ok(databasePort && /^[1-9][0-9]{0,4}$/u.test(databasePort) && Number(data
   && !["5432", "8787"].includes(databasePort), "Set DAP_ACCEPTANCE_DB_PORT to the isolated acceptance database port");
 const database = URL.parse(databaseUrl ?? "");
 assert.ok(database && database.protocol === "postgresql:" && database.hostname === "127.0.0.1" && database.port === databasePort
-  && database.username === "dap_app" && database.pathname === "/dap" && !database.search && !database.hash && (!managed || databasePort === "54362"), "Use the isolated acceptance database as dap_app");
+  && database.username === "dap_app" && database.pathname === "/dap" && !database.search && !database.hash && (!v1bPorts || databasePort === "54362"), "Use the isolated acceptance database as dap_app");
 await access(cli);
 
 export const elapsed = started => Math.round(performance.now() - started);

@@ -203,7 +203,7 @@ await runStudioAcceptance(async () => {
     await waitOption("editor-target", "nav.orders");
     assert.deepEqual((await candidates()).map(row => row.status), ["trusted"]);
   });
-  await step(5, "register order controls and refuse stale and duplicate registration", async () => {
+  await step(5, "register order controls and recover from stale selection", async () => {
     await gotoOrders();
     const refreshed = await inspect(originB + "/#/orders");
     assert.ok(refreshed.hidden >= 3);
@@ -219,21 +219,25 @@ await runStudioAcceptance(async () => {
     await gotoOrders(); await inspect(originB + "/#/orders");
     await register("Order note", "orders.note");
 
-    // Deliberately create two live refs for one durable ID to exercise the duplicate race while the second confirmation remains open.
-    await evaluate(browse, `(() => { const original = document.querySelector('${marker("orders.submit")}'); const copy = original.cloneNode(true);
-      copy.id = "duplicate-submit"; copy.textContent = "Second submit control"; original.after(copy); return true; })()`);
-    const duplicate = await inspect(originB + "/#/orders");
-    await openRegistration("Second submit control", "orders.submit");
-    await fill("Description", "Submit the current order.");
-    const original = duplicate.elements.find(item => item.name === "Submit order");
-    assert.equal(original.status, "registrable");
-    const start = performance.now();
-    await request("POST", studio, 200, { action: "register", applicationId: appB, sessionId: last("connect").response.sessionId, ref: original.ref,
-      targetId: "orders.submit", route: "orders", label: "Submit order", description: "Submit the current order.", operations: ["highlight", "click"], privacy: "public" });
-    metrics.register.push(elapsed(start));
-    await click("Register target"); await alert("A target with this ID is already registered");
-    assert.equal(last("register").response.error, "TARGET_EXISTS");
-    await evaluate(browse, 'document.querySelector("#duplicate-submit").remove()');
+    if (process.argv.includes("--ordinary")) {
+      await register("Submit order", "orders.submit");
+    } else {
+      // Deliberately create two live refs for one durable ID to exercise the duplicate race while the second confirmation remains open.
+      await evaluate(browse, `(() => { const original = document.querySelector('${marker("orders.submit")}'); const copy = original.cloneNode(true);
+        copy.id = "duplicate-submit"; copy.textContent = "Second submit control"; original.after(copy); return true; })()`);
+      const duplicate = await inspect(originB + "/#/orders");
+      await openRegistration("Second submit control", "orders.submit");
+      await fill("Description", "Submit the current order.");
+      const original = duplicate.elements.find(item => item.name === "Submit order");
+      assert.equal(original.status, "registrable");
+      const start = performance.now();
+      await request("POST", studio, 200, { action: "register", applicationId: appB, sessionId: last("connect").response.sessionId, ref: original.ref,
+        targetId: "orders.submit", route: "orders", label: "Submit order", description: "Submit the current order.", operations: ["highlight", "click"], privacy: "public" });
+      metrics.register.push(elapsed(start));
+      await click("Register target"); await alert("A target with this ID is already registered");
+      assert.equal(last("register").response.error, "TARGET_EXISTS");
+      await evaluate(browse, 'document.querySelector("#duplicate-submit").remove()');
+    }
     await inspect(originB + "/#/orders");
   });
   await step(6, "registry presents the three durable targets and two routes, without live refs", async () => {
@@ -331,16 +335,19 @@ await runStudioAcceptance(async () => {
     assert.equal((await request("POST", studio, 404, { action: "refresh", applicationId: appB, sessionId: initial })).error, "SESSION_CLOSED");
     await inspect(originB + "/");
   });
-  await step(13, "verify registration and registry manager layout plus keyboard focus", async () => {
+  const ordinary = process.argv.includes("--ordinary");
+  await step(13, ordinary ? "verify registry manager layout" : "verify registration and registry manager layout plus keyboard focus", async () => {
     const longId = "orders." + "a".repeat(72);
-    await evaluate(browse, `(() => { const node = document.createElement("button"); node.textContent = "Long target"; node.dataset.aiId = ${JSON.stringify(longId)};
-      document.querySelector('[data-route="home"]').append(node); return true; })()`);
-    await inspect(originB + "/");
-    await read('document.querySelector(\'button[aria-label="Highlight: Long target"]\').focus()');
-    await uiCmd("press", "Tab");
-    assert.equal(await read('document.activeElement.getAttribute("aria-label")'), "Register target: Long target");
-    assert.ok(await read('document.activeElement.matches(":focus-visible") && getComputedStyle(document.activeElement).outlineStyle !== "none"'));
-    await uiCmd("press", "Enter"); await wait("form.studio-register");
+    if (!ordinary) {
+      await evaluate(browse, `(() => { const node = document.createElement("button"); node.textContent = "Long target"; node.dataset.aiId = ${JSON.stringify(longId)};
+        document.querySelector('[data-route="home"]').append(node); return true; })()`);
+      await inspect(originB + "/");
+      await read('document.querySelector(\'button[aria-label="Highlight: Long target"]\').focus()');
+      await uiCmd("press", "Tab");
+      assert.equal(await read('document.activeElement.getAttribute("aria-label")'), "Register target: Long target");
+      assert.ok(await read('document.activeElement.matches(":focus-visible") && getComputedStyle(document.activeElement).outlineStyle !== "none"'));
+      await uiCmd("press", "Enter"); await wait("form.studio-register");
+    }
     const widths = [320, 375, 768, 1024, 1280];
     async function widthProof(kind, selector) {
       for (const width of widths) {
@@ -356,9 +363,11 @@ await runStudioAcceptance(async () => {
         console.log(`WIDTH ${width} ${kind} PASS viewport=${result.viewport} client=${result.client} scroll=${result.scroll}`);
       }
     }
-    await widthProof("registration", 'li[data-status="registrable"]');
-    await uiCmd("press", "Escape");
-    assert.equal(await read('document.activeElement.getAttribute("aria-label")'), "Register target: Long target");
+    if (!ordinary) {
+      await widthProof("registration", 'li[data-status="registrable"]');
+      await uiCmd("press", "Escape");
+      assert.equal(await read('document.activeElement.getAttribute("aria-label")'), "Register target: Long target");
+    }
     await click("Disconnect"); await state("DISCONNECTED"); await ownedClosed(ownedChrome);
     const sessionId = last("disconnect").body.sessionId;
     assert.equal((await request("POST", studio, 404, { action: "refresh", applicationId: appB, sessionId })).error, "SESSION_CLOSED");
