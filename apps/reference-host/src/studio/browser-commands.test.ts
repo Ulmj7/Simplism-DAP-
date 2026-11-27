@@ -9,13 +9,14 @@ describe("parseStudioCommand: exact keys per action", () => {
     expect(parseStudioCommand({ action: "connect", applicationId: APP })).toEqual({ action: "connect", applicationId: APP });
     expect(parseStudioCommand({ action: "connect", applicationId: APP, walkthroughId: WT })).toEqual({ action: "connect", applicationId: APP, walkthroughId: WT });
     expect(parseStudioCommand({ action: "refresh", sessionId: "s-1", applicationId: APP })).toEqual({ action: "refresh", sessionId: "s-1", applicationId: APP });
+    expect(parseStudioCommand({ action: "inspect", sessionId: "s-1", applicationId: APP })).toEqual({ action: "inspect", sessionId: "s-1", applicationId: APP });
     expect(parseStudioCommand({ action: "highlight", sessionId: "s", applicationId: APP, ref: "@e12" })).toEqual({ action: "highlight", sessionId: "s", applicationId: APP, ref: "@e12" });
     expect(parseStudioCommand({ action: "capture", sessionId: "s", applicationId: APP, ref: "@e999999999" })).toEqual({ action: "capture", sessionId: "s", applicationId: APP, ref: "@e999999999" });
     expect(parseStudioCommand({ action: "disconnect", sessionId: "s" })).toEqual({ action: "disconnect", sessionId: "s" });
     expect(parseStudioCommand({ action: "disconnect", sessionId: "s", applicationId: APP })).toEqual({ action: "disconnect", sessionId: "s", applicationId: APP });
   });
-  it("covers all seven actions and no other", () => {
-    expect([...STUDIO_ACTIONS]).toEqual(["connect", "resume", "refresh", "highlight", "capture", "register", "disconnect"]);
+  it("only exposes supported browser actions", () => {
+    expect([...STUDIO_ACTIONS]).toEqual(["connect", "resume", "refresh", "inspect", "highlight", "capture", "register", "disconnect"]);
     for (const action of ["navigate", "click", "type", "eval", "screenshot", "CONNECT", ""]) expect(parseStudioCommand({ action })).toBeNull();
   });
   it.each([
@@ -33,6 +34,7 @@ describe("parseStudioCommand: exact keys per action", () => {
     ["highlight without a ref", { action: "highlight", sessionId: "s", applicationId: APP }],
     ["capture without an application", { action: "capture", sessionId: "s", ref: "@e1" }],
     ["refresh with a ref", { action: "refresh", sessionId: "s", applicationId: APP, ref: "@e1" }],
+    ["arbitrary script on inspect", { action: "inspect", sessionId: "s", applicationId: APP, script: "1 + 1" }],
     ["refresh without an application", { action: "refresh", sessionId: "s" }],
     ["disconnect with a malformed application", { action: "disconnect", sessionId: "s", applicationId: "x" }],
     ["disconnect with an extra key", { action: "disconnect", sessionId: "s", force: true }],

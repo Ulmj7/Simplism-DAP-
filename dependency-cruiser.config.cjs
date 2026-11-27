@@ -1,11 +1,11 @@
 /**
- * Package-boundary rules (T009). Allowed edges, from plan.md "Allowed dependency edges":
+ * Package-boundary rules (T009). Allowed edges:
  *
  *   contracts            -> external libraries only
  *   ai, actions, security -> contracts
  *   testkit              -> contracts, security, ai
  *   apps/reference-host  -> all packages (composition root)
- *   packages/walkthrough -> nothing (leaf); apps/reference-web -> packages/walkthrough only (Feature 002)
+ *   packages/walkthrough -> nothing (leaf)
  *
  * Everything else is forbidden. Workspace packages resolve to their real paths
  * (packages/*) through the "@dap/source" export condition, so the rules are path-based.
@@ -23,7 +23,7 @@ module.exports = {
   forbidden: [
     forbid("browser-runtime-leaf", "^packages/browser-runtime/", "^(packages/(?!browser-runtime/)|apps/)",
       "Browser infrastructure cannot depend on DAP domain packages."),
-    forbid("browser-runtime-only-in-host", "^packages/(?!browser-runtime/)|^apps/reference-web/", "^packages/browser-runtime/",
+    forbid("browser-runtime-only-in-host", "^packages/(?!browser-runtime/)", "^packages/browser-runtime/",
       "The Node browser adapter is available only to trusted host composition and spike tooling."),
     forbid("browser-runtime-only-in-studio", "^apps/reference-host/(src|dist)/(?!studio/)", "^packages/browser-runtime/",
       "Only reference-host Studio owns browser sessions."),
@@ -45,8 +45,6 @@ module.exports = {
       "The walkthrough runtime is a leaf: it imports no other workspace package (Feature 002), so the UI layer can never reach an executor."),
     forbid("walkthrough-not-imported-by-trusted-packages", "^packages/(contracts|ai|actions|security|testkit)/", "^packages/walkthrough/",
       "The Feature 001 packages must never depend on the walkthrough runtime."),
-    forbid("reference-web-only-walkthrough", "^apps/reference-web/", "^(packages/(contracts|ai|actions|security|testkit)|apps/reference-host)/",
-      "The reference web app may import only @dap/walkthrough."),
     forbid("nothing-imports-apps", "^packages/", "^apps/",
       "Apps are composition roots; nothing imports them."),
     {

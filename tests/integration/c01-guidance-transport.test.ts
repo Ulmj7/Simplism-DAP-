@@ -3,7 +3,7 @@
  * /api/guidance/start redeems it through submitWalkthroughStart -> AiSession.submit -> Policy Gateway -> executor -> recording starter, and replies with the
  * id the executor received. A session without perm.guidance.start is refused with a safe message.
  *
- * NEEDS the PostgreSQL of deploy/compose.yaml (DAP_DATABASE_URL), like tests/integration/guidance-start.test.ts; uses a tenant of its own per run.
+ * NEEDS the PostgreSQL of compose.yaml (DAP_DATABASE_URL), like tests/integration/guidance-start.test.ts; uses a tenant of its own per run.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";

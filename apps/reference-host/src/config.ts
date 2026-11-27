@@ -40,10 +40,10 @@ function databaseUrl(raw: string | undefined): string {
   return raw;
 }
 
-function enabledActions(raw: string | undefined, extensionActionIds: readonly string[]): readonly string[] {
+function enabledActions(raw: string | undefined, extensionActionIds: readonly string[], production: boolean): readonly string[] {
   if (raw === undefined || raw.trim().length === 0) throw new ConfigError("DAP_ENABLED_ACTIONS is required (the global allowlist is default deny)");
   const ids = raw.split(",").map((id) => id.trim());
-  const known = new Set<string>([...DEMO_ACTION_IDS, ...extensionActionIds]);
+  const known = new Set<string>(production ? extensionActionIds : [...DEMO_ACTION_IDS, ...extensionActionIds]);
   for (const id of ids) if (!known.has(id)) throw new ConfigError("DAP_ENABLED_ACTIONS names an unknown or empty capability id");
   if (new Set(ids).size !== ids.length) throw new ConfigError("DAP_ENABLED_ACTIONS repeats a capability id");
   return Object.freeze(ids);
@@ -61,12 +61,12 @@ function gatewayConfig(raw: string | undefined): GatewayConfig {
  * `extensionActionIds` are the capability ids contributed by host extensions; they only widen the list of KNOWN ids. Whether one is ENABLED is still decided
  * solely by `DAP_ENABLED_ACTIONS` (default deny). Without extensions the known list is exactly the demo list.
  */
-export function loadConfig(env: Environment, extensionActionIds: readonly string[] = []): HostConfig {
-  assertDevAuthAllowed(env);
+export function loadConfig(env: Environment, extensionActionIds: readonly string[] = [], production = false): HostConfig {
+  if (!production) assertDevAuthAllowed(env);
   return Object.freeze({
     databaseUrl: databaseUrl(env.DAP_DATABASE_URL),
-    enabledActions: enabledActions(env.DAP_ENABLED_ACTIONS, extensionActionIds),
+    enabledActions: enabledActions(env.DAP_ENABLED_ACTIONS, extensionActionIds, production),
     gateway: gatewayConfig(env.DAP_GATEWAY_CONFIG),
-    devSessions: parseDevSessions(env.DEV_SESSIONS),
+    devSessions: production ? [] : parseDevSessions(env.DEV_SESSIONS),
   });
 }

@@ -138,11 +138,12 @@ export function createPostgresWalkthroughStore(pool: TenantPool): WalkthroughSto
       });
     },
 
-    async listPublished(tenantId: string): Promise<readonly StoredWalkthrough[]> {
+    async listPublished(tenantId: string, applicationId?: string): Promise<readonly StoredWalkthrough[]> {
       return withTenant(pool, tenantId, async (client) => {
         const { rows } = await client.query(
           `SELECT walkthrough_id, status, application_id, definition, updated_at FROM public.walkthrough_definitions
-            WHERE tenant_id = $1::uuid AND status = 'published' ORDER BY created_at, walkthrough_id LIMIT ${MAX_PUBLISHED_PER_TENANT}`, [tenantId]);
+            WHERE tenant_id = $1::uuid AND status = 'published' AND ($2::text IS NULL OR application_id = $2)
+            ORDER BY created_at, walkthrough_id LIMIT ${MAX_PUBLISHED_PER_TENANT}`, [tenantId, applicationId ?? null]);
         return Object.freeze(rows.map((row) => Object.freeze({ id: String(row.walkthrough_id), status: statusOf(row.status), applicationId: appOf(row.application_id), definition: row.definition, updatedAt: iso(row.updated_at) })));
       });
     },

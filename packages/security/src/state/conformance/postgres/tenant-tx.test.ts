@@ -17,7 +17,7 @@ describe("withTenant against forced PostgreSQL RLS as dap_app", () => {
     if (!process.env.DAP_DATABASE_URL || !process.env.DAP_MIGRATE_DATABASE_URL) {
       throw new Error(
         "PostgreSQL conformance requires DAP_DATABASE_URL (dap_app) and DAP_MIGRATE_DATABASE_URL " +
-        "(dap_owner). Start postgres with docker compose -f deploy/compose.yaml up -d postgres " +
+        "(dap_owner). Start postgres with docker compose -f compose.yaml up -d postgres " +
         "and run npm run db:migrate. These security tests must not be skipped.",
       );
     }
@@ -27,7 +27,7 @@ describe("withTenant against forced PostgreSQL RLS as dap_app", () => {
       await Promise.all([app.query("SELECT 1"), owner.query("SELECT 1")]);
     } catch (cause) {
       throw new Error(
-        "PostgreSQL conformance cannot reach dap_app/dap_owner. Start deploy/compose.yaml postgres, " +
+        "PostgreSQL conformance cannot reach dap_app/dap_owner. Start compose.yaml postgres, " +
         "check DAP_DATABASE_URL and DAP_MIGRATE_DATABASE_URL, then run npm run db:migrate.",
         { cause },
       );

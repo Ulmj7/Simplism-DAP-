@@ -2,7 +2,6 @@ FROM node:22-bookworm-slim AS manifests
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/reference-host/package.json apps/reference-host/
-COPY apps/reference-web/package.json apps/reference-web/
 COPY packages/actions/package.json packages/actions/
 COPY packages/ai/package.json packages/ai/
 COPY packages/browser-runtime/package.json packages/browser-runtime/
@@ -23,6 +22,7 @@ FROM manifests AS runtime-dependencies
 RUN npm ci --omit=dev
 
 FROM runtime-dependencies AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/apps/reference-host/dist/ apps/reference-host/dist/
 COPY --from=build /app/packages/actions/dist/ packages/actions/dist/
 COPY --from=build /app/packages/ai/dist/ packages/ai/dist/
@@ -31,6 +31,9 @@ COPY --from=build /app/packages/contracts/dist/ packages/contracts/dist/
 COPY --from=build /app/packages/security/dist/ packages/security/dist/
 COPY --from=build /app/packages/walkthrough/dist/ packages/walkthrough/dist/
 COPY apps/reference-host/knowledge/ apps/reference-host/knowledge/
+COPY apps/admin-dashboard/ apps/admin-dashboard/
+COPY deploy/widget/ deploy/widget/
+COPY deploy/docker/start-local.mjs deploy/docker/start-installation.mjs deploy/docker/
 COPY db/migrate.mjs db/
 COPY db/migrations/ db/migrations/
 USER node

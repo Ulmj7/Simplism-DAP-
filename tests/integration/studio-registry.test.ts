@@ -3,7 +3,7 @@
  * `registerStudioTarget` capability (there is no HTTP route that creates a target), so the registration matrix drives the capability directly and the READ/LEVER routes through the maintainer routes.
  * Proves: the executor re-validates everything structural (ids, roles, operations, privacy, texts, route and page grammars, the page/route pairing, duplicates, caps), wrong registry (built-in
  * application), cross-application and cross-tenant isolation, disabled applications and targets, references, published/external/bundle behavior, and that no `@e` ref is ever persisted.
- * NEEDS the PostgreSQL of deploy/compose.yaml on a FRESH database; every test uses tenants of its own.
+ * NEEDS the PostgreSQL of compose.yaml on a FRESH database; every test uses tenants of its own.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";

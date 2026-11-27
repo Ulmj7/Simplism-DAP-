@@ -2,7 +2,7 @@
  * Studio V1B end to end on PostgreSQL: a Studio-managed application is enrolled, a maintainer connects the Studio browser (a SCRIPTED fake runtime, no Chrome), refreshes, registers targets from the
  * live pages THROUGH THE REAL HTTP ROUTES (`POST /api/studio/browser`, the only way a target is created) and the REAL Gateway/executor/PostgreSQL stores; then reads the registry, writes a workflow,
  * publishes it, reads it as external metadata and as a bundle, disables and re-enables a target, and checks that the built-in reference application, a second tenant and `@e` refs are untouched.
- * NEEDS the PostgreSQL of deploy/compose.yaml on a FRESH database; every test uses tenants of its own.
+ * NEEDS the PostgreSQL of compose.yaml on a FRESH database; every test uses tenants of its own.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";

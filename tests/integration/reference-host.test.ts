@@ -4,7 +4,7 @@
  *   dev session -> trusted context -> AI-facing `submit` -> real Policy Gateway -> rate/replay -> resolve -> validate -> authorize -> risk ->
  *   confirmation placeholder -> execution-cap claim -> durable PostgreSQL ALLOWED audit -> trusted executor -> EXECUTED audit.
  *
- * It needs the PostgreSQL of deploy/compose.yaml on a FRESH database (DAP_DATABASE_URL as dap_app, DAP_MIGRATE_DATABASE_URL as dap_owner)
+ * It needs the PostgreSQL of compose.yaml on a FRESH database (DAP_DATABASE_URL as dap_app, DAP_MIGRATE_DATABASE_URL as dap_owner)
  * and fails loudly instead of skipping. Audit rows are append-only, so nothing is cleaned up: every test uses a tenant of its own (a new UUID)
  * and reads only that tenant's rows, so the file can run again and again on the same database and never depends on a global row count.
  */

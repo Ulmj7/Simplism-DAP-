@@ -3,7 +3,7 @@ import type { Pool } from "pg";
 
 /** Fail loudly: these security probes must never silently skip a missing database. */
 export async function openStatePools(PoolClass: typeof Pool): Promise<{ app: Pool; owner: Pool }> {
-  if (!process.env.DAP_DATABASE_URL || !process.env.DAP_MIGRATE_DATABASE_URL) throw new Error("PostgreSQL conformance requires DAP_DATABASE_URL and DAP_MIGRATE_DATABASE_URL; start deploy/compose.yaml postgres and run npm run db:migrate.");
+  if (!process.env.DAP_DATABASE_URL || !process.env.DAP_MIGRATE_DATABASE_URL) throw new Error("PostgreSQL conformance requires DAP_DATABASE_URL and DAP_MIGRATE_DATABASE_URL; start the local database and migrations with docker compose up -d.");
   const app = new PoolClass({ connectionString: process.env.DAP_DATABASE_URL, max: 8, connectionTimeoutMillis: 2000 });
   const owner = new PoolClass({ connectionString: process.env.DAP_MIGRATE_DATABASE_URL, max: 2, connectionTimeoutMillis: 2000 });
   try {

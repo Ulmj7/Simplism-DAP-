@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="mn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Support · Байгууллагууд</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script type="module" src="/dashboard.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#/">AI Support</a>
+      <nav aria-label="Үндсэн цэс"><a href="#/">Байгууллагууд</a></nav>
+    </div>
+  </header>
+  <main id="app" aria-busy="true"></main>
+  <template id="organization-form">
+    <form class="organization-form">
+      <div class="form-grid">
+        <label>Байгууллагын нэр <input required name="name" maxlength="80"></label>
+        <label>Компанийн регистр <input required name="companyReg" maxlength="64"></label>
+        <label class="full">Зөвшөөрсөн веб хаягууд
+          <textarea required name="allowedOrigins" rows="3" aria-describedby="origins-hint"></textarea>
+          <small id="origins-hint">Нэг мөрд нэг хаяг бичнэ. Жишээ нь https://app.company.example эсвэл http://localhost:5173</small>
+        </label>
+        <label class="full">AI туслахын нэр <input name="agentName" maxlength="100"></label>
+        <label>Утас <input type="tel" name="phoneNumber" maxlength="32"></label>
+        <label>Имэйл <input type="email" name="contactEmail" maxlength="254"></label>
+        <label class="full">Албан хаяг <input name="address" maxlength="300"></label>
+      </div>
+      <p class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button class="primary" type="submit">Хадгалах</button>
+        <a class="button cancel" href="#/">Цуцлах</a>
+      </div>
+    </form>
+  </template>
+</body>
+</html>

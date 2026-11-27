@@ -1,7 +1,5 @@
 /**
- * The ONE trusted source of the three walkthrough summaries of the demo host (Feature 003). They mirror the real Feature 002 catalog (apps/reference-web, T217-T219).
- * The host may not import the walkthrough runtime or the web app, so the list stays here as static data, and the REQUIRED parity test
- * tests/integration/walkthrough-summary-parity.test.ts (T240) fails when its ids, titles or descriptions drift from `catalog.list()`.
+ * The trusted catalog of three walkthrough summaries retained by the demo Guidance API.
  *
  * A summary is `{ id, title, description }` and nothing else: no steps, no selectors, no executable definition. The guidance service shows these to the
  * model, the lexical guard checks a proposal against them, and the `startWalkthrough` executor re-validates every id against the same list. Nothing else in

@@ -3,7 +3,7 @@
  *   (A) ALLOWED -> the allow-event is durably committed -> only then does the executor run (once);
  *   (B) the required audit write fails -> fail closed -> the executor never runs.
  * Plus the tenant-scoped reviewer reading (ATK-XTENANT-09), secret scrubbing of the stored rows, and the SC-008 reconstruction read back from PostgreSQL.
- * Needs the PostgreSQL of deploy/compose.yaml (DAP_DATABASE_URL / DAP_MIGRATE_DATABASE_URL): like the other PostgreSQL tests it fails loudly, never skips.
+ * Needs the PostgreSQL of compose.yaml (DAP_DATABASE_URL / DAP_MIGRATE_DATABASE_URL): like the other PostgreSQL tests it fails loudly, never skips.
  * Audit rows are append-only, so nothing is cleaned up: every test uses its own seed (request ids) and its own instant, and reads only its own.
  */
 import { randomUUID } from "node:crypto";

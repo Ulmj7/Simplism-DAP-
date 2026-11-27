@@ -7,7 +7,7 @@ import { exactBody } from "../http/transport.js";
 import { isAuthoredId } from "../authoring/ids.js";
 import { APPLICATION_ID } from "./applications.js";
 
-export const STUDIO_ACTIONS = ["connect", "resume", "refresh", "highlight", "capture", "register", "disconnect"] as const;
+export const STUDIO_ACTIONS = ["connect", "resume", "refresh", "inspect", "highlight", "capture", "register", "disconnect"] as const;
 export type StudioAction = (typeof STUDIO_ACTIONS)[number];
 
 /** An element reference of the pinned browser CLI: `@e` + 1..9 digits, no leading zero. Session-only evidence, never persisted. */
@@ -19,6 +19,7 @@ export type StudioCommand =
   | { readonly action: "connect"; readonly applicationId: string; readonly walkthroughId?: string }
   | { readonly action: "resume"; readonly applicationId: string }
   | { readonly action: "refresh"; readonly sessionId: string; readonly applicationId: string }
+  | { readonly action: "inspect"; readonly sessionId: string; readonly applicationId: string }
   | {
     readonly action: "register"; readonly sessionId: string; readonly applicationId: string; readonly ref: string; readonly targetId: string; readonly route: string;
     readonly operations: readonly string[]; readonly label: string; readonly description: string; readonly privacy: string;
@@ -59,7 +60,7 @@ export function parseStudioCommand(body: unknown): StudioCommand | null {
       if (!Array.isArray(operations) || operations.length > 16 || !operations.every((operation) => short(operation, 40))) return null;
       return { action, sessionId: parsed.sessionId, applicationId: parsed.applicationId, ref: parsed.ref, targetId, route, operations: [...operations], label, description, privacy };
     }
-    case "refresh": {
+    case "refresh": case "inspect": {
       const parsed = exactBody(body, ["action", "sessionId", "applicationId"]);
       return parsed !== null && sessionId(parsed.sessionId) && applicationId(parsed.applicationId) ? { action, sessionId: parsed.sessionId, applicationId: parsed.applicationId } : null;
     }

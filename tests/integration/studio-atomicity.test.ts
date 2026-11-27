@@ -6,7 +6,7 @@
  * THE FIX. The write transaction itself locks the application row FOR SHARE and re-reads `enabled` (`application-lock.ts`), in the walkthrough store (save, publish) and in the target store (register,
  * status). A concurrent disable is an UPDATE of that row and must wait for the writer to commit; a write that starts after the disable committed reads `enabled = false`. The lock tests hold the
  * writer INSIDE its transaction right after the lock statement and show, from a second connection, that the disable cannot complete until the writer commits.
- * NEEDS the PostgreSQL of deploy/compose.yaml on a FRESH database.
+ * NEEDS the PostgreSQL of compose.yaml on a FRESH database.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";

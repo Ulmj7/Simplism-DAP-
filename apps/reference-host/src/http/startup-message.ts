@@ -1,5 +1,5 @@
 /**
- * C01 dev server: the one line printed when `npm run dev:host` fails to start. Fixed text per case; never an environment value or the raw error text
+ * C01 dev server: the one line printed when the local backend fails to start. Fixed text per case; never an environment value or the raw error text
  * (a driver or socket error can carry a connection string, a host name or a path).
  */
 import { ConfigError } from "../config.js";

@@ -1,16 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { browserCommand, localCli } from "./cli.js";
 import type { RunCli } from "./cli.js";
 import { BrowserRuntimeError } from "./errors.js";
 import type { BrowserRuntimeErrorCode } from "./errors.js";
-import { normalizeSnapshot } from "./snapshot.js";
+import { isRecord, normalizeSnapshot } from "./snapshot.js";
 import type { ApprovedLabel } from "./snapshot.js";
-import type { BrowserRuntime, BrowserSnapshot, ElementFacts, ElementRef } from "./types.js";
+import type { BrowserRuntime, BrowserSnapshot, ElementFacts, ElementRef, UiSnapshot } from "./types.js";
 
 const executable = fileURLToPath(new URL("../../../vendor/agent-browser/cli/target/release/agent-browser", import.meta.url));
 const config = fileURLToPath(new URL("../agent-browser.json", import.meta.url));
+const uiReader = new URL("../../../deploy/widget/v1.3.0/ui-reader.js", import.meta.url);
 const commandTimeout = 5_000;
 const maxOrigins = 5;
 // Upper bound for one batch inspection (one CLI attribute read per candidate).
@@ -20,7 +22,7 @@ const factAttributes = ["type", "autocomplete", "data-ai-private", "data-ai-igno
 const maxInputType = 40;
 const maxAutocomplete = 200;
 // "any" routes: a hash-routed page shape (`/path` plus an optional `#/route`), no query, no percent escapes, no `=`/`&`: a fragment such as `#access_token=…` is never a page.
-const anyPage = /^\/[A-Za-z0-9._~/-]*(?:#\/?[A-Za-z0-9._~/-]*)?$/u;
+const anyPage = /^\/[A-Za-z0-9._~/-]*(?:#(?:!\/|\/?)[A-Za-z0-9._~/-]*)?$/u;
 const maxPageChars = 200;
 
 interface TrustedObservation {
@@ -185,6 +187,38 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
   const semanticId = (value: unknown) =>
     typeof value === "string" && /^[A-Za-z][A-Za-z0-9.]{0,79}$/u.test(value) ? value : null;
 
+  async function inspectUi(): Promise<UiSnapshot> {
+    started();
+    const url = approvedUrl((await command(["get", "url"], "SNAPSHOT_FAILED")).url);
+    const { pathname, hash } = new URL(url);
+    const page = pathname + (/^#!?\//u.test(hash) ? hash : "");
+    const reader = await readFile(uiReader, "utf8");
+    const script = `(() => {
+      if (window !== top || location.href !== ${JSON.stringify(url)}) return null;
+      ${reader}
+      return createUiReader().snapshot();
+    })()`;
+    const reply = await command(["eval", script], "SNAPSHOT_FAILED");
+    const result = reply.result;
+    if (approvedUrl(reply.origin) !== url || !isRecord(result) || result.page !== page ||
+        typeof result.truncated !== "boolean" || !Array.isArray(result.targets) || result.targets.length > maxInspected) {
+      throw new BrowserRuntimeError("INVALID_BROWSER_OUTPUT");
+    }
+    const roles = new Set(["button", "link", "textbox", "select", "checkbox", "radio", "tab", "menuitem"]);
+    const label = (value: unknown): value is string =>
+      typeof value === "string" && value.length <= 120 && !/[\p{Cc}\p{Cf}]/u.test(value);
+    const targets = (result.targets as unknown[]).map(target => {
+      if (!isRecord(target) || target.page !== page || !Array.isArray(target.section) || target.section.length > 5 ||
+          !target.section.every(item => label(item) && item.length > 0) ||
+          typeof target.role !== "string" || !roles.has(target.role) || !label(target.name) ||
+          (target.marker !== null && semanticId(target.marker) === null) || (!target.name && target.marker === null)) {
+        throw new BrowserRuntimeError("INVALID_BROWSER_OUTPUT");
+      }
+      return { page, role: target.role, name: target.name, section: target.section as string[], marker: semanticId(target.marker) };
+    });
+    return { page, targets, truncated: result.truncated };
+  }
+
   return {
     start: options => exclusive(async () => {
       if (status === "closed") throw new BrowserRuntimeError("SESSION_CLOSED");
@@ -207,6 +241,7 @@ export function createAgentBrowserAdapter(options: AgentBrowserAdapterOptions, r
       latest = await observe();
       return latest.snapshot;
     }),
+    inspectUi: () => exclusive(inspectUi),
     inspectSemanticId: (ref, from) => exclusive(async () => {
       const current = await currentTarget(ref, from);
       const attribute = await command(["get", "attr", ref, "data-ai-id"], "REF_NOT_FOUND");

@@ -67,9 +67,8 @@ const ALLOWED_MANIFEST_EDGES: Readonly<Record<string, readonly string[]>> = {
   "apps/reference-host": ["@dap/contracts", "@dap/ai", "@dap/actions", "@dap/security", "@dap/walkthrough", "@dap/browser-runtime"], // Feature 004: @dap/walkthrough only through the pure `/authoring` subpath (tests/architecture/authoring-boundary.test.ts)
   // Feature 002: a leaf package and its demo app. The detailed rules are in tests/architecture/walkthrough-boundary.test.ts.
   "packages/walkthrough": [],
-  "apps/reference-web": ["@dap/walkthrough"],
 };
-const RULES = ["browser-runtime-leaf", "browser-runtime-only-in-host", "browser-runtime-only-in-studio", "browser-vendor-no-imports", "ai-not-to-security-or-actions", "actions-not-to-ai-or-security", "security-not-to-ai-or-actions", "contracts-leaf", "testkit-allowed-edges", "production-not-to-testkit", "nothing-imports-apps", "no-deep-imports-into-contracts", "mint-entry-restricted", "no-runtime-module-loaders", "no-circular", "walkthrough-leaf", "walkthrough-not-imported-by-trusted-packages", "reference-web-only-walkthrough"];
+const RULES = ["browser-runtime-leaf", "browser-runtime-only-in-host", "browser-runtime-only-in-studio", "browser-vendor-no-imports", "ai-not-to-security-or-actions", "actions-not-to-ai-or-security", "security-not-to-ai-or-actions", "contracts-leaf", "testkit-allowed-edges", "production-not-to-testkit", "nothing-imports-apps", "no-deep-imports-into-contracts", "mint-entry-restricted", "no-runtime-module-loaders", "no-circular", "walkthrough-leaf", "walkthrough-not-imported-by-trusted-packages"];
 
 describe("the real repository", () => {
   const graph = cruise(ROOT);
@@ -182,12 +181,12 @@ describe("the reference host (T131, T136): its AI-facing handle is a submit func
     expect(forbiddenAppEdges(planted)).toHaveLength(2);
     expect(driverImports({ "a.ts": 'import { Pool } from "pg";', "b.ts": 'import type { Pool } from "pg";', "c.ts": 'export * from "pg";', "d.ts": 'const p = import("pg");', "e.ts": 'const p = require("pg/lib");', "f.ts": 'import { ok } from "./pg-like.js"; import "@dap/security";' })).toHaveLength(5);
   });
-  it("wires the trusted pieces in the composition root alone: the two composition roots (and config.ts for limits) import security, guidance modules import pure AI helpers, nothing imports the actions package", () => {
-    expect(appImportersOf(graph, "packages/security/")).toEqual([`${APP}src/authoring/pool.ts`, `${APP}src/compose.ts`, `${APP}src/config.ts`, `${APP}src/guidance/compose-guidance.ts`]);
+  it("limits host imports of security and AI to the composition, configuration, and guidance and platform modules that use them", () => {
+    expect(appImportersOf(graph, "packages/security/")).toEqual([`${APP}src/authoring/pool.ts`, `${APP}src/compose.ts`, `${APP}src/config.ts`, `${APP}src/guidance/compose-guidance.ts`, `${APP}src/platform/public-api.ts`, `${APP}src/platform/routes.ts`]);
     // Feature 003: the trusted guidance modules (src/guidance/) use the AI package's pure parsing, chunking, validation and result helpers; they import no other trusted package
     // (compose-guidance injects the scrubber; the capability and its executor use the contracts only). C01: the browser transport (src/http/transport.ts) reuses the same pure
     // Feature 003 helpers (query cap, context parser, fixed unsupported messages) so the wire layer re-defines no schema; nothing else under src/http imports the AI package.
-    expect(appImportersOf(graph, "packages/ai/")).toEqual([`${APP}src/compose.ts`, `${APP}src/guidance/anthropic-model.ts`, `${APP}src/guidance/capability.ts`, `${APP}src/guidance/compose-guidance.ts`, `${APP}src/guidance/demo-model.ts`, `${APP}src/guidance/demo-render.ts`, `${APP}src/guidance/knowledge-loader.ts`, `${APP}src/guidance/start-bridge.ts`, `${APP}src/guidance/walkthrough-summaries.ts`, `${APP}src/http/transport.ts`]);
+    expect(appImportersOf(graph, "packages/ai/")).toEqual([`${APP}src/compose.ts`, `${APP}src/guidance/anthropic-model.ts`, `${APP}src/guidance/capability.ts`, `${APP}src/guidance/compose-guidance.ts`, `${APP}src/guidance/demo-model.ts`, `${APP}src/guidance/demo-render.ts`, `${APP}src/guidance/knowledge-loader.ts`, `${APP}src/guidance/start-bridge.ts`, `${APP}src/guidance/walkthrough-summaries.ts`, `${APP}src/http/transport.ts`, `${APP}src/platform/public-api.ts`, `${APP}src/platform/routes.ts`]);
     expect(appImportersOf(graph, "packages/actions/")).toEqual([]);
   });
   it("Feature 003 Slice 3 / Feature 004: no production module of the host imports the walkthrough runtime or the testkit; the ONLY walkthrough edge is the pure validator subpath, from src/authoring/ alone (the starter is a structural interface the composition root fills)", () => {
@@ -210,9 +209,9 @@ describe("the reference host (T131, T136): its AI-facing handle is a submit func
     expect(host.members("TrustedHandle")).toEqual(["effects", "executorCalls", "receivedCalls"]);
     expect(host.members("ComposedHost")).toEqual(["host", "trusted"]);
   });
-  it("Feature 003 Slice 3: a host extension is exactly { definitions, executors } and the options carry only extensions: no hook, no pool, store or registry access", () => {
+  it("limits extensions to definitions and executors and composition options to extensions and trusted identity", () => {
     expect(host.members("HostExtension")).toEqual(["definitions", "executors"]);
-    expect(host.members("ComposeOptions")).toEqual(["extensions"]);
+    expect(host.members("ComposeOptions")).toEqual(["extensions", "identity"]);
   });
 });
 

@@ -3,7 +3,7 @@
  * executors and Fastify `inject` (no port is opened): create application -> create workflow -> save -> publish -> published list; tenant isolation incl. cross-tenant
  * get/update/status; cross-application mismatch at save/update/publish; disabled applications; a second registry injected through the catalog proving validation uses the
  * APPLICATION's registry; capability audit rows that hold only /applicationId (+ /enabled); a legacy guide without an application. NEEDS the PostgreSQL of
- * deploy/compose.yaml on a FRESH database (DAP_DATABASE_URL / DAP_MIGRATE_DATABASE_URL); every test uses tenants of its own.
+ * compose.yaml on a FRESH database (DAP_DATABASE_URL / DAP_MIGRATE_DATABASE_URL); every test uses tenants of its own.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";

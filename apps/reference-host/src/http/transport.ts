@@ -113,7 +113,7 @@ export function createGuidanceTransport(deps: GuidanceTransportDeps): FastifyIns
   app.addHook("onRequest", async (request, reply) => {
     const host = request.headers.host ?? "";
     if (!LOOPBACK_HOST.test(host) && host !== deps.allowedHost) return send(reply, 403, unsupported(TRANSPORT_MESSAGES.forbiddenHost));
-    // A browser names where the request came from: only the page's own origin (via the Vite proxy) or a direct navigation may call in. No header
+    // A browser names where the request came from: only the page's own origin or a direct navigation may call in. No header
     // (curl, tests) passes; a browser that sends it can't be talked out of it by page script.
     const site = request.headers["sec-fetch-site"];
     if (site !== undefined && site !== "same-origin" && site !== "none") return send(reply, 403, unsupported(TRANSPORT_MESSAGES.forbiddenHost));

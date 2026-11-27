@@ -133,6 +133,22 @@ async function ready(options: Parameters<typeof harness>[0] = {}): Promise<H> {
 const storedTargets = async (h: H, tenant = TENANT_A, application = MANAGED) => (await h.targets.list(tenant, application)).targets;
 const noLeak = (raw: string) => { for (const word of ["SECRET", "/home/dev", "stderr", "blocked.example", "token=abc", "5187", "127.0.0.1", "localhost", "Orders application", "Export orders", "Exports the order list"]) expect(raw, word).not.toContain(word); };
 
+it("returns markerless UI descriptors only to the Studio session owner, without sensitive labels", async () => {
+  const h = await harness();
+  const sessionId = await h.connect();
+  const target = { page: "/settings", role: "button", section: ["Профайл"], name: "Хадгалах", marker: null };
+  h.runtimes[0]!.inspectUi = async () => ({
+    page: target.page,
+    targets: [target, { ...target, section: ["API token"] }],
+    truncated: false,
+  });
+  const command = { action: "inspect", sessionId, applicationId: MANAGED };
+  expect(await h.command(command)).toMatchObject({
+    status: 200, body: { page: target.page, targets: [target], truncated: false },
+  });
+  expect(await h.command(command, "tenant-b")).toMatchObject({ status: 404, body: { error: "SESSION_CLOSED" } });
+});
+
 describe("managed connect: the session policy comes from the stored application", () => {
   it("opens the adapter with every label, any route and the application's allowed origins; the reply names the registry source; the start URL is the stored origin", async () => {
     const h = await harness();

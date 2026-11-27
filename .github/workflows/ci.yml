@@ -2,8 +2,6 @@ name: ci
 
 # Feature 001 (AI Security Foundation), Milestone M1: enforces only what the M1 scope requires (lint, types, dependency boundaries,
 # PostgreSQL migrations, the security, conformance and integration suites, the reference-host vertical path, and the single M1 gate).
-# Feature 002 (semantic walkthrough runtime, UI P0) adds three steps before the M1 gate: its focused suite, its two closure proofs and the web build.
-# None of them needs PostgreSQL, a browser download, a model provider or the network beyond `npm ci`.
 # Optional and future checks (mutation, determinism, coverage report, container build, scanners) are deliberately not here.
 on:
   push:
@@ -22,7 +20,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        # Same major version as deploy/compose.yaml. The bootstrap user and database mirror that file; the dap_owner and dap_app roles are created
+        # Same major version as compose.yaml. The bootstrap user and database mirror that file; the dap_owner and dap_app roles are created
         # below from the repository's own db/migrations/000_roles.sql, because a service container cannot mount repository files.
         image: postgres:16
         env:
@@ -37,7 +35,7 @@ jobs:
           --health-timeout 3s
           --health-retries 30
     env:
-      # Development-only credentials of this job's own ephemeral database on localhost (the ones deploy/compose.yaml documents). Not secrets.
+      # Development-only credentials of this job's own ephemeral database on localhost (the ones compose.yaml documents). Not secrets.
       DAP_DATABASE_URL: postgresql://dap_app:dap_app_local_only@127.0.0.1:54329/dap
       DAP_MIGRATE_DATABASE_URL: postgresql://dap_owner:dap_owner_local_only@127.0.0.1:54329/dap
     steps:
@@ -58,7 +56,7 @@ jobs:
         run: npm run check:deps
       - name: Architecture tests
         run: npm run test:arch
-      - name: Create the database roles (the same bootstrap as deploy/compose.yaml)
+      - name: Create the database roles (the same bootstrap as compose.yaml)
         env:
           PGHOST: 127.0.0.1
           PGPORT: "54329"
@@ -87,14 +85,9 @@ jobs:
         run: npm test
       - name: Guidance (offline provider, PostgreSQL)
         run: npm run test:guidance
-      - name: Walkthrough runtime, reference web UI and boundaries (Feature 002)
+      - name: Walkthrough runtime and boundaries
         run: npm run test:walkthrough
-      - name: Feature 002 closure proofs (T221 end-to-end in a real DOM, T240 host summaries equal the real catalog)
-        # Explicit file paths: vitest fails if either file is missing, so neither proof can be dropped silently.
-        run: npm run test:walkthrough:proof
       - name: Walkthrough authoring and usage (Feature 004)
         run: npm run test:authoring
-      - name: Reference web build
-        run: npm run build:web
       - name: M1 gate (authoritative)
         run: npm run test:m1-gate

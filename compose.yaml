@@ -1,0 +1,104 @@
+# Local development only. Password defaults below are not deployment credentials.
+# After startup, export DAP_MIGRATE_DATABASE_URL (dap_owner) and DAP_DATABASE_URL
+# (dap_app) using these passwords, host 127.0.0.1, port 54329, database dap.
+name: dap-foundation
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: dap
+      POSTGRES_USER: dap_bootstrap
+      POSTGRES_PASSWORD: ${DAP_POSTGRES_PASSWORD:-dap_bootstrap_local_only}
+      DAP_OWNER_PASSWORD: ${DAP_OWNER_PASSWORD:-dap_owner_local_only}
+      DAP_APP_PASSWORD: ${DAP_APP_PASSWORD:-dap_app_local_only}
+    ports:
+      - "127.0.0.1:${DAP_POSTGRES_PORT:-54329}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/migrations/000_roles.sql:/docker-entrypoint-initdb.d/000_roles.sql:ro
+      - ./db/bootstrap/001_passwords.sh:/docker-entrypoint-initdb.d/001_passwords.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: ai-support-agent-clean:local
+    pull_policy: never
+    command: ["node", "db/migrate.mjs"]
+    environment:
+      DAP_MIGRATE_DATABASE_URL: postgresql://dap_owner:${DAP_OWNER_PASSWORD:-dap_owner_local_only}@postgres:5432/dap
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    image: ai-support-agent-clean:local
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    command: ["node", "deploy/docker/start-local.mjs"]
+    environment:
+      NODE_ENV: development
+      DAP_ALLOW_DEV_AUTH: "1"
+      DAP_DATABASE_URL: postgresql://dap_app:${DAP_APP_PASSWORD:-dap_app_local_only}@postgres:5432/dap
+      DEV_SESSIONS: ${DEV_SESSIONS:-}
+      DAP_DEMO_SESSION_TOKEN: ${DAP_DEMO_SESSION_TOKEN:-}
+      DAP_DEMO_MAINTAINER_TOKEN: ${DAP_DEMO_MAINTAINER_TOKEN:-}
+      DAP_ENABLED_ACTIONS: ${DAP_ENABLED_ACTIONS:-startWalkthrough}
+      DAP_GUIDANCE_MODEL: fake
+      DAP_HTTP_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:${DAP_HTTP_PORT:-8787}:8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/readyz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    image: ai-support-agent-clean:local
+    pull_policy: never
+    command: ["node", "deploy/docker/start-installation.mjs", "--container"]
+    environment:
+      DAP_DATABASE_URL: postgresql://dap_app:${DAP_APP_PASSWORD:-dap_app_local_only}@postgres:5432/dap
+      DAP_WIDGET_PORT: ${DAP_WIDGET_PORT:-8797}
+      # For external SaaS deployments, route this HTTPS origin to the widget port only.
+      DAP_WIDGET_PUBLIC_ORIGIN: ${DAP_WIDGET_PUBLIC_ORIGIN:-}
+      DAP_WIDGET_SESSION_KEY: ${DAP_WIDGET_SESSION_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DAP_GUIDANCE_MODEL_ID: ${DAP_GUIDANCE_MODEL_ID:-}
+    ports:
+      - "127.0.0.1:${DAP_WEB_PORT:-5173}:5173"
+      - "127.0.0.1:${DAP_WIDGET_PORT:-8797}:8797"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Set COMPOSE_PROFILES=platform for both up and down, and put the platform server configuration in .env.platform.
+  platform:
+    profiles: [platform]
+    image: ai-support-agent-clean:local
+    pull_policy: never
+    command: ["node", "apps/reference-host/dist/platform/server.js"]
+    env_file:
+      - path: .env.platform
+        required: false
+    environment:
+      DAP_DATABASE_URL: postgresql://dap_app:${DAP_APP_PASSWORD:-dap_app_local_only}@postgres:5432/dap
+      DAP_PLATFORM_HTTP_HOST: 0.0.0.0
+      DAP_PLATFORM_PORT: "8796"
+    ports:
+      - "127.0.0.1:${DAP_PLATFORM_PORT:-8796}:8796"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:

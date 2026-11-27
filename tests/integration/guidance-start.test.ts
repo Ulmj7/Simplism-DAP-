@@ -5,7 +5,7 @@
  *   -> AiSession.submit -> real Policy Gateway (strict schema, permission perm.guidance.start, risk LOW, global allowlist, rate/replay, durable audit)
  *   -> trusted executor (re-validates the id against the host catalog) -> injected WalkthroughStarter.start(id).
  *
- * Needs the PostgreSQL of deploy/compose.yaml on a FRESH database, like tests/integration/reference-host.test.ts, and uses a tenant of its own per run.
+ * Needs the PostgreSQL of compose.yaml on a FRESH database, like tests/integration/reference-host.test.ts, and uses a tenant of its own per run.
  */
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";

@@ -84,5 +84,5 @@ export interface WalkthroughStore {
    */
   setStatus(scope: Scope, id: string, status: WalkthroughStatus, isValid: PublishCheck): Promise<StatusOutcome>;
   /** The tenant's published guides, oldest first, at most 50. The definitions are untrusted JSON: re-validate each. */
-  listPublished(tenantId: string): Promise<readonly StoredWalkthrough[]>;
+  listPublished(tenantId: string, applicationId?: string): Promise<readonly StoredWalkthrough[]>;
 }

@@ -2,7 +2,7 @@
  * T406 (Feature 004): the authoring routes through the REAL Gateway, the REAL PostgreSQL store and Fastify `inject` (no port is opened): create -> read ->
  * publish -> published list -> edit refused (409) -> unpublish -> edit allowed, with a maintainer and an ordinary user, plus the Gateway layer refusing a principal that
  * the route's own check let through, default deny, tenant isolation and the audit trail. The routes sit on the EXISTING C01 transport instance.
- * NEEDS the PostgreSQL of deploy/compose.yaml on a FRESH database; every test uses a tenant of its own.
+ * NEEDS the PostgreSQL of compose.yaml on a FRESH database; every test uses a tenant of its own.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";

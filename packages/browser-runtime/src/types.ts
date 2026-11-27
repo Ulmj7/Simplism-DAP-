@@ -12,6 +12,20 @@ export interface BrowserSnapshot {
   readonly observation?: string;
 }
 
+export interface UiTarget {
+  readonly page: string;
+  readonly section: readonly string[];
+  readonly role: string;
+  readonly name: string;
+  readonly marker: string | null;
+}
+
+export interface UiSnapshot {
+  readonly page: string;
+  readonly targets: readonly UiTarget[];
+  readonly truncated: boolean;
+}
+
 export interface BrowserSessionOptions {
   readonly url: string;
   readonly headed?: boolean;
@@ -45,6 +59,7 @@ export interface ElementFacts {
 export interface BrowserRuntime {
   start(options: BrowserSessionOptions): Promise<void>;
   snapshot(): Promise<BrowserSnapshot>;
+  inspectUi?(): Promise<UiSnapshot>;
   inspectSemanticId(ref: ElementRef, from: BrowserSnapshot): Promise<string | null>;
   /**
    * One fresh observation, then one `data-ai-id` read per candidate of `from` (at most 64, in

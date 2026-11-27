@@ -4,9 +4,8 @@
  *  - packages/walkthrough is a leaf (no @dap/* import, no runtime dependency) and only its `src/dom` may touch `document`, `window`,
  *    `HTMLElement`, `MutationObserver`, nodes or browser event objects (Constitution VII: the pure core cannot reach the page).
  *  - The core (everything in the package outside `src/dom`: semantic, privacy, walkthrough, engine, index) may not import `src/dom`.
- *  - Neither packages/walkthrough nor apps/reference-web may use eval, `new Function`, innerHTML, outerHTML, insertAdjacentHTML or document.write.
+ *  - packages/walkthrough may not use eval, `new Function`, innerHTML, outerHTML, insertAdjacentHTML or document.write.
  *  - packages/walkthrough may not use fetch, XMLHttpRequest, WebSocket or a dynamic import.
- *  - apps/reference-web may import only @dap/walkthrough (and vite, vitest and its own files).
  *  - The dependency-cruiser rules that say the same are proven able to fail on planted edges in a disposable workspace.
  * The scan reads the syntax tree, so comments and string literals (for example a test's hostile text) never count.
  */
@@ -20,7 +19,6 @@ import * as ts from "typescript";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CORE = "packages/walkthrough";
-const APP = "apps/reference-web";
 
 const DOM_GLOBALS = new Set([
   "document", "window", "HTMLElement", "MutationObserver",
@@ -29,7 +27,6 @@ const DOM_GLOBALS = new Set([
 ]);
 const NETWORK = new Set(["fetch", "XMLHttpRequest", "WebSocket"]);
 const HTML_SINKS = new Set(["innerHTML", "outerHTML", "insertAdjacentHTML"]);
-const APP_EXTERNAL = new Set(["vite", "vitest"]);
 
 const isTest = (rel: string) => /\.test\.ts$/.test(rel);
 const inDom = (rel: string) => rel.startsWith(`${CORE}/src/dom/`);
@@ -39,7 +36,6 @@ export function scan(rel: string, text: string): string[] {
   const found: string[] = [];
   const source = ts.createSourceFile(rel, text, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
   const inCore = rel.startsWith(`${CORE}/`);
-  const inApp = rel.startsWith(`${APP}/`);
   const flag = (rule: string, node: ts.Node) => found.push(`${rel}: ${rule}: ${node.getText(source).slice(0, 40)}`);
   const isPropertyName = (node: ts.Identifier) => (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) || (ts.isPropertyAssignment(node.parent) && node.parent.name === node) || (ts.isPropertySignature(node.parent) && node.parent.name === node);
   const specifierOf = (node: ts.Node): string | undefined => {
@@ -73,13 +69,11 @@ export function scan(rel: string, text: string): string[] {
       if (inCore && dynamic) flag("dynamic-import-or-require", node);
       if (specifier === "<dynamic>") flag("non-literal-import", node);
       else if (specifier.startsWith("@dap/") && inCore) flag("core-imports-a-workspace-package", node);
-      else if (specifier.startsWith("@dap/") && inApp && specifier !== "@dap/walkthrough" && specifier !== "@dap/walkthrough/dom") flag("app-imports-other-than-walkthrough", node);
-      else if (specifier.startsWith(".")) {
+      else if (inCore && specifier.startsWith(".")) {
         const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(rel), specifier));
-        const home = inCore ? CORE : inApp ? APP : undefined;
-        if (home !== undefined && !resolved.startsWith(`${home}/`)) flag("relative-import-leaves-the-tree", node);
-        else if (inCore && !inDom(rel) && inDom(resolved)) flag("core-imports-src/dom", node);
-      } else if (inApp && !specifier.startsWith("@dap/") && !specifier.startsWith("node:") && !APP_EXTERNAL.has(specifier)) flag("app-imports-an-unlisted-package", node);
+        if (!resolved.startsWith(`${CORE}/`)) flag("relative-import-leaves-the-tree", node);
+        else if (!inDom(rel) && inDom(resolved)) flag("core-imports-src/dom", node);
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -101,12 +95,11 @@ function filesUnder(rel: string): string[] {
   return out.sort();
 }
 
-describe("the real trees", () => {
-  const files = [...filesUnder(CORE), ...filesUnder(APP)];
+describe("the walkthrough source tree", () => {
+  const files = filesUnder(CORE);
   it("are not empty, so a clean scan means something", () => {
     expect(files.filter((f) => f.startsWith(`${CORE}/src/`) && !f.startsWith(`${CORE}/src/dom/`) && !isTest(f)).length).toBeGreaterThan(2);
     expect(files.filter((f) => inDom(f) && !isTest(f)).length).toBeGreaterThan(1);
-    expect(files.filter((f) => f.startsWith(`${APP}/src/`)).length).toBeGreaterThan(5);
   });
   it("have no violation", () => {
     const violations = files.flatMap((rel) => scan(rel, fs.readFileSync(path.join(ROOT, rel), "utf8")));
@@ -120,29 +113,23 @@ describe("the real trees", () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, CORE, "package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
     for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) expect(Object.keys(manifest[field] ?? {}), field).toEqual([]);
   });
-  it("apps/reference-web declares only @dap/walkthrough among workspace packages", () => {
-    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, APP, "package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
-    const declared = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"].flatMap((f) => Object.keys(manifest[f] ?? {})).filter((n) => n.startsWith("@dap/"));
-    expect(declared).toEqual(["@dap/walkthrough"]);
-  });
 });
 
 describe("planted-failure proofs for the source scan", () => {
   const core = `${CORE}/src/semantic/x.ts`;
   const domFile = `${CORE}/src/dom/x.ts`;
-  const app = `${APP}/src/x.ts`;
   const rules = (rel: string, code: string) => scan(rel, code).map((v) => v.split(": ")[1]);
   it.each([
     ["document in the pure core", core, "export const a = document.title;", "dom-global-outside-src/dom"],
     ["window in the pure core", core, "export const a = window.location;", "dom-global-outside-src/dom"],
     ["HTMLElement type in the pure core", core, "export type A = HTMLElement;", "dom-global-outside-src/dom"],
     ["MutationObserver in the pure core", core, "export const a = new MutationObserver(() => {});", "dom-global-outside-src/dom"],
-    ["eval", app, "export const a = eval('1');", "eval"],
+    ["eval", domFile, "export const a = eval('1');", "eval"],
     ["new Function", core, "export const a = new Function('return 1');", "new-Function"],
-    ["innerHTML in the app", app, "export const a = (e: Element) => { e.innerHTML = 'x'; };", "html-sink"],
+    ["innerHTML in the DOM adapter", domFile, "export const a = (e: Element) => { e.innerHTML = 'x'; };", "html-sink"],
     ["outerHTML in the DOM adapter", domFile, "export const a = (e: Element) => e.outerHTML;", "html-sink"],
-    ["insertAdjacentHTML", app, "export const a = (e: Element) => e.insertAdjacentHTML('beforeend', 'x');", "html-sink"],
-    ["a string-keyed innerHTML", app, "export const a = (e: any) => e['innerHTML'];", "html-sink"],
+    ["insertAdjacentHTML", domFile, "export const a = (e: Element) => e.insertAdjacentHTML('beforeend', 'x');", "html-sink"],
+    ["a string-keyed innerHTML", domFile, "export const a = (e: any) => e['innerHTML'];", "html-sink"],
     ["document.write", domFile, "export const a = () => document.write('x');", "document.write"],
     ["fetch in the DOM adapter", domFile, "export const a = () => fetch('/x');", "network-api"],
     ["XMLHttpRequest", core, "export const a = new XMLHttpRequest();", "network-api"],
@@ -156,10 +143,6 @@ describe("planted-failure proofs for the source scan", () => {
     ["getComputedStyle in the walkthrough definitions", `${CORE}/src/walkthrough/x.ts`, "export const a = getComputedStyle;", "dom-global-outside-src/dom"],
     ["a workspace import in the core", core, "import { x } from '@dap/contracts'; export const a = x;", "core-imports-a-workspace-package"],
     ["a relative import that leaves the core", core, "import { x } from '../../../security/src/index.js'; export const a = x;", "relative-import-leaves-the-tree"],
-    ["the app importing the security package", app, "import { x } from '@dap/security'; export const a = x;", "app-imports-other-than-walkthrough"],
-    ["the app importing a deep walkthrough path", app, "import { x } from '@dap/walkthrough/src/semantic/registry.js'; export const a = x;", "app-imports-other-than-walkthrough"],
-    ["the app importing an unlisted package", app, "import { x } from 'left-pad'; export const a = x;", "app-imports-an-unlisted-package"],
-    ["the app reaching into packages by path", app, "import { x } from '../../../packages/security/src/index.js'; export const a = x;", "relative-import-leaves-the-tree"],
   ] as const)("%s is reported", (_name, rel, code, rule) => {
     expect(rules(rel, code)).toContain(rule);
   });
@@ -167,9 +150,7 @@ describe("planted-failure proofs for the source scan", () => {
     ["document inside src/dom", domFile, "export const a = document.title;"],
     ["document inside a core test file", `${CORE}/src/semantic/x.test.ts`, "export const a = document.title;"],
     ["a property that is merely named document or fetch-free text", core, "export const o = { document: 1 }; export const b = o.document;"],
-    ["hostile text in a string literal and a comment", app, "// innerHTML eval fetch\nexport const a = '<img src=x onerror=alert(1)> innerHTML = document.write';"],
-    ["the app importing the walkthrough package and its DOM entry", app, "import { a } from '@dap/walkthrough'; import { b } from '@dap/walkthrough/dom'; import { c } from './y.js'; export const d = [a, b, c];"],
-    ["the app's config importing vite", `${APP}/vite.config.ts`, "import { defineConfig } from 'vite'; export default defineConfig({});"],
+    ["hostile text in a string literal and a comment", domFile, "// innerHTML eval fetch\nexport const a = '<img src=x onerror=alert(1)> innerHTML = document.write';"],
     ["the DOM adapter importing the core", `${CORE}/src/dom/x.ts`, "import { createSemanticRegistry } from '../semantic/registry.js'; export const a = createSemanticRegistry;"],
     ["the engine importing the privacy module", `${CORE}/src/engine/x.ts`, "import { buildSemanticContext } from '../privacy/privacy.js'; export const a = buildSemanticContext;"],
     ["a relative import inside the tree", core, "import { x } from '../privacy/privacy.js'; export const a = x;"],
@@ -179,7 +160,7 @@ describe("planted-failure proofs for the source scan", () => {
 });
 
 describe("planted edges against the dependency-cruiser rules (disposable workspace)", () => {
-  const DIRS: Record<string, string> = { contracts: "packages/contracts", ai: "packages/ai", actions: "packages/actions", security: "packages/security", testkit: "packages/testkit", walkthrough: CORE, "reference-host": "apps/reference-host", "reference-web": APP };
+  const DIRS: Record<string, string> = { contracts: "packages/contracts", ai: "packages/ai", actions: "packages/actions", security: "packages/security", testkit: "packages/testkit", walkthrough: CORE, "reference-host": "apps/reference-host" };
   /** [from, to, rule that must name it, or null when the edge is allowed] */
   const EDGES: [string, string, string | null][] = [
     ["walkthrough", "contracts", "walkthrough-leaf"], ["walkthrough", "ai", "walkthrough-leaf"], ["walkthrough", "actions", "walkthrough-leaf"], ["walkthrough", "security", "walkthrough-leaf"],
@@ -187,10 +168,7 @@ describe("planted edges against the dependency-cruiser rules (disposable workspa
     ["contracts", "walkthrough", "walkthrough-not-imported-by-trusted-packages"], ["ai", "walkthrough", "walkthrough-not-imported-by-trusted-packages"],
     ["actions", "walkthrough", "walkthrough-not-imported-by-trusted-packages"], ["security", "walkthrough", "walkthrough-not-imported-by-trusted-packages"],
     ["testkit", "walkthrough", "walkthrough-not-imported-by-trusted-packages"],
-    ["reference-web", "contracts", "reference-web-only-walkthrough"], ["reference-web", "ai", "reference-web-only-walkthrough"], ["reference-web", "actions", "reference-web-only-walkthrough"],
-    ["reference-web", "security", "reference-web-only-walkthrough"], ["reference-web", "testkit", "reference-web-only-walkthrough"], ["reference-web", "testkit", "production-not-to-testkit"],
-    ["reference-web", "reference-host", "reference-web-only-walkthrough"],
-    ["reference-web", "walkthrough", null], ["reference-host", "walkthrough", null], ["testkit", "security", null],
+    ["reference-host", "walkthrough", null], ["testkit", "security", null],
   ];
   let workspace: string;
   let violations: { from: string; to: string; rule: { name: string } }[];
@@ -224,6 +202,6 @@ describe("planted edges against the dependency-cruiser rules (disposable workspa
   });
   it("the real configuration still names every Feature 002 rule", () => {
     const config = fs.readFileSync(path.join(ROOT, "dependency-cruiser.config.cjs"), "utf8");
-    for (const name of ["walkthrough-leaf", "walkthrough-not-imported-by-trusted-packages", "reference-web-only-walkthrough", "production-not-to-testkit"]) expect(config).toContain(`"${name}"`);
+    for (const name of ["walkthrough-leaf", "walkthrough-not-imported-by-trusted-packages", "production-not-to-testkit"]) expect(config).toContain(`"${name}"`);
   });
 });

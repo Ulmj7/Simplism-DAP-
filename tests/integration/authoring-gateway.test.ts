@@ -4,7 +4,7 @@
  * UNAUTHORIZED with zero executor runs and nothing stored; spoofed fields are refused by the strict schema; an invalid definition fails INSIDE the executor while the
  * policy decision stays ALLOWED (the two stay distinct in the trail); a registry-drifted stale draft cannot be published; a published guide cannot be saved over;
  * unpublish restores editability; built-in, preview and mismatched ids are refused; the definition never appears in the audit rows; default deny holds.
- * NEEDS the PostgreSQL of deploy/compose.yaml on a FRESH database; each test uses a tenant of its own.
+ * NEEDS the PostgreSQL of compose.yaml on a FRESH database; each test uses a tenant of its own.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";

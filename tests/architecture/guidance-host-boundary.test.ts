@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
 import ts from "typescript";
 import { readdirSync, readFileSync } from "node:fs";
-/** The only host modules that may read the process environment: the two process entry points (the guidance demo and the C01 dev server). */
-const PROCESS_ENTRY_POINTS = ["guidance/demo.ts", "http/dev-server.ts"];
+/** Only host process entry points may read the process environment. */
+const PROCESS_ENTRY_POINTS = ["guidance/demo.ts", "http/dev-server.ts", "platform/server.ts"];
 export function scanHost(file: string, text: string): string[] {
  const errors: string[] = [];
  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);

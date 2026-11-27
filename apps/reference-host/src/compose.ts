@@ -38,6 +38,9 @@ export interface HostExtension {
   readonly executors: readonly ActionExecutor[];
 }
 export interface ComposeOptions {
+  readonly identity?: Pick<GatewayDependencies["hooks"], "permissions" | "resources"> & {
+    readonly authentication: import("@dap/contracts").AuthenticationPort;
+  };
   readonly extensions?: readonly HostExtension[];
 }
 export class ExtensionError extends Error {
@@ -131,10 +134,10 @@ const confirmationChannelPlaceholder: ConfirmationChannel = Object.freeze({ deli
  */
 export async function composeReferenceHost(env: Environment, options?: ComposeOptions): Promise<ComposedHost> {
   const extra = collectExtensions(options?.extensions);
-  const config = loadConfig(env, extra.definitions.map((definition) => definition.id as string));
-  const registry = buildRegistry([...DEMO_DEFINITIONS, ...extra.definitions]);
+  const config = loadConfig(env, extra.definitions.map((definition) => definition.id as string), options?.identity !== undefined);
+  const registry = buildRegistry(options?.identity ? extra.definitions : [...DEMO_DEFINITIONS, ...extra.definitions]);
   const { executors, trusted } = createDemoExecutors();
-  const executorTable = bindExecutors(registry, [...executors, ...extra.executors]);
+  const executorTable = bindExecutors(registry, options?.identity ? extra.executors : [...executors, ...extra.executors]);
   const pool = createPostgresPool(config.databaseUrl);
   try {
     const clock = systemClock;
@@ -150,7 +153,7 @@ export async function composeReferenceHost(env: Environment, options?: ComposeOp
       registry,
       executors: executorTable,
       globalAllowlist: new Set(config.enabledActions as readonly never[]),
-      hooks: { permissions: createPermissionChecker(config.devSessions), resources: createResourceAuthorizer(config.devSessions), pages: createPageContextProvider() },
+      hooks: { permissions: options?.identity?.permissions ?? createPermissionChecker(config.devSessions), resources: options?.identity?.resources ?? createResourceAuthorizer(config.devSessions), pages: createPageContextProvider() },
       state,
       audit: { append: (event: AuditEvent, options) => audit.append(event, options) },
       confirmationChannel: confirmationChannelPlaceholder,
@@ -159,7 +162,7 @@ export async function composeReferenceHost(env: Environment, options?: ComposeOp
       ids: systemIds,
     };
     const { proposals } = createPolicyGateway(deps);
-    const contexts = createSecurityContextFactory({ authentication: createDevAuthentication(config.devSessions, clock), clock });
+    const contexts = createSecurityContextFactory({ authentication: options?.identity?.authentication ?? createDevAuthentication(config.devSessions, clock), clock });
 
     const host: ReferenceHost = Object.freeze({
       async openSession(evidence: unknown): Promise<AiSession | null> {

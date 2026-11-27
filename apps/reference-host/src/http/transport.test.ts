@@ -382,7 +382,7 @@ describe("Sec-Fetch-Site (cross-site browser requests are refused; same-origin, 
     expect(t.start).not.toHaveBeenCalled();
   });
 
-  it.each([["same-origin"], ["none"], [undefined]])("%s: allowed (the Vite proxy forwards the browser's same-origin unchanged)", async (site) => {
+  it.each([["same-origin"], ["none"], [undefined]])("%s: allowed", async (site) => {
     const t = setup();
     const res = await t.post("/api/guidance", askBody(PROFILE), site === undefined ? {} : { "sec-fetch-site": site });
     expect(res.status).toBe(200);

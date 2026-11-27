@@ -3,7 +3,7 @@
  * walkthroughs are created through them) and a FAKE BrowserRuntime (no Chrome). Proves tenant isolation of the application lookup, that disabling an application through the real status
  * route blocks connect and closes a live session at its next command, that a stored walkthrough of another application cannot be opened (APPLICATION_MISMATCH) while a legacy one can, that the
  * second application's registry (the reviewer's fixture B) drives the inspector, and that re-pointing an application closes a session whose policy would be stale. NEEDS the PostgreSQL of
- * deploy/compose.yaml on a FRESH database (DAP_DATABASE_URL / DAP_MIGRATE_DATABASE_URL); every test uses tenants of its own.
+ * compose.yaml on a FRESH database (DAP_DATABASE_URL / DAP_MIGRATE_DATABASE_URL); every test uses tenants of its own.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";

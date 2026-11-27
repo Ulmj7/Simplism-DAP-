@@ -2,10 +2,7 @@
  * The trusted copy of the demo app's semantic registry data (Feature 004, T403): the 3 routes, the 8 registered elements (with their REAL operations and privacy)
  * and the 4 postcondition names that an authored walkthrough may reference. Frozen, plain data.
  *
- * Why a copy: the host may not import the reference web app, and the validator surface it may import (`@dap/walkthrough/authoring`) is pure and has no registry
- * of its own. The data is therefore repeated here ONCE, and `tests/integration/authoring-registry-parity.test.ts` (the only place that can see both sides) compares
- * it with the web app's real `createDemoRegistry().list()`, `routes` and `POSTCONDITION_NAMES` and proves it can catch drift. The password field is deliberately
- * not registered (so no guide can target it), and no admin page is a registry route (so no guide can target one).
+ * Retained for stored walkthroughs that use the reference registry. The password field and admin pages are excluded.
  *
  * The data is what a guide may TARGET: it is not authority. Nothing here is read from a request.
  */

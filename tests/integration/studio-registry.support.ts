@@ -1,6 +1,6 @@
 /**
  * Shared harness for the Studio V1B PostgreSQL tests: one tenant, one host (real Gateway, every capability family incl. the target capabilities), the authoring, application and target routes on
- * the C01 transport (`inject`, no port), a maintainer and an ordinary user, and helpers to enrol applications and register targets through the REAL Gateway. Needs the PostgreSQL of deploy/compose.yaml
+ * the C01 transport (`inject`, no port), a maintainer and an ordinary user, and helpers to enrol applications and register targets through the REAL Gateway. Needs the PostgreSQL of compose.yaml
  * on a fresh database (DAP_DATABASE_URL / DAP_MIGRATE_DATABASE_URL).
  */
 import { randomUUID } from "node:crypto";

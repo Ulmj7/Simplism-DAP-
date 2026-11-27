@@ -7,7 +7,7 @@
  *   browser    the Studio inspector's view of the same application: the role + accessible-name pairs that may leave the host (`labels`) and the pages (`pathname + hash`)
  *              that map to a registry route. Free-form names never leave the host: an element whose role and name are not declared here is never exposed.
  *
- * The built-in entry `reference` is built from the EXISTING `TRUSTED_REGISTRY` (unchanged export, its parity test unchanged) plus the six labels and four pages that used to
+ * The built-in entry `reference` is built from the EXISTING `TRUSTED_REGISTRY` plus the six labels and four pages that used to
  * be hard-coded in `studio/browser.ts`. The catalog is injectable (`createRegistryCatalog(extra)`): a test or a later deployment adds entries in code; arbitrary registries are
  * NOT stored from the browser in V1A (there is no target-registration UI).
  */
@@ -21,8 +21,7 @@ export const MAX_REGISTRY_LABEL_CHARS = 60;
 export const MAX_BROWSER_LABELS = 32;
 export const MAX_BROWSER_PAGES = 32;
 /**
- * The bounds the editor's strict registry parser enforces on the `/registry` reply (apps/reference-web/src/admin/applications.ts): a catalog entry that exceeds one could be registered
- * but never loaded by the editor, so the catalog refuses it at composition time.
+ * Limits for catalog entries and their public registry API representation.
  */
 export const MAX_REGISTRY_ROUTES = 20;
 export const MAX_REGISTRY_ELEMENTS = 200;

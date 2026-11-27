@@ -9,14 +9,12 @@ export class GuidanceProviderError extends Error {
   constructor(readonly code: ProviderCode) { super(`Guidance provider: ${code}`); this.name = "GuidanceProviderError"; }
 }
 export const hostTimers: GuidanceTimers = { set: (cb, ms) => { const h = setTimeout(cb, ms); return () => clearTimeout(h); } };
-export function createAnthropicGuidanceModel({ apiKey, modelId = "claude-haiku-5-5", fetchImpl = fetch, timers = hostTimers }: {
+export function createAnthropicPromptModel({ apiKey, modelId = "claude-haiku-5-5", fetchImpl = fetch, timers = hostTimers }: {
   apiKey: unknown; modelId?: string; fetchImpl?: typeof fetch; timers?: GuidanceTimers;
-}): GuidanceModel {
+}) {
   if (typeof apiKey !== "string" || !/^[\x21-\x7e]{1,4096}$/.test(apiKey)) throw new GuidanceConfigError("ANTHROPIC_API_KEY must be non-empty printable text without whitespace");
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(modelId)) throw new GuidanceConfigError("DAP_GUIDANCE_MODEL_ID is invalid");
-  return { async generate(request): Promise<unknown> {
-    const fitted = fitRequestToBudget(request);
-    if (!fitted.ok || JSON.stringify(fitted.request) !== JSON.stringify(request)) throw new GuidanceProviderError("fit_mismatch");
+  return { async generate(prompt: { readonly system: string; readonly user: string }): Promise<unknown> {
     const controller = new AbortController();
     let expired = false;
     let cancel = () => {};
@@ -24,7 +22,7 @@ export function createAnthropicGuidanceModel({ apiKey, modelId = "claude-haiku-5
       let response: Response;
       try { response = await fetchImpl(ANTHROPIC_ENDPOINT, { method: "POST", signal: controller.signal,
         headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({ model: modelId, max_tokens: 1024, temperature: 0, system: fitted.prompt.system, messages: [{ role: "user", content: fitted.prompt.user }] }),
+        body: JSON.stringify({ model: modelId, max_tokens: 1024, temperature: 0, system: prompt.system, messages: [{ role: "user", content: prompt.user }] }),
       }); } catch { throw new GuidanceProviderError(expired ? "timeout" : "network"); }
       if (!response.ok) { controller.abort(); throw new GuidanceProviderError("http_status"); }
       let envelope: unknown;
@@ -62,5 +60,14 @@ export function createAnthropicGuidanceModel({ apiKey, modelId = "claude-haiku-5
       return await Promise.race([deadline, operation()]);
     } catch (error) { if (error instanceof GuidanceProviderError) throw error; throw new GuidanceProviderError(expired ? "timeout" : "network"); }
     finally { controller.abort(); try { cancel(); } catch { /* Timer cleanup never exposes a dependency error. */ } }
+  } };
+}
+
+export function createAnthropicGuidanceModel(options: Parameters<typeof createAnthropicPromptModel>[0]): GuidanceModel {
+  const model = createAnthropicPromptModel(options);
+  return { async generate(request) {
+    const fitted = fitRequestToBudget(request);
+    if (!fitted.ok || JSON.stringify(fitted.request) !== JSON.stringify(request)) throw new GuidanceProviderError("fit_mismatch");
+    return model.generate(fitted.prompt);
   } };
 }

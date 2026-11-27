@@ -39,6 +39,7 @@ import { registrySourceOf } from "./applications.js";
 import { parseStudioCommand } from "./browser-commands.js";
 import type { StudioCommand } from "./browser-commands.js";
 import { emptyTargetStore } from "./empty-target-store.js";
+import { secretNameHit } from "./element-privacy.js";
 import { MAX_URL_CHARS, classifyCandidates, routeOfUrl } from "./inspector.js";
 import type { Candidate } from "./inspector.js";
 import { classifyControl, classifyManaged, pageOfUrl, routeOfPage, selectFactRefs } from "./managed-inspector.js";
@@ -160,6 +161,14 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       const record = (await applications.get(principal.tenantId, session.applicationId))!;
 
       if (command.action === "refresh") return await (session.source === "studio-managed" ? refreshManaged(session, principal.tenantId) : refreshBuiltIn(session, record, principal.tenantId));
+
+      if (command.action === "inspect") {
+        if (session.source !== "studio-managed") return deny(409, "TARGET_UNAVAILABLE");
+        if (!session.runtime.inspectUi) return deny(503, "BROWSER_UNAVAILABLE");
+        const snapshot = await session.runtime.inspectUi();
+        return { ...snapshot, targets: snapshot.targets.filter(target =>
+          !secretNameHit(target.name) && target.section.every(name => !secretNameHit(name))) };
+      }
 
       if (command.action === "register") return await register(command, session, record, principal, deny);
 

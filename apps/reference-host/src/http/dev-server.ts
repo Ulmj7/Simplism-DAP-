@@ -1,5 +1,5 @@
 /**
- * C01 dev server (`npm run dev:host`): the reference host composed with the guidance capability, behind the narrow browser transport.
+ * C01 dev server: the reference host composed with the guidance capability, behind the narrow browser transport.
  * DAP_HTTP_HOST defaults to 127.0.0.1. The Docker lab binds to 0.0.0.0 inside the container and publishes to host loopback.
  *
  * DEV-ONLY DEMO LIMITATION: the browser supplies no identity. The host opens its OWN demo session server-side from `DAP_DEMO_SESSION_TOKEN` (dev-auth
@@ -19,6 +19,7 @@
  * its own small database pool built from DAP_DATABASE_URL (the unprivileged application role).
  */
 import { randomBytes } from "node:crypto";
+import { registerLocalPlatform } from "../platform/local.js";
 import { createAuthoringExtension } from "../authoring/capabilities.js";
 import { createAuthoringPool } from "../authoring/pool.js";
 import { createPostgresWalkthroughStore } from "../authoring/postgres-store.js";
@@ -101,11 +102,18 @@ try {
   // session table (see principal.ts); the demo role header only picks one of the two server-held sessions.
   const maintainerToken = env.DAP_DEMO_MAINTAINER_TOKEN;
   if (maintainerToken && (await host.openSession(maintainerToken)) === null) throw new GuidanceConfigError("DAP_DEMO_MAINTAINER_TOKEN session was refused");
-  const resolvePrincipal = createDemoPrincipalResolver({ sessions: parseDevSessions(env.DEV_SESSIONS), userToken: token, maintainerToken, openSession: (evidence) => host.openSession(evidence) });
+  const sessions = parseDevSessions(env.DEV_SESSIONS);
+  const demoPrincipal = createDemoPrincipalResolver({ sessions, userToken: token, maintainerToken, openSession: (evidence) => host.openSession(evidence) });
+  close = async () => { await app.close(); await host.close(); await authoringPool.end(); };
+  const resolvePrincipal = env.NODE_ENV === "development" && bindHost === HTTP_HOST && maintainerToken
+    ? await registerLocalPlatform({
+      env, app, pool: authoringPool, sessions, maintainerToken, resolvePrincipal: demoPrincipal,
+      extensions: [authoring.extension, studioApplications.extension, studioTargets.extension],
+    })
+    : demoPrincipal;
   registerAuthoringRoutes(app, { store, applications, catalog, targets, resolver, resolvePrincipal });
   registerApplicationRoutes(app, { applications, catalog, targets, resolver, resolvePrincipal });
   registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: store, targets, resolver });
-  close = async () => { await app.close(); await host.close(); await authoringPool.end(); };
   phase = "listen";
   await app.listen({ host: bindHost, port });
   console.log(`DAP guidance host listening on http://${bindHost}:${port} (dev only)`);
