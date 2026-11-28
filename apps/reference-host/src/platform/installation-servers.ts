@@ -17,7 +17,7 @@ import { registerWidget } from "./public-api.js";
 import { registerPlatformRoutes } from "./routes.js";
 import { platformStore } from "./store.js";
 
-const sdkVersion = "v1.5.0";
+const sdkVersion = "v1.6.0";
 const root = new URL("../../../../", import.meta.url);
 const dashboardDir = new URL("apps/admin-dashboard/", root);
 const widgetDir = new URL("deploy/widget/", root);
@@ -25,7 +25,7 @@ const loopbackHost = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/u;
 
 async function readWidgetAsset(version: string): Promise<Buffer> {
   const agentFile = new URL(`${version}/agent.js`, widgetDir);
-  if (!["v1.3.0", "v1.4.0", "v1.5.0"].includes(version)) return readFile(agentFile);
+  if (!["v1.3.0", "v1.4.0", "v1.5.0", "v1.6.0"].includes(version)) return readFile(agentFile);
   const files = [new URL("v1.3.0/ui-reader.js", widgetDir)];
   if (version !== "v1.3.0") files.push(new URL(`${version}/mapped-guide.js`, widgetDir));
   files.push(agentFile);
@@ -73,8 +73,9 @@ export async function startInstallationServers(env: Environment, listen: {
     admin.addHook("onClose", () => host.close());
     admin.addHook("onRequest", async (request, reply) => {
       reply.header("cache-control", "no-store");
-      reply.header("content-security-policy", "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
-      if (!loopbackHost.test(request.headers.host ?? "")) return reply.code(403).send({ error: "forbidden" });
+      const host = request.headers.host ?? "";
+      if (!loopbackHost.test(host)) return reply.code(403).send({ error: "forbidden" });
+      reply.header("content-security-policy", `default-src 'self'; connect-src 'self' ws://${host}; img-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`);
     });
     admin.setErrorHandler((_error, _request, reply) => reply.code(503).send({ error: "unavailable" }));
     widget.setErrorHandler((_error, _request, reply) => reply.code(503).send({ error: "unavailable" }));
@@ -92,6 +93,9 @@ export async function startInstallationServers(env: Environment, listen: {
     for (const [url, file, type] of [
       ["/", "index.html", "text/html; charset=utf-8"],
       ["/dashboard.js", "dashboard.js", "text/javascript; charset=utf-8"],
+      ["/monitor.js", "monitor.js", "text/javascript; charset=utf-8"],
+      ["/studio-map.js", "studio-map.js", "text/javascript; charset=utf-8"],
+      ["/studio-live-view.js", "studio-live-view.js", "text/javascript; charset=utf-8"],
       ["/dashboard.css", "dashboard.css", "text/css; charset=utf-8"],
     ] as const) {
       const content = await readFile(new URL(file, dashboardDir));

@@ -12,6 +12,8 @@
  *   connect    { action, applicationId, walkthroughId? }                         -> { sessionId, applicationId, application, origin, registrySource }
  *   resume     { action, applicationId }                                         -> the same + resumed:true (adopts the owner's running session under a NEW id)
  *   refresh    { action, sessionId, applicationId }                              -> { url, route, page, elements, hidden, truncated }
+ *   inspect    { action, sessionId, applicationId }                              -> { page, targets, truncated }
+ *   inspect-dom { action, sessionId, applicationId, cursor? }                     -> { url, nodes, nextCursor, truncated }
  *   highlight  { action, sessionId, applicationId, ref }                         -> { highlighted: true, ref }   (trusted or registrable; re-verifies; persists NOTHING)
  *   capture    { action, sessionId, applicationId, ref }                         -> { targetId, route, name, role, operations }   (the UI's "Use": trusted only)
  *   register   { action, sessionId, applicationId, ref, targetId, route, operations, label, description, privacy } -> { target, route: { route, page, created } }
@@ -24,11 +26,13 @@
  *
  * Invariants kept from V1A (and re-tested): ONE session per host owned by [principal key, tenant, actor]; one command in flight (BROWSER_BUSY); the session closes on disconnect, after five idle
  * minutes OF THE OWNER'S OWN activity, on host shutdown (`onClose`) and when connecting fails; every command re-loads the application and re-resolves its registry (nothing is cached for the session,
- * because targets can change while it is open); a disabled, removed or re-pointed application closes the session; no raw error text, CLI output, URL or application origin leaves in an error.
+ * because targets can change while it is open); a disabled, removed or re-pointed application closes the session; errors omit raw browser details and application URLs.
  */
+import type { Monitoring } from "./monitoring.js";
+import type { BrowserObservation } from "@dap/browser-runtime";
 import { randomUUID } from "node:crypto";
-import { BrowserRuntimeError, createAgentBrowserAdapter } from "@dap/browser-runtime";
-import type { AgentBrowserAdapterOptions, BrowserRuntime, BrowserSnapshot, ElementFacts, ElementRef } from "@dap/browser-runtime";
+import { BrowserRuntimeError, createPlaywrightRuntime } from "@dap/browser-runtime";
+import type { BrowserRuntime, BrowserRuntimeOptions, BrowserSnapshot, ElementFacts, ElementRef } from "@dap/browser-runtime";
 import type { FastifyInstance } from "fastify";
 import { submitGatewayWrite } from "../authoring/routes.js";
 import type { AuthoringRouteDeps } from "../authoring/routes.js";
@@ -56,7 +60,7 @@ const busyRecheckMs = 1_000;
 const MAINTAIN = "perm.walkthrough.maintain";
 
 /** The policy a runtime is created with: derived from the application, never from a request. */
-export type BrowserRuntimeConfig = Pick<AgentBrowserAdapterOptions, "labels" | "routes" | "origins">;
+export type BrowserRuntimeConfig = Pick<BrowserRuntimeOptions, "labels" | "routes" | "origins" | "monitorVisual">;
 
 type AnyCandidate = Candidate | ManagedCandidate;
 
@@ -73,6 +77,7 @@ interface Session {
   readonly runtime: BrowserRuntime;
   /** The last refresh. Replaced wholesale by every refresh; dropped with the session. */
   snapshot?: BrowserSnapshot;
+  detachMonitor?: () => void;
   candidates: ReadonlyMap<string, AnyCandidate>;
 }
 
@@ -89,13 +94,15 @@ interface Options {
   /** The registry resolver; built from `catalog` and `targets` when omitted. */
   readonly resolver?: RegistryResolver;
   readonly createRuntime?: (config: BrowserRuntimeConfig) => BrowserRuntime;
+  readonly monitoring?: Monitoring;
   readonly makeId?: () => string;
 }
 
 /** The fields of an application that shape the adapter's policy. A rename does not; an origin, allowed-origin or registry change does. */
 const policyOf = (application: ApplicationRecord): string => JSON.stringify([application.origin, application.allowedOrigins, application.registryId]);
 
-export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, applications, catalog, authoring, createRuntime = (config) => createAgentBrowserAdapter(config), makeId = randomUUID, ...rest }: Options): void {
+export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, applications, catalog, authoring, createRuntime = createPlaywrightRuntime, makeId = randomUUID, ...rest }: Options): void {
+  const monitoring = rest.monitoring;
   const targets = rest.targets ?? emptyTargetStore;
   const resolver = rest.resolver ?? createRegistryResolver({ catalog, targets });
   let current: Session | undefined;
@@ -103,6 +110,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
   let timer: NodeJS.Timeout | undefined;
   async function close() {
     if (!current) return;
+    current.detachMonitor?.();
     await current.runtime.close();
     current = undefined;
     clearTimeout(timer);
@@ -134,9 +142,10 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     if (command === null) return deny(400, "INVALID_REQUEST");
     if (busy) return deny(409, "BROWSER_BUSY");
     busy = true;
+    let finish: ((ok: boolean) => void) | undefined;
     let ownerActivity = false; // true once this request is the OWNER's own bound activity: only then does the idle clock restart
     try {
-      if (command.action === "connect") return await connect(command, principal.tenantId, owner, deny, () => { ownerActivity = true; });
+      if (command.action === "connect") return await connect(command, principal.tenantId, owner, principal.actor, deny, () => { ownerActivity = true; });
 
       if (command.action === "resume") {
         // The browser a reloaded page lost: adopted ONLY by the same owner for the same application; anyone else is BROWSER_BUSY (never revealing whose session it is).
@@ -160,6 +169,10 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       if (reloaded !== undefined) return reloaded.reply;
       const record = (await applications.get(principal.tenantId, session.applicationId))!;
 
+      if (command.action !== "inspect-dom") {
+        const label = "ref" in command ? session.candidates.get(command.ref)?.name : undefined;
+        finish = monitorObservation(session)?.track(command.action, label);
+      }
       if (command.action === "refresh") return await (session.source === "studio-managed" ? refreshManaged(session, principal.tenantId) : refreshBuiltIn(session, record, principal.tenantId));
 
       if (command.action === "inspect") {
@@ -171,6 +184,10 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       }
 
       if (command.action === "register") return await register(command, session, record, principal, deny);
+      if (command.action === "inspect-dom") {
+        if (!session.runtime.inspectDom) return deny(503, "BROWSER_UNAVAILABLE");
+        return await session.runtime.inspectDom(command.cursor);
+      }
 
       // highlight and capture: the ref must be one of the LAST refresh's candidates; trusted (both) or registrable (highlight only).
       const snapshot = session.snapshot;
@@ -211,8 +228,13 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
         return deny(503, error.code);
       }
       return deny(503, "BROWSER_UNAVAILABLE");
-    } finally { busy = false; if (ownerActivity) refreshExpiry(); }
+    } finally { finish?.(reply.statusCode < 400); busy = false; if (ownerActivity) refreshExpiry(); }
   });
+
+  function monitorObservation(session: Session): BrowserObservation | undefined {
+    if (!monitoring) return undefined;
+    try { return session.runtime.observation?.(); } catch { return undefined; }
+  }
 
   type Deny = (status: number, error: string, extra?: object) => unknown;
 
@@ -325,7 +347,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
   }
 
   /** Opens the one session for an enrolled application of the caller's tenant. Never reads an origin, registry or label from the request. */
-  async function connect(command: Extract<StudioCommand, { action: "connect" }>, tenantId: string, owner: string, deny: Deny, touch: () => void) {
+  async function connect(command: Extract<StudioCommand, { action: "connect" }>, tenantId: string, owner: string, actor: string, deny: Deny, touch: () => void) {
     if (current) return deny(409, "BROWSER_BUSY");
     let record: ApplicationRecord | null;
     try { record = await applications.get(tenantId, command.applicationId); }
@@ -351,7 +373,7 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
       if (stored.applicationId !== null && stored.applicationId !== record.id) return deny(409, "APPLICATION_MISMATCH");
     }
     let runtime: BrowserRuntime;
-    try { runtime = createRuntime(config); }
+    try { runtime = createRuntime(monitoring ? { ...config, monitorVisual: true } : config); }
     catch { return deny(503, "BROWSER_UNAVAILABLE"); } // the adapter refused the configuration (never echoed)
     const session: Session = {
       id: makeId(), owner, tenantId, applicationId: record.id, application: { name: record.name, origin: record.origin }, source, policy: policyOf(record), runtime, candidates: new Map(),
@@ -360,6 +382,14 @@ export function registerStudioBrowser(app: FastifyInstance, { resolvePrincipal, 
     touch();
     try { await runtime.start({ url: `${record.origin}/`, headed: true }); }
     catch (error) { await close().catch(() => {}); throw error; }
+    const observe = runtime.observation;
+    if (observe && monitoring) {
+      session.detachMonitor = monitoring.attach({ tenantId, applicationId: record.id, origin: record.origin, audience: "public",
+        owner: actor, kind: "Studio", observe, validate: async () => {
+          const latestRecord = await applications.get(tenantId, record.id);
+          return Boolean(latestRecord?.enabled && policyOf(latestRecord) === session.policy);
+        } });
+    }
     return { sessionId: session.id, applicationId: record.id, application: record.name, origin: record.origin, registrySource: source };
   }
 }

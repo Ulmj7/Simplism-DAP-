@@ -1,14 +1,14 @@
 /**
- * The two origin normalisations must agree (Studio V1A, D1 + D5): whatever the enrollment validator ACCEPTS, `createAgentBrowserAdapter` must accept as an `origins` entry (it demands
+ * The two origin normalisations must agree (Studio V1A, D1 + D5): whatever the enrollment validator ACCEPTS, `createPlaywrightRuntime` must accept as an `origins` entry (it demands
  * the exact normalised form), so that no enrolled application can make connect fail with a configuration TypeError. Creating the adapter starts no process (no binary is needed).
  */
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { createAgentBrowserAdapter } from "@dap/browser-runtime";
+import { createPlaywrightRuntime } from "@dap/browser-runtime";
 import { normalizeOrigin, validateApplicationConfig } from "./applications.js";
 
 const adapterAccepts = (origins: readonly string[]): boolean => {
-  try { createAgentBrowserAdapter({ labels: [], routes: ["/"], origins }); return true; } catch (error) { if (error instanceof TypeError) return false; throw error; }
+  try { createPlaywrightRuntime({ labels: [], routes: ["/"], origins }); return true; } catch (error) { if (error instanceof TypeError) return false; throw error; }
 };
 const config = (origin: string, allowed: readonly string[] = [origin]) => ({ name: "App", origin, allowedOrigins: [...allowed], environment: "development", registryId: "reference" });
 

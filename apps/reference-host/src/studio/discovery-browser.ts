@@ -1,8 +1,6 @@
-import { access, readFile, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { chromium } from "playwright-core";
-import type { Browser, Page } from "playwright-core";
+import { readFile } from "node:fs/promises";
+import { openChromiumSession } from "@dap/browser-runtime";
+import type { ChromiumSession } from "@dap/browser-runtime";
 import { z } from "zod";
 import { discoveryDom } from "./discovery-dom.js";
 import type { DiscoveryAction } from "./discovery-dom.js";
@@ -17,6 +15,8 @@ const targetSchema = z.strictObject({
   name: label,
   marker: z.string().regex(/^[A-Za-z][A-Za-z0-9.]{0,79}$/u).nullable(),
 });
+const points = z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() });
+const actionFocus = z.strictObject({ bounds: points, view: points });
 const observationSchema = z.union([
   z.strictObject({ access: z.enum(["access-required", "unreadable"]) }),
   z.strictObject({
@@ -29,7 +29,19 @@ const observationSchema = z.union([
 ]);
 export type DiscoveryObservation = z.infer<typeof observationSchema>;
 
+export type StudioInput = { revision: number } & (
+  { kind: "click"; x: number; y: number } |
+  { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number } |
+  { kind: "key"; key: string } |
+  { kind: "text"; text: string }
+);
+export type StudioFrame = { data: Buffer; width: number; height: number; revision: number };
+
 export interface DiscoveryBrowser {
+  observation: ChromiumSession["observation"];
+  startLiveView(send: (frame: StudioFrame) => void): Promise<() => Promise<void>>;
+  input(event: StudioInput): Promise<void>;
+  finishPreparation(): Promise<void>;
   begin(): void;
   roleToken(path: string): Promise<string | null>;
   currentPath(): string;
@@ -39,64 +51,92 @@ export interface DiscoveryBrowser {
   close(): Promise<void>;
 }
 
-async function executablePath(): Promise<string | undefined> {
-  if (process.env.DAP_STUDIO_CHROME_PATH) return process.env.DAP_STUDIO_CHROME_PATH;
-  const installed = join(homedir(), ".agent-browser", "browsers");
-  const versions = await readdir(installed).catch(() => []);
-  const candidates = [chromium.executablePath(), "/usr/bin/chromium", "/usr/bin/google-chrome",
-    ...versions.filter(version => /^chrome-[\d.]+$/u.test(version)).sort().reverse().map(version => join(installed, version, "chrome"))];
-  for (const path of candidates) {
-    if (await access(path).then(() => true, () => false)) return path;
-  }
-  return undefined;
-}
-
-export async function openDiscoveryBrowser(origin: string, headed: boolean): Promise<DiscoveryBrowser> {
+export async function openDiscoveryBrowser(origin: string, headed: boolean, interactive = false): Promise<DiscoveryBrowser> {
   const source = await readFile(readerFile, "utf8");
-  const executable = await executablePath();
-  const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "LANG", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY"]
-    .flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]]]));
-  const browser = await chromium.launch({ headless: !headed, env, timeout: 15_000, ...(executable ? { executablePath: executable } : {}) });
+  const browser = await openChromiumSession({ headed, allowOrigin: url => url.origin === origin, readOnly: !headed && !interactive, diagnostics: !interactive });
   try {
-    return await createSession(browser, origin, source, headed);
+    return await createSession(browser, origin, source, headed, interactive);
   } catch (error) {
     await browser.close();
     throw error;
   }
 }
 
-async function createSession(browser: Browser, origin: string, source: string, headed: boolean): Promise<DiscoveryBrowser> {
-  const context = await browser.newContext({ acceptDownloads: false, serviceWorkers: "block" });
-  const page = await context.newPage();
-  let scanning = !headed;
-  await context.route("**/*", async route => {
-    const request = route.request();
-    const isDocument = request.isNavigationRequest();
-    const safeMethod = ["GET", "HEAD", "OPTIONS"].includes(request.method());
-    if ((isDocument && new URL(request.url()).origin !== origin) || (scanning && !safeMethod)) await route.abort();
-    else await route.continue();
-  });
-  context.on("page", popup => { void popup.close().catch(() => {}); });
-  page.setDefaultTimeout(6_000);
+async function createSession(browser: ChromiumSession, origin: string, source: string, headed: boolean, interactive: boolean): Promise<DiscoveryBrowser> {
+  const { page, context } = browser;
+  let manual = interactive;
+  let inputTask: Promise<void> | undefined;
+
+  function applyInput(event: StudioInput): Promise<void> {
+    browser.checkedUrl();
+    if (!manual || event.revision !== browser.revision()) return Promise.resolve();
+    switch (event.kind) {
+      case "click": {
+        const size = page.viewportSize();
+        return size ? page.mouse.click(event.x * size.width, event.y * size.height) : Promise.resolve();
+      }
+      case "wheel": {
+        const size = page.viewportSize();
+        return size ? page.mouse.move(event.x * size.width, event.y * size.height)
+          .then(() => {
+            if (manual && event.revision === browser.revision()) {
+              browser.checkedUrl();
+              return page.mouse.wheel(event.deltaX, event.deltaY);
+            }
+            return undefined;
+          }) : Promise.resolve();
+      }
+      case "key": return page.keyboard.press(event.key);
+      case "text": return page.keyboard.insertText(event.text);
+    }
+  }
   function currentPath() {
-    const url = new URL(page.url());
-    if (url.origin !== origin) throw new Error("Discovery browser left the configured origin");
+    const url = new URL(browser.checkedUrl());
     return discoveryPath.parse(url.pathname + (/^#!?\//u.test(url.hash) ? url.hash : ""));
   }
   async function navigate(path: string) {
     const url = new URL(discoveryPath.parse(path), origin);
     if (url.origin !== origin) throw new Error("Invalid discovery path");
-    const response = await page.goto(url.href, { waitUntil: "domcontentloaded" });
-    if (!response) await page.reload({ waitUntil: "domcontentloaded" });
-    currentPath();
+    const finish = browser.observation.track("Хуудас нээх", path, "Studio");
+    try {
+      await browser.navigate(url.href, true);
+      currentPath();
+      finish(true);
+    } catch (error) { finish(false); throw error; }
   }
   async function onPage(action: DiscoveryAction | null): Promise<unknown> {
     currentPath();
-    return runReader(page, source, origin, action);
+    return page.evaluate(`(() => {
+      ${source}
+      return (${discoveryDom.toString()})(createUiReader(), ${JSON.stringify(origin)}, ${JSON.stringify(action)});
+    })()`);
   }
   if (headed) await navigate("/");
   return {
-    begin() { scanning = true; },
+    observation: browser.observation,
+    async startLiveView(send) {
+      if (!manual) throw new Error("Studio control is unavailable");
+      const cast = await page.screencast.start({
+        fps: 10, quality: 66,
+        onFrame: frame => {
+          if (!manual) return;
+          try { browser.checkedUrl(); } catch { return; }
+          send({ data: frame.data, width: frame.viewportWidth, height: frame.viewportHeight, revision: browser.revision() });
+        },
+      });
+      return () => cast.dispose();
+    },
+    async input(event) {
+      if (!manual || inputTask) return;
+      inputTask = applyInput(event);
+      try { await inputTask; } finally { inputTask = undefined; }
+    },
+    async finishPreparation() {
+      manual = false;
+      await inputTask?.catch(() => {});
+      browser.restrictWrites();
+    },
+    begin() { browser.restrictWrites(); browser.observation.enableDiagnostics(); },
     async roleToken(path) {
       const url = new URL(path, origin);
       if (url.origin !== origin) return null;
@@ -108,22 +148,30 @@ async function createSession(browser: Browser, origin: string, source: string, h
     },
     currentPath,
     navigate,
-    async observe() { return observationSchema.parse(await onPage(null)); },
+    async observe() {
+      const finish = browser.observation.track("UI таних");
+      try {
+        const result = observationSchema.parse(await onPage(null));
+        finish(!("access" in result));
+        return result;
+      } catch (error) { finish(false); throw error; }
+    },
     async perform(action) {
       const before = page.url();
-      try { return await onPage(action) === true; }
-      catch (error) {
-        if (page.url() !== before && new URL(page.url()).origin === origin) return true;
+      const revision = browser.revision();
+      const finish = browser.observation.track("Дарах", action.target.name, "Studio");
+      try {
+        const focus = actionFocus.safeParse(await onPage(action));
+        if (focus.success) browser.observation.highlight(focus.data.bounds, focus.data.view, revision);
+        finish(focus.success);
+        return focus.success;
+      } catch (error) {
+        const navigated = page.url() !== before && new URL(page.url()).origin === origin;
+        finish(navigated);
+        if (navigated) return true;
         throw error;
       }
     },
-    close() { return browser.close(); },
+    close() { manual = false; return browser.close(); },
   };
-}
-
-function runReader(page: Page, source: string, origin: string, action: DiscoveryAction | null) {
-  return page.evaluate(`(() => {
-    ${source}
-    return (${discoveryDom.toString()})(createUiReader(), ${JSON.stringify(origin)}, ${JSON.stringify(action)});
-  })()`);
 }

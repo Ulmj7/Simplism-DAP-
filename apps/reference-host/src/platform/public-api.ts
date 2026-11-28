@@ -28,6 +28,7 @@ const guideTicket = z.strictObject({ installationId: uuid, runId: uuid, epoch: z
 const eventBase = { ticket: z.string().max(600), index: z.number().int().min(0).max(16) };
 const guideFeedback = z.discriminatedUnion("kind", [
   z.strictObject({ ...eventBase, kind: z.literal("completed") }),
+  z.strictObject({ ...eventBase, kind: z.enum(["highlighted", "confirmed"]) }),
   z.strictObject({ ...eventBase, kind: z.literal("stopped"), reason: stopReason }),
 ]);
 const targetId = z.number().int().min(1).max(24);
@@ -243,7 +244,9 @@ export function registerWidget(app: FastifyInstance, deps: {
     const runId = ticketRun(input.data.ticket, installation);
     if (!runId) return reply.code(404).send({ error: "unavailable" });
     if (!await limit(installation, "ui-route-feedback", 60, 60)) return reply.code(429).send({ error: "rate_limited" });
-    await guideOperations.finish(installation, runId, input.data);
+    const event = input.data;
+    if (event.kind === "completed" || event.kind === "stopped") await guideOperations.finish(installation, runId, event);
+    else await guideOperations.step(installation, runId, event);
     return reply.code(204).send();
   }));
   app.post(prefix + "/ui-assist", protectedRoute(async (req, reply, installation) => {

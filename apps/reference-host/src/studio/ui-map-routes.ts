@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { Installation, PlatformStore } from "../platform/store.js";
 import { uuid } from "../platform/store.js";
@@ -8,10 +8,14 @@ import { discoverUiMap } from "./discover-ui-map.js";
 import type { createUiMapStore } from "./ui-map-store.js";
 import { audienceName, normalizeRoleKey, roleEndpoint, verifySaasRole } from "./ui-guide-operations.js";
 import type { createUiGuideOperations } from "./ui-guide-operations.js";
+import type { Monitoring } from "./monitoring.js";
+import type { Operator } from "../platform/identity.js";
 import { uiTargetDigest } from "./ui-map-guide.js";
 
 type JobStatus = "preparing" | "ready" | "scanning" | "complete" | "paused" | "access-required" | "failed";
 interface Job {
+  owner: string;
+  detachMonitor?: () => void;
   tenantId: string;
   origin: string;
   audience: string;
@@ -20,6 +24,8 @@ interface Job {
   timer?: ReturnType<typeof setTimeout>;
   task?: Promise<void>;
   abort: AbortController;
+  control: AbortController;
+  observing?: boolean;
 }
 
 const originField = z.string().min(1).max(190);
@@ -36,11 +42,16 @@ export function registerUiMapRoutes(
   maps: ReturnType<typeof createUiMapStore>,
   operations: ReturnType<typeof createUiGuideOperations>,
   allowText: (text: string) => boolean,
+  monitoring: Monitoring,
+  operator: (request: FastifyRequest) => Operator | undefined,
 ) {
   let current: Job | undefined;
 
   async function release(job: Job) {
     clearTimeout(job.timer);
+    job.control.abort();
+    job.detachMonitor?.();
+    delete job.detachMonitor;
     const browser = job.browser;
     delete job.browser;
     await browser?.close().catch(() => {});
@@ -64,6 +75,15 @@ export function registerUiMapRoutes(
     return Boolean(config && token && verifySaasRole(token, config.key, { ...installation, origin: job.origin }) === job.audience);
   }
 
+  function attach(job: Job, installation: Installation, browser: DiscoveryBrowser, interactive = false) {
+    if (job.detachMonitor) return;
+    job.detachMonitor = monitoring.attach({ tenantId: installation.tenantId, applicationId: installation.applicationId,
+      owner: job.owner, origin: job.origin, audience: job.audience, kind: "UI зураглал", observe: () => browser.observation,
+      canObserve: () => Boolean(job.observing),
+      ...(interactive ? { control: { browser, signal: job.control.signal, ready: () => job.status === "ready" } } : {}),
+    });
+  }
+
   async function scan(job: Job, installation: Installation, prepared: boolean, continueScan: boolean, startPath?: string) {
     let status: JobStatus = "failed";
     job.timer = setTimeout(() => {
@@ -78,11 +98,16 @@ export function registerUiMapRoutes(
       if (!job.browser) job.browser = await openDiscoveryBrowser(job.origin, false);
       if (job.abort.signal.aborted) return;
       const browser = job.browser;
+      await browser.finishPreparation();
+      if (job.abort.signal.aborted) return;
       if (!await verifyBrowserRole(browser, installation, job)) {
         status = "access-required";
         return;
       }
+      if (job.abort.signal.aborted) return;
       browser.begin();
+      job.observing = true;
+      attach(job, installation, browser);
       const seed = progress?.startPath ?? startPath ?? (prepared ? browser.currentPath() : "/");
       if (!prepared || progress || startPath) await browser.navigate(seed);
       const focus = progress?.focus ?? Boolean(startPath && startPath !== "/");
@@ -108,11 +133,14 @@ export function registerUiMapRoutes(
     }
   }
 
-  async function prepare(job: Job) {
+  async function prepare(job: Job, installation: Installation, startPath?: string) {
     try {
-      job.browser = await openDiscoveryBrowser(job.origin, true);
+      job.browser = await openDiscoveryBrowser(job.origin, false, true);
+      if (job.abort.signal.aborted) { await release(job); return; }
+      await job.browser.navigate(startPath ?? "/");
       if (job.abort.signal.aborted) { await release(job); return; }
       job.status = "ready";
+      attach(job, installation, job.browser, true);
       job.timer = setTimeout(() => { void close(job); }, 5 * 60_000);
       job.timer.unref();
     } catch {
@@ -146,7 +174,9 @@ export function registerUiMapRoutes(
       const seed = targets?.get(String(failure.firstTarget))?.page ?? target?.page;
       return { ...failure, page: target?.page, label: target?.name || target?.marker, seed };
     });
-    return { status: same(current, installation, origin, audience) ? current.status : draft ? "paused" : "idle",
+    const job = current;
+    const ownedJob = same(job, installation, origin, audience) && job.owner === operator(req)?.userId ? job : undefined;
+    return { status: ownedJob?.status ?? (draft ? "paused" : "idle"),
       saved: saved ?? null, audiences, roleEndpoint: key?.endpoint ?? null, usage: { ...usage, failures },
       draft: draft ? { map: draft.map, pending: draft.pending.flatMap(item => item.actions.slice(item.next)) } : null };
   });
@@ -165,23 +195,26 @@ export function registerUiMapRoutes(
       return { keyConfigured: Boolean(key) };
     }
     const { audience, startPath } = body.data;
+    const owner = operator(req)?.userId;
+    if (!owner) return reply.code(403).send({ error: "forbidden" });
     if (action === "close") {
-      if (same(current, installation, origin, audience)) await close(current);
+      if (same(current, installation, origin, audience) && current.owner === owner) await close(current);
       return { status: "idle" };
     }
     if (!installation.enabled) return reply.code(409).send({ error: "discovery_disabled" });
-    if (audience === "legacy" || (audience === "public" && action === "prepare")) return reply.code(422).send({ error: "invalid_audience" });
+    if (audience === "legacy") return reply.code(422).send({ error: "invalid_audience" });
     if (audience !== "public" && !await operations.roleConfig(installation, origin)) return reply.code(409).send({ error: "role_key_required" });
     if (startPath && (!allowText(startPath) || new URL(startPath, origin).origin !== origin)) return reply.code(422).send({ error: "invalid_discovery" });
-    const prepared = same(current, installation, origin, audience) && current.status === "ready" && action !== "prepare" ? current : undefined;
+    const prepared = same(current, installation, origin, audience) && current.owner === owner && current.status === "ready" && action !== "prepare" ? current : undefined;
     if (active(current) && !prepared) return reply.code(409).send({ error: "discovery_busy" });
     if (audience !== "public" && action !== "prepare" && !prepared) return reply.code(409).send({ error: "studio_login_required" });
-    const job: Job = prepared ?? { tenantId: installation.tenantId, origin, audience, status: "preparing", abort: new AbortController() };
+    const job: Job = prepared ?? { owner, tenantId: installation.tenantId, origin, audience, status: "preparing", abort: new AbortController(), control: new AbortController() };
     current = job;
     clearTimeout(job.timer);
-    if (action === "prepare") job.task = prepare(job);
+    if (action === "prepare") job.task = prepare(job, installation, startPath);
     else {
       job.status = "scanning";
+      job.control.abort();
       job.task = scan(job, installation, Boolean(prepared), action === "resume", startPath);
     }
     return reply.code(202).send({ status: job.status });

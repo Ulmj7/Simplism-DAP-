@@ -7,10 +7,10 @@ import { exactBody } from "../http/transport.js";
 import { isAuthoredId } from "../authoring/ids.js";
 import { APPLICATION_ID } from "./applications.js";
 
-export const STUDIO_ACTIONS = ["connect", "resume", "refresh", "inspect", "highlight", "capture", "register", "disconnect"] as const;
+export const STUDIO_ACTIONS = ["connect", "resume", "refresh", "inspect", "inspect-dom", "highlight", "capture", "register", "disconnect"] as const;
 export type StudioAction = (typeof STUDIO_ACTIONS)[number];
 
-/** An element reference of the pinned browser CLI: `@e` + 1..9 digits, no leading zero. Session-only evidence, never persisted. */
+/** An element reference in a Studio snapshot. Session-only evidence, never persisted. */
 export const REF_PATTERN = /^@e[1-9]\d{0,8}$/u;
 /** The session id the host mints (a UUID by default); bounded so a huge string is refused before any comparison. */
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
@@ -20,6 +20,7 @@ export type StudioCommand =
   | { readonly action: "resume"; readonly applicationId: string }
   | { readonly action: "refresh"; readonly sessionId: string; readonly applicationId: string }
   | { readonly action: "inspect"; readonly sessionId: string; readonly applicationId: string }
+  | { readonly action: "inspect-dom"; readonly sessionId: string; readonly applicationId: string; readonly cursor?: string }
   | {
     readonly action: "register"; readonly sessionId: string; readonly applicationId: string; readonly ref: string; readonly targetId: string; readonly route: string;
     readonly operations: readonly string[]; readonly label: string; readonly description: string; readonly privacy: string;
@@ -63,6 +64,17 @@ export function parseStudioCommand(body: unknown): StudioCommand | null {
     case "refresh": case "inspect": {
       const parsed = exactBody(body, ["action", "sessionId", "applicationId"]);
       return parsed !== null && sessionId(parsed.sessionId) && applicationId(parsed.applicationId) ? { action, sessionId: parsed.sessionId, applicationId: parsed.applicationId } : null;
+    }
+    case "inspect-dom": {
+      const parsed = exactBody(body, ["action", "sessionId", "applicationId", "cursor"]);
+      if (parsed) {
+        return sessionId(parsed.sessionId) && applicationId(parsed.applicationId) &&
+          text(parsed.cursor, /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/u, 36)
+          ? { action, sessionId: parsed.sessionId, applicationId: parsed.applicationId, cursor: parsed.cursor } : null;
+      }
+      const plain = exactBody(body, ["action", "sessionId", "applicationId"]);
+      return plain !== null && sessionId(plain.sessionId) && applicationId(plain.applicationId)
+        ? { action, sessionId: plain.sessionId, applicationId: plain.applicationId } : null;
     }
     case "highlight": case "capture": {
       const parsed = exactBody(body, ["action", "sessionId", "applicationId", "ref"]);

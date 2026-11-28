@@ -10,6 +10,7 @@ import { createApplicationExtension } from "../studio/application-capabilities.j
 import { createTargetExtension } from "../studio/target-capabilities.js";
 import { createPostgresApplicationStore } from "../studio/postgres-application-store.js";
 import { createPostgresTargetStore } from "../studio/postgres-target-store.js";
+import { createMonitoring } from "../studio/monitoring.js";
 import { registerStudioBrowser } from "../studio/browser.js";
 import { createUiGuideOperations } from "../studio/ui-guide-operations.js";
 import { createUiMapStore } from "../studio/ui-map-store.js";
@@ -55,6 +56,7 @@ async function main() {
   const app = fastify({ logger: false, bodyLimit: 64 * 1024, onProtoPoisoning: "error", onConstructorPoisoning: "error" });
   try {
     const store = platformStore(pool);
+    const monitoring = createMonitoring();
     const walkthroughs = createPostgresWalkthroughStore(pool);
     const applications = createPostgresApplicationStore(pool);
     const targets = createPostgresTargetStore(pool);
@@ -97,7 +99,7 @@ async function main() {
     registerAuthoringRoutes(app, { store: walkthroughs, applications, catalog, targets, resolver, resolvePrincipal });
     registerApplicationRoutes(app, { applications, catalog, targets, resolver, resolvePrincipal });
     if (env.DAP_PLATFORM_STUDIO_BROWSER === "1") {
-      registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: walkthroughs, targets, resolver });
+      registerStudioBrowser(app, { resolvePrincipal, applications, catalog, authoring: walkthroughs, targets, resolver, monitoring });
     }
     registerWidget(app, { pool, platform: store, walkthroughs, applications, resolver, sessionKey, apiKey,
       ...(env.DAP_GUIDANCE_MODEL_ID ? { modelId: env.DAP_GUIDANCE_MODEL_ID } : {}) });
@@ -107,7 +109,7 @@ async function main() {
       return { status: "ready" };
     });
     registerPlatformRoutes(app, {
-      store, host, assets, resolve: req => auth.resolve(req.headers), uiMaps: createUiMapStore(pool),
+      store, host, assets, monitoring, resolve: req => auth.resolve(req.headers), uiMaps: createUiMapStore(pool),
       uiGuideOperations: createUiGuideOperations(pool),
       allowWrite: req => req.headers.origin === adminOrigin,
     });

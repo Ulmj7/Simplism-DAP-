@@ -62,8 +62,10 @@ export function discoveryDom(reader: Reader, origin: string, action: DiscoveryAc
     if (resolved.status !== "found") return false;
     const current = classify(resolved.node, action.target);
     if (!current || current.kind !== action.kind || current.href !== action.href) return false;
+    const { x, y, width, height } = resolved.node.getBoundingClientRect();
+    const view = { width: innerWidth, height: innerHeight, x: scrollX, y: scrollY };
     resolved.node.click();
-    return true;
+    return { bounds: { x, y, width, height }, view };
   }
 
   const targets = new Set(view.targets.map(target => JSON.stringify(target)));

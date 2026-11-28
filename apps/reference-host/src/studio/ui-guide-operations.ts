@@ -41,6 +41,9 @@ type Scope = Pick<WidgetInstallation, "tenantId" | "applicationId">;
 type Feedback = { kind: "completed"; index: number } |
   { kind: "stopped"; index: number; reason: z.infer<typeof stopReason> };
 
+type Run = { id: string; origin: string; audience: string; revision: number; steps: string[]; startedAt: string; outcome: string; finishedAt: string | null; index: number | null; reason: string | null };
+type RunEvent = { kind: string; index: number; at: string; reason?: string };
+
 export function createUiGuideOperations(pool: TenantPool) {
   function keyScope(scope: Scope, origin: string) { return [scope.tenantId, scope.applicationId, origin]; }
   return {
@@ -70,9 +73,47 @@ export function createUiGuideOperations(pool: TenantPool) {
         [...keyScope(installation, installation.origin), audience, runId, revision, steps]);
       });
     },
+    step(installation: WidgetInstallation, runId: string, event: { kind: "highlighted" | "confirmed"; index: number }) {
+      return withTenant(pool, installation.tenantId, async tx => {
+        await tx.query(`INSERT INTO public.studio_ui_guide_events (tenant_id, application_id, origin, run_id, kind, step_index)
+          SELECT tenant_id, application_id, origin, run_id, $5, $6 FROM public.studio_ui_guide_runs
+          WHERE tenant_id = $1 AND application_id = $2 AND origin = $3 AND run_id = $4
+            AND $6 < cardinality(steps) AND ($5 <> 'confirmed' OR $6 < cardinality(steps) - 1)
+            AND (step_index IS NULL OR $6 <= step_index)
+          ON CONFLICT DO NOTHING`, [...keyScope(installation, installation.origin), runId, event.kind, event.index]);
+      });
+    },
+    purgeSteps(tenantId: string) {
+      return withTenant(pool, tenantId, tx => tx.query(
+        "DELETE FROM public.studio_ui_guide_events WHERE tenant_id = $1 AND recorded_at < now() - interval '7 days'", [tenantId]));
+    },
+    recent(scope: Scope & { allowedOrigins: string[] }) {
+      return withTenant(pool, scope.tenantId, async tx => {
+        const { rows } = await tx.query(`SELECT run_id AS id, origin, audience, started_at AS "startedAt", outcome
+          FROM public.studio_ui_guide_runs WHERE tenant_id = $1 AND application_id = $2 AND origin = ANY($3::text[]) AND started_at >= now() - interval '7 days'
+          ORDER BY started_at DESC LIMIT 30`, [scope.tenantId, scope.applicationId, scope.allowedOrigins]);
+        return rows as Pick<Run, "id" | "origin" | "audience" | "startedAt" | "outcome">[];
+      });
+    },
+    history(scope: Scope & { allowedOrigins: string[] }, id: string) {
+      return withTenant(pool, scope.tenantId, async tx => {
+        const { rows } = await tx.query(`SELECT run_id AS id, origin, audience, started_at AS "startedAt", outcome,
+          steps, revision, step_index AS index, reason, finished_at AS "finishedAt" FROM public.studio_ui_guide_runs
+          WHERE tenant_id = $1 AND application_id = $2 AND origin = ANY($3::text[]) AND started_at >= now() - interval '7 days' AND run_id = $4`, [scope.tenantId, scope.applicationId, scope.allowedOrigins, id]);
+        const run = rows[0] as Run | undefined;
+        if (!run) return null;
+        const result = await tx.query(`SELECT kind, step_index AS index, recorded_at AS at FROM public.studio_ui_guide_events
+          WHERE tenant_id = $1 AND application_id = $2 AND origin = $3 AND run_id = $4
+            AND recorded_at >= now() - interval '7 days'
+          ORDER BY step_index, CASE kind WHEN 'highlighted' THEN 0 ELSE 1 END`, [...keyScope(scope, run.origin), id]);
+        const events: RunEvent[] = [{ kind: "started", index: 0, at: run.startedAt }, ...result.rows as RunEvent[]];
+        if (run.index !== null) events.push({ kind: run.outcome, index: run.index, at: run.finishedAt ?? "", ...(run.reason ? { reason: run.reason } : {}) });
+        return { ...run, events };
+      });
+    },
     finish(installation: WidgetInstallation, runId: string, event: Feedback) {
       return withTenant(pool, installation.tenantId, async tx => {
-        await tx.query(`UPDATE public.studio_ui_guide_runs SET outcome = $5, step_index = $6, reason = $7
+        await tx.query(`UPDATE public.studio_ui_guide_runs SET outcome = $5, step_index = $6, reason = $7, finished_at = now()
           WHERE tenant_id = $1 AND application_id = $2 AND origin = $3 AND run_id = $4 AND outcome = 'started'
             AND $6 < cardinality(steps) AND ($5 <> 'completed' OR $6 = cardinality(steps) - 1)`,
         [...keyScope(installation, installation.origin), runId, event.kind, event.index, event.kind === "stopped" ? event.reason : null]);

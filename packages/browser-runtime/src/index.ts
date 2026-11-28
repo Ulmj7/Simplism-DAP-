@@ -1,8 +1,10 @@
 export { BrowserRuntimeError } from "./errors.js";
 export type { BrowserRuntimeErrorCode } from "./errors.js";
 export type {
-  BrowserChange, BrowserElement, BrowserRuntime, BrowserSessionOptions, BrowserSnapshot, ElementFacts, ElementRef, UiTarget, WaitForChangeOptions,
+  ApprovedLabel, BrowserChange, BrowserElement, BrowserEvent, BrowserObservation, BrowserRuntime, BrowserSessionOptions, BrowserSnapshot, DomNode, DomPage,
+  ElementFacts, ElementRef, UiTarget, WaitForChangeOptions,
 } from "./types.js";
-export { createAgentBrowserAdapter } from "./agent-browser-adapter.js";
-export type { AgentBrowserAdapterOptions } from "./agent-browser-adapter.js";
-export type { ApprovedLabel } from "./snapshot.js";
+export { openChromiumSession } from "./chromium-session.js";
+export type { ChromiumSession } from "./chromium-session.js";
+export { createPlaywrightRuntime } from "./playwright-runtime.js";
+export type { BrowserRuntimeOptions } from "./playwright-runtime.js";

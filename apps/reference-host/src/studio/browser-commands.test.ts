@@ -10,13 +10,16 @@ describe("parseStudioCommand: exact keys per action", () => {
     expect(parseStudioCommand({ action: "connect", applicationId: APP, walkthroughId: WT })).toEqual({ action: "connect", applicationId: APP, walkthroughId: WT });
     expect(parseStudioCommand({ action: "refresh", sessionId: "s-1", applicationId: APP })).toEqual({ action: "refresh", sessionId: "s-1", applicationId: APP });
     expect(parseStudioCommand({ action: "inspect", sessionId: "s-1", applicationId: APP })).toEqual({ action: "inspect", sessionId: "s-1", applicationId: APP });
+    const dom = { action: "inspect-dom", sessionId: "s-1", applicationId: APP, cursor: "00000000-0000-4000-8000-000000000000" };
+    expect(parseStudioCommand(dom)).toEqual(dom);
+    expect(parseStudioCommand({ ...dom, cursor: "invalid" })).toBeNull();
     expect(parseStudioCommand({ action: "highlight", sessionId: "s", applicationId: APP, ref: "@e12" })).toEqual({ action: "highlight", sessionId: "s", applicationId: APP, ref: "@e12" });
     expect(parseStudioCommand({ action: "capture", sessionId: "s", applicationId: APP, ref: "@e999999999" })).toEqual({ action: "capture", sessionId: "s", applicationId: APP, ref: "@e999999999" });
     expect(parseStudioCommand({ action: "disconnect", sessionId: "s" })).toEqual({ action: "disconnect", sessionId: "s" });
     expect(parseStudioCommand({ action: "disconnect", sessionId: "s", applicationId: APP })).toEqual({ action: "disconnect", sessionId: "s", applicationId: APP });
   });
   it("only exposes supported browser actions", () => {
-    expect([...STUDIO_ACTIONS]).toEqual(["connect", "resume", "refresh", "inspect", "highlight", "capture", "register", "disconnect"]);
+    expect([...STUDIO_ACTIONS]).toEqual(["connect", "resume", "refresh", "inspect", "inspect-dom", "highlight", "capture", "register", "disconnect"]);
     for (const action of ["navigate", "click", "type", "eval", "screenshot", "CONNECT", ""]) expect(parseStudioCommand({ action })).toBeNull();
   });
   it.each([

@@ -23,7 +23,7 @@ const APP_A = "app-0000000000a1"; // the reference application (reference regist
 const APP_B = "app-0000000000b1"; // the second application (fixture registry, another origin), tenant A
 const APP_OTHER = "app-0000000000c1"; // an application of tenant B
 const WT = "wt-0000000000a1";
-const SECRET = "SECRET /home/dev/agent-browser stderr http://blocked.example/leak?token=abc";
+const SECRET = "SECRET /home/dev/chromium stderr http://blocked.example/leak?token=abc";
 
 const configA: ApplicationConfig = { name: "Reference application", origin: "http://127.0.0.1:5173", allowedOrigins: ["http://127.0.0.1:5173"], environment: "development", registryId: "reference" };
 const configB: ApplicationConfig = { name: "Second application", origin: "http://127.0.0.1:5185", allowedOrigins: ["http://127.0.0.1:5185", "http://localhost:5185"], environment: "test", registryId: "fixture" };

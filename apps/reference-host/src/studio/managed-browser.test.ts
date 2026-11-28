@@ -26,7 +26,7 @@ const MANAGED_2 = "app-0000000000d2";
 const BUILT_IN = "app-0000000000a1";
 const MANAGED_OTHER_TENANT = "app-0000000000d3";
 const ORIGIN = "http://127.0.0.1:5187";
-const SECRET = "SECRET /home/dev/agent-browser stderr http://blocked.example/leak?token=abc";
+const SECRET = "SECRET /home/dev/chromium stderr http://blocked.example/leak?token=abc";
 
 const managedConfig = (name: string, origin = ORIGIN): ApplicationConfig => ({ name, origin, allowedOrigins: [origin, "http://localhost:5187"], environment: "test", registryId: "studio-managed" });
 const builtInConfig: ApplicationConfig = { name: "Reference application", origin: "http://127.0.0.1:5173", allowedOrigins: ["http://127.0.0.1:5173"], environment: "development", registryId: "reference" };
@@ -147,6 +147,19 @@ it("returns markerless UI descriptors only to the Studio session owner, without 
     status: 200, body: { page: target.page, targets: [target], truncated: false },
   });
   expect(await h.command(command, "tenant-b")).toMatchObject({ status: 404, body: { error: "SESSION_CLOSED" } });
+});
+
+it("reads a paginated DOM only within the owning Studio session", async () => {
+  const h = await harness();
+  const sessionId = await h.connect();
+  const cursor = "00000000-0000-4000-8000-000000000000";
+  const inspect = vi.fn(async () => ({ url: ORIGIN + "/#/orders", nodes: [], nextCursor: null, truncated: false }));
+  h.runtimes[0]!.inspectDom = inspect;
+  const request = { action: "inspect-dom", sessionId, applicationId: MANAGED, cursor };
+  expect(await h.command(request, "tenant-b")).toMatchObject({ status: 404, body: { error: "SESSION_CLOSED" } });
+  expect(inspect).not.toHaveBeenCalled();
+  expect(await h.command(request)).toMatchObject({ status: 200, body: { nodes: [], nextCursor: null } });
+  expect(inspect).toHaveBeenCalledWith(cursor);
 });
 
 describe("managed connect: the session policy comes from the stored application", () => {

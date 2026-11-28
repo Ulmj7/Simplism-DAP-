@@ -1,5 +1,10 @@
 export type ElementRef = `@e${number}`;
 
+export interface ApprovedLabel {
+  readonly role: string;
+  readonly name: string;
+}
+
 export interface BrowserElement {
   readonly ref: ElementRef;
   readonly role: string;
@@ -26,6 +31,41 @@ export interface UiSnapshot {
   readonly truncated: boolean;
 }
 
+export interface DomView {
+  revision: number;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+}
+
+export interface BrowserBounds { x: number; y: number; width: number; height: number }
+
+export interface DomNode {
+  id: number;
+  parentId: number | null;
+  kind: "element" | "text" | "shadow-root";
+  tag?: string;
+  role?: string;
+  visible?: boolean;
+  text?: string;
+  aria?: Readonly<Record<string, string>>;
+  unavailable?: "private" | "frame";
+  selector?: string;
+  name?: string;
+  targetDigest?: string;
+  ambiguous?: boolean;
+  bounds?: BrowserBounds;
+}
+
+export interface DomPage {
+  readonly url: string;
+  readonly nodes: readonly DomNode[];
+  readonly view?: DomView;
+  readonly nextCursor: string | null;
+  readonly truncated: boolean;
+}
+
 export interface BrowserSessionOptions {
   readonly url: string;
   readonly headed?: boolean;
@@ -40,26 +80,49 @@ export type BrowserChange =
   | { readonly status: "timeout" };
 
 /**
- * Facts about one live element that the privacy model needs (the same inputs as the walkthrough package's `ElementFacts`, minus what only the page can answer). Plain data, never a value:
- * the ancestors' `data-ai-ignore` cannot be read from outside the page, so `dataAiIgnore` covers the element itself only (the runtime's own privacy model still enforces the ancestors).
+ * Facts about one live element that the privacy model needs. Values entered by users are never read here.
  */
 export interface ElementFacts {
-  /** Always null with the pinned CLI: no command reads the tag name. A `textbox` or `searchbox` with an `inputType` is an input. */
   readonly tagName: string | null;
   /** The `type` attribute, trimmed and lower-case (at most 40 characters), or null when absent or empty. */
   readonly inputType: string | null;
   /** The `autocomplete` attribute, trimmed and lower-case (at most 200 characters), or null when absent or empty. */
   readonly autocomplete: string | null;
-  /** The element carries the attribute (any value, including none). */
+  /** The element or an ancestor carries the attribute. */
   readonly dataAiPrivate: boolean;
   readonly dataAiIgnore: boolean;
   readonly dataAiRedact: boolean;
+}
+
+export interface BrowserEvent {
+  id: number;
+  at: number;
+  channel: "activity" | "console" | "network";
+  source: "Studio" | "Agent" | "Хэрэглэгч" | "Browser";
+  action: string;
+  detail?: string | undefined;
+  target?: string | undefined;
+  outcome?: "running" | "success" | "failed";
+  durationMs?: number;
+  status?: number | undefined;
+  related?: number | undefined;
+}
+
+export interface BrowserObservation {
+  track(action: string, target?: string, source?: BrowserEvent["source"]): (ok: boolean) => void;
+  highlight(bounds: BrowserBounds, view: Omit<DomView, "revision">, revision: number): void;
+  summary(after: number): { highlight?: { bounds: BrowserBounds; view: DomView } | undefined; url?: string | undefined; revision: number; events: BrowserEvent[]; lastEvent: number };
+  dom(cursor?: string): Promise<DomPage>;
+  viewport(): Promise<{ image: Buffer; view: string }>;
+  storage(): Promise<{ cookies: string[]; localStorage: string[]; sessionStorage: string[] }>;
 }
 
 export interface BrowserRuntime {
   start(options: BrowserSessionOptions): Promise<void>;
   snapshot(): Promise<BrowserSnapshot>;
   inspectUi?(): Promise<UiSnapshot>;
+  inspectDom?(cursor?: string): Promise<DomPage>;
+  observation?(): BrowserObservation;
   inspectSemanticId(ref: ElementRef, from: BrowserSnapshot): Promise<string | null>;
   /**
    * One fresh observation, then one `data-ai-id` read per candidate of `from` (at most 64, in

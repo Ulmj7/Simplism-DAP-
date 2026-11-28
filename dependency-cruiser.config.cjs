@@ -27,8 +27,6 @@ module.exports = {
       "The Node browser adapter is available only to trusted host composition and spike tooling."),
     forbid("browser-runtime-only-in-studio", "^apps/reference-host/(src|dist)/(?!studio/)", "^packages/browser-runtime/",
       "Only reference-host Studio owns browser sessions."),
-    forbid("browser-vendor-no-imports", "^(packages|apps)/", "^vendor/agent-browser/",
-      "The adapter invokes the native executable without importing vendor modules."),
     forbid("ai-not-to-security-or-actions", "^packages/ai/", "^packages/(security|actions)/",
       "The AI layer must not reach the Gateway internals or any executor (ATK-ARCH-01)."),
     forbid("actions-not-to-ai-or-security", "^packages/actions/", "^packages/(ai|security)/",

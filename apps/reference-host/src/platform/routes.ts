@@ -1,3 +1,6 @@
+import { createMonitoring, registerMonitoringRoutes } from "../studio/monitoring.js";
+import type { Monitoring } from "../studio/monitoring.js";
+import websocket from "@fastify/websocket";
 import { randomUUID } from "node:crypto";
 import { parseKnowledgeDoc } from "@dap/ai";
 import { scrubText } from "@dap/security";
@@ -18,6 +21,7 @@ export function registerPlatformRoutes(server: FastifyInstance, deps: {
   assets: WidgetAssets | null;
   resolve: (request: FastifyRequest) => Operator | null | Promise<Operator | null>;
   allowWrite: (request: FastifyRequest) => boolean;
+  monitoring?: Monitoring;
   uiMaps?: ReturnType<typeof createUiMapStore>;
   uiGuideOperations?: ReturnType<typeof createUiGuideOperations>;
 }) {
@@ -32,7 +36,13 @@ export function registerPlatformRoutes(server: FastifyInstance, deps: {
       }
       operators.set(req, operator);
     });
-    if (deps.uiMaps && deps.uiGuideOperations) registerUiMapRoutes(app, store, deps.uiMaps, deps.uiGuideOperations, text => scrubText(text) === text);
+    if (deps.uiMaps && deps.uiGuideOperations) {
+      await app.register(websocket, { options: { maxPayload: 12 * 1024 } });
+      const monitoring = deps.monitoring ?? createMonitoring();
+      const operator = (req: FastifyRequest) => operators.get(req);
+      registerUiMapRoutes(app, store, deps.uiMaps, deps.uiGuideOperations, text => scrubText(text) === text, monitoring, operator);
+      registerMonitoringRoutes(app, store, monitoring, deps.uiMaps, deps.uiGuideOperations, operator, deps.allowWrite);
+    }
     async function submit(operator: Operator, action: string, params: unknown) {
       const session = await host.openSession(operator);
       if (!session) return false;

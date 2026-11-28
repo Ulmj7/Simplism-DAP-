@@ -68,7 +68,7 @@ const ALLOWED_MANIFEST_EDGES: Readonly<Record<string, readonly string[]>> = {
   // Feature 002: a leaf package and its demo app. The detailed rules are in tests/architecture/walkthrough-boundary.test.ts.
   "packages/walkthrough": [],
 };
-const RULES = ["browser-runtime-leaf", "browser-runtime-only-in-host", "browser-runtime-only-in-studio", "browser-vendor-no-imports", "ai-not-to-security-or-actions", "actions-not-to-ai-or-security", "security-not-to-ai-or-actions", "contracts-leaf", "testkit-allowed-edges", "production-not-to-testkit", "nothing-imports-apps", "no-deep-imports-into-contracts", "mint-entry-restricted", "no-runtime-module-loaders", "no-circular", "walkthrough-leaf", "walkthrough-not-imported-by-trusted-packages"];
+const RULES = ["browser-runtime-leaf", "browser-runtime-only-in-host", "browser-runtime-only-in-studio", "ai-not-to-security-or-actions", "actions-not-to-ai-or-security", "security-not-to-ai-or-actions", "contracts-leaf", "testkit-allowed-edges", "production-not-to-testkit", "nothing-imports-apps", "no-deep-imports-into-contracts", "mint-entry-restricted", "no-runtime-module-loaders", "no-circular", "walkthrough-leaf", "walkthrough-not-imported-by-trusted-packages"];
 
 describe("the real repository", () => {
   const graph = cruise(ROOT);

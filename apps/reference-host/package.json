@@ -10,10 +10,13 @@
     "@dap/actions": "*",
     "@dap/security": "*",
     "@dap/walkthrough": "*",
+    "@fastify/websocket": "^11.3.7",
     "fastify": "^5.12.8",
     "prom-client": "^15.1.3",
     "pino": "^10.4.0",
-    "playwright-core": "^1.65.1",
     "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
   }
 }
